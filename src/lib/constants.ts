@@ -2289,3 +2289,185 @@ export const PROFILE_NO_AVERAGE_NOTE =
 
 export const PROFILE_DO_NOT_INFER_PRESET =
   '本判断只基于已保存的证据样本与条件；不能说明未测试的主题、真实交流压力下的表现或官方考试分数。';
+
+// ───────────────────────── v2.3 TypeWords 词汇引擎集成 ─────────────────────────
+
+/** 外部词汇练习引擎的唯一 provider 标识（数据库枚举值）。 */
+export const VOCAB_PROVIDER = 'TYPEWORDS' as const;
+
+/** 固定审计版本（ADR-001）：该 commit 的备份导入链路已逐行核对。 */
+export const TYPEWORDS_PINNED_COMMIT = '1bcc2a2c0a169b37bea26b73f5a46a91d803558f';
+export const TYPEWORDS_PINNED_DATE = '2026-10-17';
+export const TYPEWORDS_LICENSE = 'GPL-3.0';
+export const TYPEWORDS_LICENSE_SHA256 =
+  '8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b8';
+/** TypeWords 备份格式常量（来自其 config/env.ts，随固定 commit 冻结）。 */
+export const TYPEWORDS_EXPORT_VERSION = 5;
+export const TYPEWORDS_DICT_VERSION = 4;
+export const TYPEWORDS_SETTING_VERSION = 23;
+export const TYPEWORDS_DEFAULT_INSTANCE = 'default';
+
+/** 集成级别：L1 = 文件交换（必须实现）；L2 = 浏览器桥（可选，默认关闭）。 */
+export const VOCAB_INTEGRATION_MODES = ['FILE', 'BRIDGE'] as const;
+export type VocabIntegrationMode = (typeof VOCAB_INTEGRATION_MODES)[number];
+export const VOCAB_INTEGRATION_MODE_LABEL_ZH: Record<VocabIntegrationMode, string> = {
+  FILE: 'L1 · 文件交换（默认）',
+  BRIDGE: 'L2 · 浏览器桥（可选，需审计）',
+};
+
+/** 七个知识维度（互不合并：不是「已掌握」一个布尔值）。 */
+export const VOCAB_DIMENSIONS = [
+  'FORM_RECOGNITION',
+  'MEANING_RECOGNITION',
+  'MEANING_RECALL',
+  'SPELLING_RECALL',
+  'LISTENING_RECOGNITION',
+  'CONTEXT_UNDERSTANDING',
+  'PRODUCTIVE_USE',
+] as const;
+export type VocabDimension = (typeof VOCAB_DIMENSIONS)[number];
+
+export const VOCAB_DIMENSION_LABEL_ZH: Record<VocabDimension, string> = {
+  FORM_RECOGNITION: '词形识别（FORM_RECOGNITION）',
+  MEANING_RECOGNITION: '词义识别（MEANING_RECOGNITION）',
+  MEANING_RECALL: '词义回忆（MEANING_RECALL）',
+  SPELLING_RECALL: '拼写回忆（SPELLING_RECALL）',
+  LISTENING_RECOGNITION: '听音识别（LISTENING_RECOGNITION）',
+  CONTEXT_UNDERSTANDING: '语境理解（CONTEXT_UNDERSTANDING）',
+  PRODUCTIVE_USE: '产出使用（PRODUCTIVE_USE）',
+};
+
+export const VOCAB_DIMENSION_STATUSES = [
+  'UNKNOWN',
+  'INTRODUCED',
+  'RECOGNIZED',
+  'RECALLED',
+  'CONTEXT_UNDERSTOOD',
+  'PRODUCTIVE_USE_VERIFIED',
+] as const;
+export type VocabDimensionStatus = (typeof VOCAB_DIMENSION_STATUSES)[number];
+export const VOCAB_DIMENSION_STATUS_LABEL_ZH: Record<VocabDimensionStatus, string> = {
+  UNKNOWN: '未接触',
+  INTRODUCED: '已接触',
+  RECOGNIZED: '能识别',
+  RECALLED: '能回忆',
+  CONTEXT_UNDERSTOOD: '能在语境中理解',
+  PRODUCTIVE_USE_VERIFIED: '能产出使用（已验证）',
+};
+
+/** TypeWords 练习模式的 OS 口径（其 WordPracticeType 五类 + 混合）。 */
+export const VOCAB_PRACTICE_MODES = [
+  'RECOGNIZE',
+  'SPELL',
+  'DICTATION',
+  'LISTEN',
+  'FOLLOW_WRITE',
+  'MIXED',
+] as const;
+export type VocabPracticeMode = (typeof VOCAB_PRACTICE_MODES)[number];
+export const VOCAB_PRACTICE_MODE_LABEL_ZH: Record<VocabPracticeMode, string> = {
+  RECOGNIZE: '认词（Identify）',
+  SPELL: '拼写（Spell）',
+  DICTATION: '默写（Dictation）',
+  LISTEN: '听写（Listen）',
+  FOLLOW_WRITE: '跟写（FollowWrite）',
+  MIXED: '混合流程',
+};
+
+/** 练习模式 → 可推进的维度（只推进对应维度，不互相顶替）。 */
+export const VOCAB_MODE_DIMENSIONS: Record<VocabPracticeMode, VocabDimension[]> = {
+  RECOGNIZE: ['FORM_RECOGNITION', 'MEANING_RECOGNITION'],
+  SPELL: ['SPELLING_RECALL'],
+  DICTATION: ['SPELLING_RECALL', 'MEANING_RECALL'],
+  LISTEN: ['LISTENING_RECOGNITION'],
+  FOLLOW_WRITE: ['FORM_RECOGNITION', 'SPELLING_RECALL'],
+  MIXED: ['FORM_RECOGNITION', 'MEANING_RECOGNITION', 'SPELLING_RECALL'],
+};
+
+/** 会话数据粒度：TypeWords 固定 commit 只给汇总，无逐词尝试日志。 */
+export const VOCAB_SESSION_GRANULARITIES = ['SUMMARY_ONLY', 'ATTEMPT'] as const;
+export type VocabSessionGranularity = (typeof VOCAB_SESSION_GRANULARITIES)[number];
+export const VOCAB_GRANULARITY_LABEL_ZH: Record<VocabSessionGranularity, string> = {
+  SUMMARY_ONLY: '仅汇总（SUMMARY_ONLY）',
+  ATTEMPT: '逐词尝试（ATTEMPT）',
+};
+
+/** 预算 → 词汇任务策略表（需求手册 §7 的策略矩阵，写成数据而不是散落在代码里）。 */
+export const VOCAB_BUDGET_POLICY: Array<{
+  minMinutes: number;
+  maxMinutes: number | null;
+  reviewOnly: boolean;
+  newTarget: number;
+  modes: VocabPracticeMode[];
+  guidanceZh: string;
+}> = [
+  {
+    minMinutes: 0,
+    maxMinutes: 15,
+    reviewOnly: true,
+    newTarget: 0,
+    modes: ['RECOGNIZE'],
+    guidanceZh: '15 分钟档只做到期复习，不引入新词；维持记忆连续性。',
+  },
+  {
+    minMinutes: 16,
+    maxMinutes: 45,
+    reviewOnly: false,
+    newTarget: 5,
+    modes: ['RECOGNIZE', 'SPELL'],
+    guidanceZh: '30–45 分钟档复习优先，新词不超过 5 个；只补最简单的一步输出。',
+  },
+  {
+    minMinutes: 46,
+    maxMinutes: 90,
+    reviewOnly: false,
+    newTarget: 10,
+    modes: ['RECOGNIZE', 'SPELL', 'LISTEN'],
+    guidanceZh: '60–90 分钟档复习 + 适量新词（≤10），并加入听音识别。',
+  },
+  {
+    minMinutes: 91,
+    maxMinutes: 180,
+    reviewOnly: false,
+    newTarget: 15,
+    modes: ['RECOGNIZE', 'SPELL', 'DICTATION', 'LISTEN'],
+    guidanceZh: '120–180 分钟档可做词族/搭配扩展，新词 ≤15，加入默写与语境。',
+  },
+  {
+    minMinutes: 181,
+    maxMinutes: null,
+    reviewOnly: false,
+    newTarget: 25,
+    modes: ['RECOGNIZE', 'SPELL', 'DICTATION', 'LISTEN', 'MIXED'],
+    guidanceZh: '240 分钟档加入产出性练习与拓展阅读中的词汇回收。',
+  },
+];
+
+/** 词汇复习硬上限：任何档位单日复习不超过 40 个词条（避免新词被复习挤掉）。 */
+export const VOCAB_REVIEW_CAP = 40;
+/** 单次分配的新词上限（防止导入错误导致一天几百个新词）。 */
+export const VOCAB_NEW_ASSIGN_CAP = 30;
+/** 导入文件上限（行数）：超过时要求拆分，避免浏览器端解析卡死。 */
+export const VOCAB_IMPORT_MAX_ROWS = 5000;
+export const VOCAB_IMPORT_MAX_BYTES = 8 * 1024 * 1024;
+/** 导入预览最多渲染行数（完整统计仍按全量计算）。 */
+export const VOCAB_IMPORT_PREVIEW_LIMIT = 200;
+
+/** 同步中心可展示的方向文案。 */
+export const VOCAB_JOB_DIRECTION_LABEL_ZH: Record<string, string> = {
+  EXPORT_DECK: '导出词库（OS → TypeWords）',
+  IMPORT_BACKUP: '导入 TypeWords 备份（只读解析）',
+  IMPORT_SESSION: '导入练习会话（TypeWords → OS）',
+};
+
+/** 已知限制：必须原样展示给用户，不能藏在文档里。 */
+export const TYPEWORDS_KNOWN_LIMITS_ZH = [
+  '固定 commit 的 TypeWords 没有逐词尝试日志：只能按会话汇总（SUMMARY_ONLY）推进维度，不能逐词断言「掌握」。',
+  '固定 commit 的 `/import` 页面缺失：不能声称 OS 能自动把词库推送到 TypeWords，必须由用户手动导入文件。',
+  'TypeWords 的官方导入是「整库覆盖」：导入 OS 生成的备份包会替换其现有词库与设置，必须先导出其原备份或使用独立浏览器配置文件。',
+  'TypeWords 的 mastered 状态不等于 OS 的多维掌握：OS 只用会话数据推进对应维度，不合并成单一「已掌握」。',
+] as const;
+
+/** OS 侧「已掌握」口径提示（禁止合并三档与七维）。 */
+export const VOCAB_MASTERY_NO_MERGE_NOTE =
+  '词汇掌握度按七个知识维度分别记录；TypeWords 的「已掌握」只作为外部状态参考，不写入 OS 的维度结论。';

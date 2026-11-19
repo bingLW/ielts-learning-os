@@ -17,6 +17,7 @@ import { fail, failValidation, ok } from '@/lib/result';
 import { dateString } from '@/lib/schema/common';
 import type { ActionResult } from '@/lib/types';
 import { today } from '@/lib/date';
+import { ensureVocabularyAssignment } from '@/lib/vocabAssignment';
 
 const replanSchema = z.object({
   planDate: dateString,
@@ -253,6 +254,21 @@ export async function replanDailyTasksAction(
           });
         }
       }
+    }
+
+    // v2.3：词汇分配跟随当日 VOCAB_REVIEW 任务；尚未开始的分配按新预算重算
+    const vocabTask = await tx.planTask.findFirst({
+      where: { planDate, module: 'VOCAB_REVIEW', status: { in: ['TODO', 'DOING'] } },
+      orderBy: { planVersion: 'desc' },
+      select: { id: true, plannedMinutes: true },
+    });
+    if (vocabTask) {
+      await ensureVocabularyAssignment(tx, {
+        assignmentDate: planDate,
+        budgetMinutes: vocabTask.plannedMinutes,
+        planTaskId: vocabTask.id,
+        recomputeWhenUnstarted: true,
+      });
     }
 
     // 写入审计记录

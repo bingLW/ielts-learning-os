@@ -11,6 +11,7 @@ import { MODULE_META, MODULE_TO_PRIMARY, MODULE_TRACK, tierCodeOf } from '@/lib/
 import { today } from '@/lib/date';
 import { generateDailyPlan } from '@/lib/domain/plan';
 import { generateAdaptivePlan } from '@/lib/domain/adaptivePlan';
+import { ensureVocabularyAssignment } from '@/lib/vocabAssignment';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
 import {
@@ -320,6 +321,19 @@ export async function generateAdaptivePlanAction(
         };
       }),
     });
+
+    // v2.3：词汇任务复用计划里的 VOCAB_REVIEW 分钟数，与 PlanTask 同事务落库
+    const vocabTask = await tx.planTask.findFirst({
+      where: { planDate, planVersion: version, module: 'VOCAB_REVIEW' },
+      select: { id: true, plannedMinutes: true },
+    });
+    if (vocabTask) {
+      await ensureVocabularyAssignment(tx, {
+        assignmentDate: planDate,
+        budgetMinutes: vocabTask.plannedMinutes,
+        planTaskId: vocabTask.id,
+      });
+    }
 
     // v2.2：复测任务与排期同一事务关联，避免次日重复把同一批复测排进预算
     const retestTask =

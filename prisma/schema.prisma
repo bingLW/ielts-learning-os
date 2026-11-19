@@ -56,6 +56,7 @@ model UserProfile {
 
   // ── v2.0 三目标全局默认 ──
   /**
+   * /**
    * 长期通用英语目标等级（展示用，非官方认证）。
    */
   cefrTarget        String @default("B2")
@@ -142,27 +143,43 @@ model PlanTask {
 
   // ── v2.1 自适应计划 ──
   /**
+   * /**
    * 优先级：P0 到期/逾期复习、P1 当前阶段核心、P2 有证据的弱项/目标差距、P3 拓展。
    * 取值固定 `P0`–`P3`（字符串，SQLite 无 enum）。
    */
-  priority            String  @default("P1")
-  /** 是否允许分段执行（不可拆的完整模考/整篇写作必须为 false）。 */
-  splittable          Boolean @default(false)
-  /** 分段的最小块（分钟），低于它不生成碎片任务。 */
-  minChunkMinutes     Int     @default(5)
-  /** 生成该任务时的计划版本；重排时递增，历史版本行保留。 */
-  planVersion         Int     @default(1)
-  /** 首次被安排到的日期；顺延/重排后不变，用于追溯原始安排。 */
+  priority              String  @default("P1")
+  /**
+   * 是否允许分段执行（不可拆的完整模考/整篇写作必须为 false）。
+   */
+  splittable            Boolean @default(false)
+  /**
+   * 分段的最小块（分钟），低于它不生成碎片任务。
+   */
+  minChunkMinutes       Int     @default(5)
+  /**
+   * 生成该任务时的计划版本；重排时递增，历史版本行保留。
+   */
+  planVersion           Int     @default(1)
+  /**
+   * 首次被安排到的日期；顺延/重排后不变，用于追溯原始安排。
+   */
   originalScheduledDate String?
-  /** 最近一次重排原因（预算变更 / P0 挤压 / 手动延后 …）。 */
-  rescheduleReason    String?
-  /** 进入 backlog 的原因（如「P0 超额，按风险分批」）。 */
-  deferReason         String?
-  /** 任务来源：REVIEW|CORE|WEAKNESS|EXTENDED|MANUAL|LEGACY（v2.0 迁移行 = LEGACY）。 */
-  sourceKind          String  @default("CORE")
+  /**
+   * 最近一次重排原因（预算变更 / P0 挤压 / 手动延后 …）。
+   */
+  rescheduleReason      String?
+  /**
+   * 进入 backlog 的原因（如「P0 超额，按风险分批」）。
+   */
+  deferReason           String?
+  /**
+   * 任务来源：REVIEW|CORE|WEAKNESS|EXTENDED|MANUAL|LEGACY（v2.0 迁移行 = LEGACY）。
+   */
+  sourceKind            String  @default("CORE")
 
   // ── v2.0 三轨道 ──
   /**
+   * /**
    * 主轨道。任务必须归属一个主轨道；允许加标签，但不允许一条学习时长被重复计入总时长。
    * GENERAL_ENGLISH | IELTS_PREPARATION | ENGLISH_MEDIATED_LEARNING
    */
@@ -183,12 +200,14 @@ model PlanTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  stage    Stage          @relation(fields: [stageId], references: [id], onDelete: Restrict)
-  resource Resource?      @relation(fields: [resourceId], references: [id], onDelete: SetNull)
-  sessions StudySession[]
-  records  StudyRecord[]
-  evidenceRecords EvidenceRecord[]
-  retestSchedules RetestSchedule[]
+  stage                 Stage                       @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  resource              Resource?                   @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  sessions              StudySession[]
+  records               StudyRecord[]
+  evidenceRecords       EvidenceRecord[]
+  retestSchedules       RetestSchedule[]
+  vocabularyAssignments VocabularyAssignment[]
+  vocabularySessions    VocabularyPracticeSession[]
 
   @@index([planDate, sortOrder])
   @@index([stageId])
@@ -208,16 +227,26 @@ model PlanTask {
 model DailyBudget {
   id                      String   @id @default(cuid())
   date                    String   @unique // YYYY-MM-DD
-  /** 计划净学习分钟上限（休息日为 0）。 */
+  /**
+   * 计划净学习分钟上限（休息日为 0）。
+   */
   plannedAvailableMinutes Int      @default(0)
-  /** PRESET | CUSTOM | REST_DAY */
+  /**
+   * PRESET | CUSTOM | REST_DAY
+   */
   budgetType              String   @default("PRESET")
-  /** EMERGENCY|MINIMUM|LIGHT|LIGHT_STANDARD|STANDARD|FOCUSED|DEEP|EXTENDED|CUSTOM|REST */
+  /**
+   * EMERGENCY|MINIMUM|LIGHT|LIGHT_STANDARD|STANDARD|FOCUSED|DEEP|EXTENDED|CUSTOM|REST
+   */
   tierCode                String?
   isRestDay               Boolean  @default(false)
-  /** 首次安装的 60 分钟建议值必须标记为建议，不得冒充用户真实可用时间。 */
+  /**
+   * 首次安装的 60 分钟建议值必须标记为建议，不得冒充用户真实可用时间。
+   */
   isInitialSuggestion     Boolean  @default(false)
-  /** USER | WEEKDAY_TEMPLATE | DEFAULT_SUGGESTION | MIGRATION */
+  /**
+   * USER | WEEKDAY_TEMPLATE | DEFAULT_SUGGESTION | MIGRATION
+   */
   source                  String   @default("USER")
   note                    String?
   createdAt               DateTime @default(now())
@@ -232,9 +261,13 @@ model WeeklyTarget {
   id            String   @id @default(cuid())
   weekStart     String   @unique // ISO 周周一 YYYY-MM-DD
   targetMinutes Int
-  /** ACTIVE | ADJUSTED */
+  /**
+   * ACTIVE | ADJUSTED
+   */
   status        String   @default("ACTIVE")
-  /** 建议来源：USER | SUGGESTION_ACCEPTED。系统建议不得自动写入。 */
+  /**
+   * 建议来源：USER | SUGGESTION_ACCEPTED。系统建议不得自动写入。
+   */
   source        String   @default("USER")
   note          String?
   createdAt     DateTime @default(now())
@@ -247,11 +280,11 @@ model WeeklyTarget {
 
 // ── v2.1 B3 周内每日分配（可含休息日；不要求平均分配）
 model WeeklyDayAllocation {
-  id             String  @id @default(cuid())
-  weeklyTargetId String
-  date           String // YYYY-MM-DD
-  availableMinutes Int   @default(0)
-  isRestDay      Boolean @default(false)
+  id               String  @id @default(cuid())
+  weeklyTargetId   String
+  date             String // YYYY-MM-DD
+  availableMinutes Int     @default(0)
+  isRestDay        Boolean @default(false)
 
   weeklyTarget WeeklyTarget @relation(fields: [weeklyTargetId], references: [id], onDelete: Cascade)
 
@@ -262,17 +295,29 @@ model WeeklyDayAllocation {
 // ── v2.1 B4 规划器全局配置（单行，id 恒为 1）
 model PlannerSettings {
   id                  Int      @id @default(1)
-  /** 未配置任何日程时的**初始建议**每日分钟数（可编辑，不是强制默认）。 */
+  /**
+   * 未配置任何日程时的**初始建议**每日分钟数（可编辑，不是强制默认）。
+   */
   defaultDailyMinutes Int      @default(60)
-  /** 周日..周六 7 个值，JSON 数组；null/0 表示休息日。 */
+  /**
+   * 周日..周六 7 个值，JSON 数组；null/0 表示休息日。
+   */
   weekdayProfiles     String   @default("[60,60,60,60,60,60,0]")
-  /** 任务最小时间粒度（分钟），低于此值不创建任务。 */
+  /**
+   * 任务最小时间粒度（分钟），低于此值不创建任务。
+   */
   minTaskMinutes      Int      @default(5)
-  /** 周目标分钟数；null = 未设置。 */
+  /**
+   * 周目标分钟数；null = 未设置。
+   */
   weeklyTargetMinutes Int?
-  /** 优先级规则参数 JSON（P0 上限比例、核心最低保障比例等）。 */
+  /**
+   * 优先级规则参数 JSON（P0 上限比例、核心最低保障比例等）。
+   */
   priorityPolicy      String   @default("{\"p0CapRatio\":0.6,\"coreMinRatio\":0.3}")
-  /** 用户是否亲自保存过本配置。false = 仍是迁移写入的初始建议值，不得当作真实可用时间。 */
+  /**
+   * 用户是否亲自保存过本配置。false = 仍是迁移写入的初始建议值，不得当作真实可用时间。
+   */
   isUserConfirmed     Boolean  @default(false)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -280,21 +325,29 @@ model PlannerSettings {
 
 // ── v2.1 B5 计划版本（append-only；保存调整前后快照与幂等键）
 model PlanVersion {
-  id            String   @id @default(cuid())
-  planDate      String
-  version       Int
-  /** GENERATE | REPLAN | MANUAL_ADJUST */
-  changeSource  String
-  reason        String?
-  /** 本次生成/重排使用的有效预算分钟。 */
-  budgetMinutes Int      @default(0)
-  /** 变更发生时的当日已发生净学习分钟（用于校验「事实不被改写」）。 */
-  actualMinutesAtChange Int @default(0)
-  beforeSnapshot String? // JSON：变更前的任务快照
-  afterSnapshot  String? // JSON：变更后的任务快照
-  /** 同一生成请求的幂等键；重复请求返回已有结果，不重复建任务。 */
-  idempotencyKey String? @unique
-  createdAt     DateTime @default(now())
+  id                    String   @id @default(cuid())
+  planDate              String
+  version               Int
+  /**
+   * GENERATE | REPLAN | MANUAL_ADJUST
+   */
+  changeSource          String
+  reason                String?
+  /**
+   * 本次生成/重排使用的有效预算分钟。
+   */
+  budgetMinutes         Int      @default(0)
+  /**
+   * 变更发生时的当日已发生净学习分钟（用于校验「事实不被改写」）。
+   */
+  actualMinutesAtChange Int      @default(0)
+  beforeSnapshot        String? // JSON：变更前的任务快照
+  afterSnapshot         String? // JSON：变更后的任务快照
+  /**
+   * 同一生成请求的幂等键；重复请求返回已有结果，不重复建任务。
+   */
+  idempotencyKey        String?  @unique
+  createdAt             DateTime @default(now())
 
   @@unique([planDate, version])
   @@index([planDate])
@@ -332,10 +385,11 @@ model StudySession {
 
   createdAt DateTime @default(now())
 
-  task      PlanTask?               @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  mediated  EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
-  daySplits StudySessionDaySplit[]
-  evidenceRecords EvidenceRecord[]
+  task               PlanTask?                   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mediated           EnglishMediatedSession?     @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
+  daySplits          StudySessionDaySplit[]
+  evidenceRecords    EvidenceRecord[]
+  vocabularySessions VocabularyPracticeSession[]
 
   @@index([taskId])
   @@index([sessionDate])
@@ -928,8 +982,8 @@ model EnglishMediatedSession {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  sessions StudySession[]
-  outputs  LearningOutput[]
+  sessions        StudySession[]
+  outputs         LearningOutput[]
   evidenceRecords EvidenceRecord[]
 
   @@index([sessionDate])
@@ -972,7 +1026,7 @@ model LearningOutput {
 
 // ── V8 证据附件（录音/写作/评分单/课程材料的元数据；不存二进制）
 model EvidenceAttachment {
-  id           String   @id @default(cuid())
+  id           String  @id @default(cuid())
   fileUri      String
   mimeType     String?
   /**
@@ -989,12 +1043,16 @@ model EvidenceAttachment {
   // ── v2.2：附件元数据补全（默认私有 + 外发需同意） ──
   sizeBytes     Int?
   checksum      String?
-  /** PRIVATE | SHAREABLE | METADATA_ONLY */
-  privacyLevel  String @default("PRIVATE")
-  /** NOT_REQUIRED | GRANTED | DENIED（第三方 AI/云存储外发同意状态） */
-  consentStatus String @default("NOT_REQUIRED")
+  /**
+   * PRIVATE | SHAREABLE | METADATA_ONLY
+   */
+  privacyLevel  String  @default("PRIVATE")
+  /**
+   * NOT_REQUIRED | GRANTED | DENIED（第三方 AI/云存储外发同意状态）
+   */
+  consentStatus String  @default("NOT_REQUIRED")
 
-  createdAt    DateTime @default(now())
+  createdAt DateTime @default(now())
 
   evidenceRecords EvidenceRecord[]
 
@@ -1010,38 +1068,66 @@ model EvidenceAttachment {
 // ── EV1 证据记录（统一证据模型；原始样本不可覆盖，版本用 parentEvidenceId 串联）
 model EvidenceRecord {
   id               String    @id @default(cuid())
-  /** LISTENING | READING | SPEAKING | WRITING | GRAMMAR | VOCABULARY */
+  /**
+   * LISTENING | READING | SPEAKING | WRITING | GRAMMAR | VOCABULARY
+   */
   skill            String
-  /** BASELINE | ASSISTED | IMMEDIATE_RETEST | DELAYED_RETEST | APPLIED_TASK | TRANSFER */
+  /**
+   * BASELINE | ASSISTED | IMMEDIATE_RETEST | DELAYED_RETEST | APPLIED_TASK | TRANSFER
+   */
   evidenceType     String
-  /** QUICK | STANDARD | FULL */
+  /**
+   * QUICK | STANDARD | FULL
+   */
   level            String    @default("QUICK")
-  /** 版本链：指向同链上一版本；链根（BASELINE / 独立 Quick 记录）为 null。 */
+  /**
+   * 版本链：指向同链上一版本；链根（BASELINE / 独立 Quick 记录）为 null。
+   */
   parentEvidenceId String?
-  /** 链根 ID（冗余便于整链查询；由应用层维护，链根记录也为 null）。 */
+  /**
+   * 链根 ID（冗余便于整链查询；由应用层维护，链根记录也为 null）。
+   */
   chainRootId      String?
   taskId           String?
   sessionId        String?
   mediatedId       String?
   artifactId       String?
-  /** 任务与条件快照 JSON：prompt / materialSource / timeLimitMinutes / toolsAllowed / audience / environment */
+  /**
+   * 任务与条件快照 JSON：prompt / materialSource / timeLimitMinutes / toolsAllowed / audience / environment
+   */
   conditionJson    String?
-  /** 可见产出正文（Quick Evidence 可只填这一项）。 */
+  /**
+   * 可见产出正文（Quick Evidence 可只填这一项）。
+   */
   outputText       String?
-  /** 内部 0–2 评分：0 未完成/无证据；1 部分/依赖提示/不稳定；2 标明条件下独立完成。 */
+  /**
+   * 内部 0–2 评分：0 未完成/无证据；1 部分/依赖提示/不稳定；2 标明条件下独立完成。
+   */
   score            Int?
   scoreReason      String?
-  /** 评分维度 JSON（如 { recognition, explanation, controlledUse, independentUse }）。 */
+  /**
+   * 评分维度 JSON（如 { recognition, explanation, controlledUse, independentUse }）。
+   */
   dimensionsJson   String?
-  /** 证据位置：句子 / 段落 / 音频时间戳 / 题号。 */
+  /**
+   * 证据位置：句子 / 段落 / 音频时间戳 / 题号。
+   */
   evidenceAnchor   String?
-  /** A0–A4（A0 无辅助；A4 代写/代答，绝不计为独立产出）。 */
+  /**
+   * A0–A4（A0 无辅助；A4 代写/代答，绝不计为独立产出）。
+   */
   assistanceLevel  String    @default("A0")
-  /** SELF | TEACHER | PEER | AI | EXAM */
+  /**
+   * SELF | TEACHER | PEER | AI | EXAM
+   */
   assessorType     String    @default("SELF")
-  /** LOW | MEDIUM | HIGH */
+  /**
+   * LOW | MEDIUM | HIGH
+   */
   confidence       String    @default("MEDIUM")
-  /** PRIVATE | SHAREABLE | METADATA_ONLY */
+  /**
+   * PRIVATE | SHAREABLE | METADATA_ONLY
+   */
   privacyLevel     String    @default("PRIVATE")
   note             String?
   archivedAt       DateTime?
@@ -1056,14 +1142,15 @@ model EvidenceRecord {
   mediated EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
   artifact EvidenceAttachment?     @relation(fields: [artifactId], references: [id], onDelete: SetNull)
 
-  diagnoses        BarrierDiagnosis[]
-  interventionsPre  InterventionPlan[] @relation("InterventionPre")
-  interventionsPost InterventionPlan[] @relation("InterventionPost")
-  retests           RetestSchedule[]   @relation("RetestParent")
-  completedRetests  RetestSchedule[]   @relation("RetestCompleted")
-  aiUsage           AIUsageRecord[]    @relation("AIUsageEvidence")
-  aiUsageBefore     AIUsageRecord[]    @relation("AIUsageBefore")
-  aiUsageAfter      AIUsageRecord[]    @relation("AIUsageAfter")
+  diagnoses         BarrierDiagnosis[]
+  interventionsPre  InterventionPlan[]       @relation("InterventionPre")
+  interventionsPost InterventionPlan[]       @relation("InterventionPost")
+  retests           RetestSchedule[]         @relation("RetestParent")
+  completedRetests  RetestSchedule[]         @relation("RetestCompleted")
+  aiUsage           AIUsageRecord[]          @relation("AIUsageEvidence")
+  aiUsageBefore     AIUsageRecord[]          @relation("AIUsageBefore")
+  aiUsageAfter      AIUsageRecord[]          @relation("AIUsageAfter")
+  vocabularyLinks   VocabularyEvidenceLink[]
 
   @@index([skill, evidenceType])
   @@index([parentEvidenceId])
@@ -1076,17 +1163,27 @@ model EvidenceRecord {
 // ── EV2 分项能力画像（每技能一行；不做四项平均，也不换算 CEFR 官方等级）
 model SkillProfile {
   id             String   @id @default(cuid())
-  /** LISTENING | READING | SPEAKING | WRITING */
+  /**
+   * LISTENING | READING | SPEAKING | WRITING
+   */
   skill          String   @unique
-  /** Pre-A1 | A1 | A2 | B1 | B2 | C1；null = 待评估 */
+  /**
+   * Pre-A1 | A1 | A2 | B1 | B2 | C1；null = 待评估
+   */
   direction      String?
-  /** LOW | MEDIUM | HIGH */
+  /**
+   * LOW | MEDIUM | HIGH
+   */
   confidence     String   @default("LOW")
-  /** JSON string[]：EvidenceRecord ID 列表（证据依据） */
+  /**
+   * JSON string[]：EvidenceRecord ID 列表（证据依据）
+   */
   evidenceBasis  String?
   lastAssessedAt String?
   reviewDueAt    String?
-  /** 本次证据不能说明什么（明确边界）。 */
+  /**
+   * 本次证据不能说明什么（明确边界）。
+   */
   doNotInfer     String?
   note           String?
   createdAt      DateTime @default(now())
@@ -1097,15 +1194,21 @@ model SkillProfile {
 model BarrierDiagnosis {
   id             String    @id @default(cuid())
   skill          String
-  /** 取值由 BARRIER_TYPES_BY_SKILL 约束（见 constants） */
+  /**
+   * 取值由 BARRIER_TYPES_BY_SKILL 约束（见 constants）
+   */
   barrierType    String
   evidenceId     String?
-  /** 样本位置：句子 / 段落 / 时间戳 / 题号 */
+  /**
+   * 样本位置：句子 / 段落 / 时间戳 / 题号
+   */
   evidenceAnchor String?
   impact         String
   confidence     String    @default("MEDIUM")
   selectedFocus  Boolean   @default(false)
-  /** ACTIVE | RESOLVED | SUPERSEDED */
+  /**
+   * ACTIVE | RESOLVED | SUPERSEDED
+   */
   status         String    @default("ACTIVE")
   cycleId        String?
   note           String?
@@ -1113,8 +1216,8 @@ model BarrierDiagnosis {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  evidence EvidenceRecord? @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
-  cycle    LearningCycle?   @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  evidence      EvidenceRecord?    @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
+  cycle         LearningCycle?     @relation(fields: [cycleId], references: [id], onDelete: SetNull)
   interventions InterventionPlan[]
 
   @@index([skill, selectedFocus])
@@ -1124,19 +1227,23 @@ model BarrierDiagnosis {
 
 // ── EV4 定向修复计划（一条主障碍 → 若干修复任务 + 成功标准 + 前后样本）
 model InterventionPlan {
-  id              String   @id @default(cuid())
-  barrierId       String
-  action          String
-  successCriteria String
-  /** A0–A4：修复时允许的支架级别；复测时必须撤除 */
-  scaffoldLevel   String   @default("A1")
-  estimatedMinutes Int     @default(15)
-  /** PLANNED | IN_PROGRESS | COMPLETED | ABANDONED */
-  status          String   @default("PLANNED")
-  preEvidenceId   String?
-  postEvidenceId  String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id               String   @id @default(cuid())
+  barrierId        String
+  action           String
+  successCriteria  String
+  /**
+   * A0–A4：修复时允许的支架级别；复测时必须撤除
+   */
+  scaffoldLevel    String   @default("A1")
+  estimatedMinutes Int      @default(15)
+  /**
+   * PLANNED | IN_PROGRESS | COMPLETED | ABANDONED
+   */
+  status           String   @default("PLANNED")
+  preEvidenceId    String?
+  postEvidenceId   String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   barrier      BarrierDiagnosis @relation(fields: [barrierId], references: [id], onDelete: Cascade)
   preEvidence  EvidenceRecord?  @relation("InterventionPre", fields: [preEvidenceId], references: [id], onDelete: SetNull)
@@ -1150,15 +1257,21 @@ model InterventionPlan {
 model RetestSchedule {
   id                  String    @id @default(cuid())
   parentEvidenceId    String
-  /** IMMEDIATE | DELAYED | APPLIED | TRANSFER */
+  /**
+   * IMMEDIATE | DELAYED | APPLIED | TRANSFER
+   */
   retestType          String
   dueDate             String
-  /** PENDING | DONE | SKIPPED | SUPERSEDED */
+  /**
+   * PENDING | DONE | SKIPPED | SUPERSEDED
+   */
   status              String    @default("PENDING")
   estMinutes          Int       @default(10)
   completedEvidenceId String?
   planTaskId          String?
-  /** 幂等键：parent + type + dueDate，重复生成返回已有行 */
+  /**
+   * 幂等键：parent + type + dueDate，重复生成返回已有行
+   */
   idempotencyKey      String    @unique
   note                String?
   completedAt         DateTime?
@@ -1182,11 +1295,17 @@ model LearningCycle {
   deliverable  String?
   startDate    String
   endDate      String
-  /** CALIBRATION | BUILD | DELIVER | COMPLETED | PAUSED */
+  /**
+   * CALIBRATION | BUILD | DELIVER | COMPLETED | PAUSED
+   */
   status       String    @default("CALIBRATION")
-  /** JSON string[]：基线证据 ID 列表 */
+  /**
+   * JSON string[]：基线证据 ID 列表
+   */
   baselineRefs String?
-  /** 中断恢复记录（客观原因 + 缩小后的下一步，不堆任务） */
+  /**
+   * 中断恢复记录（客观原因 + 缩小后的下一步，不堆任务）
+   */
   recoveryNote String?
   archivedAt   DateTime?
   createdAt    DateTime  @default(now())
@@ -1210,7 +1329,9 @@ model WeeklyFocus {
   feedbackText       String?
   transferEvidenceId String?
   nextDecision       String?
-  /** OPEN | REVIEWED */
+  /**
+   * OPEN | REVIEWED
+   */
   status             String   @default("OPEN")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -1229,14 +1350,20 @@ model AIUsageRecord {
   afterEvidenceId   String?
   toolName          String
   modelVersion      String?
-  /** A0 | A1 | A2 | A3 | A4 */
+  /**
+   * A0 | A1 | A2 | A3 | A4
+   */
   assistanceLevel   String
-  /** HINT | EXPLAIN | CORRECT | REWRITE | GENERATE | SCORE | TRANSLATE | OTHER */
+  /**
+   * HINT | EXPLAIN | CORRECT | REWRITE | GENERATE | SCORE | TRANSLATE | OTHER
+   */
   actionType        String
   purpose           String?
   inputRef          String?
   outputRef         String?
-  /** ADOPTED | PARTIAL | REJECTED */
+  /**
+   * ADOPTED | PARTIAL | REJECTED
+   */
   adoptedOrRejected String   @default("ADOPTED")
   userNote          String?
   createdAt         DateTime @default(now())
@@ -1252,30 +1379,46 @@ model AIUsageRecord {
 
 // ── EV9 方法论资料库（外部资源仅存元数据 + 链接 + 用户自己的笔记；不复制正文）
 model ResourceReference {
-  id            String    @id @default(cuid())
+  id            String   @id @default(cuid())
   title         String
   creator       String?
-  url           String    @unique
-  /** REPO | ARTICLE | TEMPLATE | GUIDE */
-  resourceType  String    @default("ARTICLE")
-  /** P0 | P1 | P2 */
-  priority      String    @default("P1")
-  /** 页面显示的更新时间（可获得时）；无法获得则为 null */
+  url           String   @unique
+  /**
+   * REPO | ARTICLE | TEMPLATE | GUIDE
+   */
+  resourceType  String   @default("ARTICLE")
+  /**
+   * P0 | P1 | P2
+   */
+  priority      String   @default("P1")
+  /**
+   * 页面显示的更新时间（可获得时）；无法获得则为 null
+   */
   sourceUpdated String?
   accessedAt    String?
-  /** 许可说明（如 CC BY-NC 4.0 正文 / MIT 站点代码） */
+  /**
+   * 许可说明（如 CC BY-NC 4.0 正文 / MIT 站点代码）
+   */
   licenseNote   String?
-  /** JSON string[]：适用阶段，如 ["A0_A2","A2_B1"] */
+  /**
+   * JSON string[]：适用阶段，如 ["A0_A2","A2_B1"]
+   */
   stageFit      String?
-  /** ACTIVE | ARCHIVED */
-  status        String    @default("ACTIVE")
-  /** 分类：入口 | 诊断 | 证据 | 复盘 | AI | 工具 */
+  /**
+   * ACTIVE | ARCHIVED
+   */
+  status        String   @default("ACTIVE")
+  /**
+   * 分类：入口 | 诊断 | 证据 | 复盘 | AI | 工具
+   */
   category      String?
-  /** 用户自己的摘要（不复制原文） */
+  /**
+   * 用户自己的摘要（不复制原文）
+   */
   summary       String?
-  sortOrder     Int       @default(0)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   readingLogs ResourceReadingLog[]
 
@@ -1287,7 +1430,9 @@ model ResourceReference {
 model ResourceReadingLog {
   id                String   @id @default(cuid())
   resourceId        String   @unique
-  /** NOT_STARTED | READING | SUMMARIZED | APPLIED | DONE */
+  /**
+   * NOT_STARTED | READING | SUMMARIZED | APPLIED | DONE
+   */
   status            String   @default("NOT_STARTED")
   personalSummary   String?
   plannedAction     String?
@@ -1308,4 +1453,404 @@ model AppMigration {
   checksum  String?
   appliedAt DateTime @default(now())
   note      String?
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.3 Vocabulary / TypeWords Integration（全部为加法；既有 VocabWord 保持不变）
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── V1 词汇来源（每个词表/教材/个人来源都要能追溯许可） ──
+model VocabularySource {
+  id         String    @id @default(cuid())
+  /**
+   * TEXTBOOK | EXAM | MATERIAL | MANUAL | IMPORT | LEGACY
+   */
+  sourceType String    @default("IMPORT")
+  title      String
+  edition    String?
+  license    String?
+  licenseUrl String?
+  url        String?
+  notes      String?
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  items       VocabularyItem[]
+  memberships VocabularyItemSource[]
+  decks       VocabularyDeck[]
+
+  @@index([sourceType])
+  @@index([archivedAt])
+}
+
+// ── V2 统一词条（lemma + POS + senseKey 才唯一；同形异义不合并） ──
+model VocabularyItem {
+  id               String    @id @default(cuid())
+  lemma            String
+  displayForm      String?
+  normalizedLemma  String
+  /**
+   * 空串 = 词性未知；不用 NULL，保证 SQLite 唯一约束可生效。
+   */
+  pos              String    @default("")
+  language         String    @default("en")
+  /**
+   * 同形异义的稳定区分键；默认 default。
+   */
+  senseKey         String    @default("default")
+  phoneticUk       String?
+  phoneticUs       String?
+  definitionZh     String?
+  definitionEn     String?
+  examplesJson     String?
+  collocationsJson String?
+  synonymsJson     String?
+  wordFamilyJson   String?
+  tagsJson         String?
+  sourceId         String
+  sourceRef        String?
+  license          String?
+  externalRefsJson String?
+  /**
+   * ACTIVE | ARCHIVED
+   */
+  status           String    @default("ACTIVE")
+  archivedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  source        VocabularySource           @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  memberships   VocabularyItemSource[]
+  deckItems     VocabularyDeckItem[]
+  mappings      ExternalWordMapping[]
+  assignments   VocabularyAssignmentItem[] @relation("AssignmentItems")
+  attempts      VocabularyAttempt[]
+  knowledge     VocabularyKnowledgeState[]
+  evidenceLinks VocabularyEvidenceLink[]
+
+  @@unique([language, normalizedLemma, pos, senseKey])
+  @@index([lemma])
+  @@index([normalizedLemma])
+  @@index([sourceId])
+  @@index([status])
+  @@index([archivedAt])
+}
+
+// ── V3 词条多来源归属（同一词条来自不同词书时保留全部来源） ──
+model VocabularyItemSource {
+  id        String   @id @default(cuid())
+  itemId    String
+  sourceId  String
+  sourceRef String   @default("")
+  note      String?
+  createdAt DateTime @default(now())
+
+  item   VocabularyItem   @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  source VocabularySource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+
+  @@unique([itemId, sourceId, sourceRef])
+  @@index([sourceId])
+}
+
+// ── V4 可分发 Deck ──
+model VocabularyDeck {
+  id             String    @id @default(cuid())
+  title          String
+  targetStage    String?
+  language       String    @default("en")
+  tagsJson       String?
+  version        Int       @default(1)
+  dailyNewTarget Int       @default(10)
+  reviewCap      Int       @default(40)
+  externalDeckId String?
+  lastSyncedAt   DateTime?
+  sourceId       String?
+  /**
+   * ACTIVE | ARCHIVED
+   */
+  status         String    @default("ACTIVE")
+  note           String?
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  source      VocabularySource?      @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  items       VocabularyDeckItem[]
+  assignments VocabularyAssignment[]
+  mappings    ExternalWordMapping[]
+
+  @@index([status])
+  @@index([targetStage])
+  @@index([archivedAt])
+}
+
+model VocabularyDeckItem {
+  id        String   @id @default(cuid())
+  deckId    String
+  itemId    String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  deck VocabularyDeck @relation(fields: [deckId], references: [id], onDelete: Cascade)
+  item VocabularyItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([deckId, itemId])
+  @@index([deckId, sortOrder])
+  @@index([itemId])
+}
+
+// ── V5 外部词条映射（映射不等于掌握；外部状态独立保存） ──
+model ExternalWordMapping {
+  id                 String    @id @default(cuid())
+  provider           String    @default("TYPEWORDS")
+  providerInstanceId String    @default("default")
+  externalWordId     String
+  itemId             String?
+  deckId             String?
+  /**
+   * 外部应用状态快照（NEW/LEARNING/WRONG/FAVORITE/MASTERED/DUE 等，原样字符串）
+   */
+  externalState      String?
+  externalStateJson  String?
+  lastSyncedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  item VocabularyItem? @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  deck VocabularyDeck? @relation(fields: [deckId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, providerInstanceId, externalWordId])
+  @@index([itemId])
+  @@index([deckId])
+}
+
+// ── V6 每日词汇任务（与 PlanTask 同事务关联；词汇时间与总预算共用） ──
+model VocabularyAssignment {
+  id                 String    @id @default(cuid())
+  assignmentDate     String
+  budgetMinutes      Int
+  reviewTarget       Int       @default(0)
+  newTarget          Int       @default(0)
+  estimatedMinutes   Int       @default(0)
+  /**
+   * PLANNED | SENT | IN_PROGRESS | DONE | SKIPPED
+   */
+  status             String    @default("PLANNED")
+  priorityPolicyJson String?
+  rationale          String?
+  deckId             String?
+  planTaskId         String?
+  externalDeckId     String?
+  sentAt             DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  deck     VocabularyDeck?             @relation(fields: [deckId], references: [id], onDelete: SetNull)
+  planTask PlanTask?                   @relation(fields: [planTaskId], references: [id], onDelete: SetNull)
+  items    VocabularyAssignmentItem[]
+  sessions VocabularyPracticeSession[]
+
+  @@unique([assignmentDate])
+  @@index([status])
+  @@index([planTaskId])
+}
+
+model VocabularyAssignmentItem {
+  id           String   @id @default(cuid())
+  assignmentId String
+  itemId       String
+  /**
+   * P0 | P1 | P2 | P3
+   */
+  priority     String   @default("P1")
+  /**
+   * REVIEW | NEW | WEAKNESS
+   */
+  kind         String   @default("NEW")
+  /**
+   * 建议模式（跟写/听写/自测/默写）
+   */
+  mode         String?
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  assignment VocabularyAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  item       VocabularyItem       @relation("AssignmentItems", fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, itemId])
+  @@index([assignmentId, sortOrder])
+  @@index([itemId])
+}
+
+// ── V7 外部练习会话（幂等键 provider + instance + externalSessionId） ──
+model VocabularyPracticeSession {
+  id                 String   @id @default(cuid())
+  provider           String   @default("TYPEWORDS")
+  providerInstanceId String   @default("default")
+  externalSessionId  String
+  deckExternalId     String?
+  /**
+   * 源码真实模式；不可用时为 UNAVAILABLE，不伪造 0
+   */
+  mode               String?
+  startedAt          DateTime
+  endedAt            DateTime
+  durationSeconds    Int
+  /**
+   * 有效秒数（扣除与既有学习记录重叠的区间）
+   */
+  effectiveSeconds   Int?
+  overlapAdjusted    Boolean  @default(false)
+  summaryJson        String?
+  correctCount       Int?
+  incorrectCount     Int?
+  /**
+   * SUMMARY_ONLY | ATTEMPT
+   */
+  granularity        String   @default("SUMMARY_ONLY")
+  sourceVersion      String?
+  payloadHash        String
+  importedAt         DateTime @default(now())
+  jobId              String?
+  assignmentId       String?
+  planTaskId         String?
+  studySessionId     String?
+  createdAt          DateTime @default(now())
+
+  job          IntegrationJob?       @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  assignment   VocabularyAssignment? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+  planTask     PlanTask?             @relation(fields: [planTaskId], references: [id], onDelete: SetNull)
+  studySession StudySession?         @relation(fields: [studySessionId], references: [id], onDelete: SetNull)
+  attempts     VocabularyAttempt[]
+
+  @@unique([provider, providerInstanceId, externalSessionId])
+  @@index([startedAt])
+  @@index([assignmentId])
+  @@index([planTaskId])
+  @@index([jobId])
+}
+
+// ── V8 逐词尝试（仅当源文件真实提供时写入；summary-only 会话没有 attempt） ──
+model VocabularyAttempt {
+  id                String    @id @default(cuid())
+  sessionId         String
+  externalAttemptId String
+  externalWordId    String?
+  itemId            String?
+  occurredAt        DateTime?
+  mode              String?
+  /**
+   * CORRECT | INCORRECT | SKIPPED
+   */
+  result            String
+  latencyMs         Int?
+  errorType         String?
+  typedInput        String?
+  hintUsed          Boolean?
+  createdAt         DateTime  @default(now())
+
+  session VocabularyPracticeSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  item    VocabularyItem?           @relation(fields: [itemId], references: [id], onDelete: SetNull)
+
+  @@unique([sessionId, externalAttemptId])
+  @@index([itemId])
+  @@index([result])
+}
+
+// ── V9 多维知识状态（每词每维度一行，绝不压成单一分数） ──
+model VocabularyKnowledgeState {
+  id             String   @id @default(cuid())
+  itemId         String
+  /**
+   * FORM_RECOGNITION | MEANING_RECOGNITION | MEANING_RECALL | SPELLING_RECALL | LISTENING_RECOGNITION | CONTEXT_UNDERSTANDING | PRODUCTIVE_USE
+   */
+  dimension      String
+  /**
+   * UNKNOWN | INTRODUCED | RECOGNIZED | RECALLED | CONTEXT_UNDERSTOOD | PRODUCTIVE_USE_VERIFIED
+   */
+  status         String   @default("UNKNOWN")
+  confidence     String   @default("LOW")
+  evidenceCount  Int      @default(0)
+  lastVerifiedAt String?
+  lastEvidenceId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  item VocabularyItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, dimension])
+  @@index([status])
+  @@index([lastVerifiedAt])
+}
+
+// ── V10 复用 EvidenceRecord 的词汇证据链接（不另建证据表） ──
+model VocabularyEvidenceLink {
+  id         String   @id @default(cuid())
+  evidenceId String   @unique
+  itemId     String
+  dimension  String
+  createdAt  DateTime @default(now())
+
+  evidence EvidenceRecord @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  item     VocabularyItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId, dimension])
+  @@index([evidenceId])
+}
+
+// ── V11 外部引擎连接（不保存第三方账号密码） ──
+model IntegrationConnection {
+  id               String    @id @default(cuid())
+  provider         String    @default("TYPEWORDS")
+  name             String
+  /**
+   * FILE | BRIDGE
+   */
+  mode             String    @default("FILE")
+  endpoint         String?
+  pinnedVersion    String?
+  capabilitiesJson String?
+  licenseNote      String?
+  enabled          Boolean   @default(true)
+  lastSyncAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  jobs IntegrationJob[]
+
+  @@unique([provider, name])
+  @@index([enabled])
+}
+
+// ── V12 同步任务与审计（原始 payload + hash + 错误报告；可重试） ──
+model IntegrationJob {
+  id           String    @id @default(cuid())
+  connectionId String?
+  provider     String    @default("TYPEWORDS")
+  /**
+   * EXPORT_DECK | IMPORT_BACKUP | IMPORT_SESSION
+   */
+  direction    String
+  /**
+   * queued | running | succeeded | partial | failed | retrying
+   */
+  status       String    @default("queued")
+  fileName     String?
+  payloadHash  String?
+  payloadText  String?
+  countsJson   String?
+  errorReport  String?
+  retryCount   Int       @default(0)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  connection IntegrationConnection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  sessions   VocabularyPracticeSession[]
+
+  @@index([direction, status])
+  @@index([payloadHash])
+  @@index([createdAt])
 }

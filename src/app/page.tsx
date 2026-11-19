@@ -15,6 +15,7 @@ import type { GateResult } from '@/lib/types';
 import { today } from '@/lib/date';
 import { getDashboard } from '@/lib/queries/dashboard';
 import { getGoalCards } from '@/lib/queries/goals';
+import { getVocabDashboardSummary } from '@/lib/queries/vocabIntegration';
 import { buttonClass } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -30,12 +31,17 @@ import { TodayCard } from '@/components/dashboard/TodayCard';
 import { TrendCard } from '@/components/dashboard/TrendCard';
 import { WeaknessCard } from '@/components/dashboard/WeaknessCard';
 import { WeekCard } from '@/components/dashboard/WeekCard';
+import { VocabEngineCard } from '@/components/dashboard/VocabEngineCard';
 
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const nowDate = today();
-  const [data, goals] = await Promise.all([getDashboard(nowDate), getGoalCards(nowDate)]);
+  const [data, goals, vocab] = await Promise.all([
+    getDashboard(nowDate),
+    getGoalCards(nowDate),
+    getVocabDashboardSummary(),
+  ]);
   const gateResult: GateResult | null = data.gate?.gate ?? null;
 
   return (
@@ -121,6 +127,11 @@ export default async function DashboardPage() {
         {/* ⑥ 语法与词汇 */}
         <section aria-label="区块⑥语法与词汇">
           <GrammarVocabCard data={data.grammarVocab} />
+        </section>
+
+        {/* ⑥b 词汇引擎（v2.3）：只给可核对数字，七维在词汇页分开看 */}
+        <section aria-label="区块⑥b词汇引擎">
+          <VocabEngineCard data={vocab} />
         </section>
 
         {/* ⑦ 待复习 */}

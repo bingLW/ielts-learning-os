@@ -8,6 +8,14 @@
  *    时刻一律用 ISO 字符串，业务日期一律用 `YYYY-MM-DD` 字符串。
  */
 
+import type {
+  VocabDimension,
+  VocabDimensionStatus,
+  VocabIntegrationMode,
+  VocabPracticeMode,
+  VocabSessionGranularity,
+} from './constants';
+
 // ───────────────────────── 枚举联合类型 ─────────────────────────
 
 /** EGIU（及语法点）三色判定结果。PENDING = 数据不足，不判定、不排程。 */
@@ -1695,4 +1703,183 @@ export interface LibraryEvidenceOptionDto {
   evidenceType: LearningEvidenceType;
   preview: string;
   businessDate: string;
+}
+
+// ───────────────────────── v2.3 TypeWords 词汇集成 ─────────────────────────
+
+export type VocabImportRowStatus = 'NEW' | 'DUPLICATE_IN_FILE' | 'EXISTS' | 'CONFLICT' | 'INVALID';
+
+export interface NormalizedVocabItem {
+  lemma: string;
+  normalizedLemma: string;
+  pos: string;
+  senseKey: string;
+  definitionZh: string | null;
+  definitionEn: string | null;
+  phoneticUk: string | null;
+  phoneticUs: string | null;
+  examples: string[];
+  collocations: string[];
+  tags: string[];
+  sourceRef: string | null;
+}
+
+export interface VocabImportRow {
+  line: number;
+  status: VocabImportRowStatus;
+  item: NormalizedVocabItem | null;
+  /** 原始行（已按表头映射），用于「查看原值」。 */
+  raw: Record<string, string>;
+  messages: string[];
+}
+
+export interface VocabImportPreview {
+  format: 'CSV' | 'TSV' | 'JSON';
+  headers: string[];
+  /** 表头 → 字段的自动映射；未映射的列在 UI 中灰显。 */
+  mapping: Record<string, string>;
+  total: number;
+  counts: Record<VocabImportRowStatus, number>;
+  rows: VocabImportRow[];
+  truncated: boolean;
+  blockingErrors: string[];
+}
+
+export interface VocabDeckDto {
+  id: string;
+  title: string;
+  targetStage: string | null;
+  version: number;
+  dailyNewTarget: number;
+  reviewCap: number;
+  status: string;
+  itemCount: number;
+  externalDeckId: string | null;
+  lastSyncedAt: string | null;
+  note: string | null;
+}
+
+export interface VocabLibraryStatsDto {
+  items: number;
+  decks: number;
+  dueReview: number;
+  introducedToday: number;
+  /** 七个维度各自「已验证」的词条数（不合并）。 */
+  dimensionVerified: Record<VocabDimension, number>;
+  lastImportAt: string | null;
+  lastSessionAt: string | null;
+}
+
+export interface VocabAssignmentItemDto {
+  itemId: string;
+  lemma: string;
+  pos: string;
+  definitionZh: string | null;
+  priority: TaskPriority;
+  kind: 'REVIEW' | 'NEW' | 'WEAKNESS';
+  mode: VocabPracticeMode | null;
+}
+
+export interface VocabAssignmentDto {
+  id: string;
+  assignmentDate: string;
+  budgetMinutes: number;
+  reviewTarget: number;
+  newTarget: number;
+  estimatedMinutes: number;
+  status: string;
+  rationale: string | null;
+  deckId: string | null;
+  deckTitle: string | null;
+  planTaskId: string | null;
+  externalDeckId: string | null;
+  sentAt: string | null;
+  items: VocabAssignmentItemDto[];
+  priorityPolicy: Record<string, unknown> | null;
+}
+
+export interface VocabPracticeSessionDto {
+  id: string;
+  externalSessionId: string;
+  mode: string | null;
+  granularity: VocabSessionGranularity;
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  effectiveSeconds: number;
+  overlapAdjusted: boolean;
+  correctCount: number | null;
+  incorrectCount: number | null;
+  studySessionId: string | null;
+  importedAt: string;
+}
+
+export interface VocabIntegrationJobDto {
+  id: string;
+  provider: string;
+  direction: string;
+  status: string;
+  fileName: string | null;
+  countsJson: string | null;
+  errorReport: string | null;
+  retryCount: number;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface VocabConnectionDto {
+  id: string;
+  provider: string;
+  name: string;
+  mode: VocabIntegrationMode;
+  pinnedVersion: string | null;
+  licenseNote: string | null;
+  enabled: boolean;
+  lastSyncAt: string | null;
+}
+
+export interface VocabWordDetailDto {
+  id: string;
+  lemma: string;
+  pos: string;
+  senseKey: string;
+  definitionZh: string | null;
+  definitionEn: string | null;
+  phoneticUk: string | null;
+  phoneticUs: string | null;
+  examples: string[];
+  collocations: string[];
+  tags: string[];
+  sourceTitle: string | null;
+  sourceType: string;
+  dimensions: Array<{
+    dimension: VocabDimension;
+    status: VocabDimensionStatus;
+    confidence: string;
+    evidenceCount: number;
+    lastVerifiedAt: string | null;
+  }>;
+  recentSessions: VocabPracticeSessionDto[];
+  recentEvidence: Array<{
+    id: string;
+    dimension: VocabDimension;
+    evidenceType: string;
+    level: string;
+    score: number | null;
+    businessDate: string;
+  }>;
+}
+
+export interface VocabAnalyticsDto {
+  range: { from: string; to: string };
+  dailyMinutes: Array<{ date: string; minutes: number; sessions: number }>;
+  modeMinutes: Array<{ mode: VocabPracticeMode; minutes: number }>;
+  newPerDay: Array<{ date: string; count: number }>;
+  dimensionCoverage: Array<{
+    dimension: VocabDimension;
+    verified: number;
+    introduced: number;
+  }>;
+  accuracyTrend: Array<{ date: string; correct: number; incorrect: number }>;
+  planningVsActual: Array<{ date: string; planned: number; actual: number }>;
 }

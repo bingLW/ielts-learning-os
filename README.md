@@ -589,3 +589,50 @@ npm run db:generate
 | L13 | 迁移只能靠升级前备份回滚，不提供反向迁移脚本 | 回滚前必须先停写入，避免丢失迁移后新增的数据 |
 | L14 | D84 迁移验证在 E2E 中用 fixture 日期 | 真实 84 天跨度需真实时间验证 |
 | L15 | 复测与计划融合只处理「未开始且未计时」的 DEFER 任务 | 已开始或已计时的任务不会被重排回收 |
+
+---
+
+## 14. v2.2 → v2.3 TypeWords 词汇引擎集成
+
+v2.3 在 v2.2 之上做**增量集成**：不重建、不换栈、不动 v2.1/v2.2 历史数据。
+TypeWords 以独立应用运行，OS 只通过文件交换读取其备份、生成兼容词库包。
+
+### 14.1 新增能力
+
+| 能力 | 入口 | 关键约束 |
+| --- | --- | --- |
+| 备份导入（TypeWords → OS） | `/vocabulary/sync` | 接受 `.zip`（自动取 `data.json`）或 `.json`；内置词典正文被对方裁剪，只导入统计 |
+| 词库导出（OS → TypeWords） | `/vocabulary/today` | 生成 `version:5 / dict v4 / setting v23` 兼容包；TypeWords 导入为整库覆盖 |
+| 词汇任务与预算 | `/vocabulary/today` | 按当日预算生成分配，重算只替换未开始的分配 |
+| 七维掌握与证据 | `/vocabulary/words/<id>` | 语境理解需 E2+、产出使用需 E4/E5；汇总会话不推进维度 |
+| 词汇延迟复测 | 词详情 / `/vocabulary/analytics` | 仅「回忆」及以上排期，隔日 / 7 / 30 天；到期由同维度新证据结清 |
+| 词汇仪表盘 | `/` 区块⑥b | 词条总量、到期未复习、复测到期、今日新词条 |
+
+数据格式、能力矩阵、许可证评估：`docs/11-v2.3-typewords-audit.md`。
+架构决策：`docs/12-v2.3-adr.md`。
+测试与验收：`docs/13-v2.3-test-report.md`。
+使用手册：`docs/14-v2.3-user-guide.md`。
+
+### 14.2 迁移（v2.2 → v2.3）
+
+```bash
+bash scripts/backup.sh                                          # 升级前一致性备份
+node scripts/migrations/v2.3.mjs --db prisma/dev.db --dry-run    # 只看 DDL
+node scripts/migrations/v2.3.mjs --db prisma/dev.db              # 正式迁移
+```
+
+- 纯加法：新增词汇域 12 表、集成 2 表，并把既有 `VocabWord` 幂等迁入 `VocabularyItem`；
+- 单事务、可重复执行，checksum 不一致时拒绝执行；
+- 写入 `AppMigration(version='v2.3')`。
+
+回滚：`bash scripts/restore.sh backups/<升级前备份>`，随后 `npm run db:generate`。
+
+### 14.3 v2.3 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L16 | TypeWords 导出裁剪内置词典正文 | 这类备份只能导入统计，词条需来自自定义词库 |
+| L17 | TypeWords 导入是整库覆盖 | OS 只生成文件，不自动写入；用户必须先备份 |
+| L18 | 备份无逐词结果 | 导入会话固定 `SUMMARY_ONLY`，不推进七维 |
+| L19 | 备份 ZIP 仅支持 store/deflate | ZIP64、加密包需先解压再选 `data.json` |
+| L20 | 练习统计只在会话结束/切换时落库 | 中途退出的进度在 `PracticeSaveWord` 缓存里，未必形成统计 |

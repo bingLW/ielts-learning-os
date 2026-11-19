@@ -196,3 +196,18 @@ export function splitAcrossMidnight(startedAtIso: string, minutes: number): DayS
 export function nowIso(now: Date = new Date()): string {
   return now.toISOString();
 }
+
+/**
+ * 时刻 → Asia/Singapore 墙上时间 `YYYY-MM-DD HH:mm`。
+ *
+ * DTO 里的时刻是 UTC ISO 字符串，直接截断会显示 UTC 时间（差 8 小时）；
+ * 展示层统一走这里，避免各页面各写一套。
+ */
+export function formatBusinessDateTime(iso: string): string {
+  const instant = new Date(iso);
+  if (Number.isNaN(instant.getTime())) return iso;
+  const shifted = new Date(instant.getTime() + TZ_OFFSET_MINUTES * MS_PER_MINUTE);
+  return `${shifted.getUTCFullYear()}-${pad2(shifted.getUTCMonth() + 1)}-${pad2(
+    shifted.getUTCDate(),
+  )} ${pad2(shifted.getUTCHours())}:${pad2(shifted.getUTCMinutes())}`;
+}
