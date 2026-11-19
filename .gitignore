@@ -1,0 +1,31 @@
+# 依赖与构建产物
+node_modules/
+.next/
+tsconfig.tsbuildinfo
+next-env.d.ts
+
+# 环境与本地数据（个人学习记录不上传）
+.env
+.env.*
+prisma/dev.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# 系统与工具杂项
+.DS_Store
+.workbuddy/
+*.log
+
+# SQLite 定期备份产物（默认在项目内；建议用 IELTS_BACKUP_DIR 指到外部物理位置）
+backups/
+
+# 恢复前自动生成的覆盖安全网，例如 prisma/dev.db.before-restore-20261109-090000
+*.db.before-restore-*
+
+# 备份 / 恢复过程中未发布成功的临时快照（含 .backup 中断留下的回滚日志）
+*.db.partial*
+*.db.restore-tmp-*
+*.db.vacuum
+.ielts-safety-*.db*
+.ielts-restore-*.db*

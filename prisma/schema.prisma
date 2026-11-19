@@ -1,0 +1,988 @@
+// IELTS Learning OS — Prisma schema（设计产物，可直接 `prisma db push`）
+// 目标版本：Prisma 6.x（不要升到 7：v7 强制 driver adapter + prisma.config.ts + ESM）
+// 约定：
+//   1. 业务日期一律 String "YYYY-MM-DD"（SQLite 无 DATE 类型；字符串字典序可比较可索引）
+//   2. 时刻一律 DateTime
+//   3. 枚举一律 String，取值由 src/lib/constants.ts + zod 约束（SQLite 不支持原生 enum）
+//   4. JSON 一律 String（SQLite 不支持标量数组），统一由 src/lib/json.ts 解析
+//   5. 派生值（accuracy/completionRate/netMinutes/overdueDays）不落库，一律读模型计算
+//
+// v2.0 增量（全部为加法，旧代码 + 新库可直接运行）：
+//   · 新增 8 表：LearningGoal / SkillAllocationProfile / GoalMilestone /
+//     SkillAssessment / IeltsAssessment / EnglishMediatedSession /
+//     LearningOutput / EvidenceAttachment
+//   · PlanTask / StudySession / StudyRecord 增加 track + primarySkill 快照
+//   · StudySession.taskId 改为可空（媒介学习不挂计划任务）
+//   · 三目标分别统计：CEFR 评估、IELTS 成绩、媒介学习里程碑物理分表，互不换算
+//
+// v2.1 增量（全部为加法 + 两个新状态值，旧数据不需要改写）：
+//   · 新增 4 表：DailyBudget / WeeklyTarget / WeeklyDayAllocation / PlanVersion，
+//     以及单行配置 PlannerSettings（id 恒为 1）
+//   · PlanTask 增加 priority / splittable / minChunkMinutes / planVersion /
+//     originalScheduledDate / rescheduleReason / deferReason / sourceKind
+//   · 任务状态新增 CANCELLED / DEFERRED（两者都不进入完成率失败分母）
+//   · UserProfile.dailyMinutes 降级为「v2.0 历史值」，不再作为 v2.1 预算来源：
+//     v2.1 预算一律走 DailyBudget → PlannerSettings.weekdayProfiles →
+//     PlannerSettings.defaultDailyMinutes（初始建议值 60，且标记为建议）
+//   · 「240 分钟是最低计划时长」的假设作废；15 分钟为应急维护模式
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── E1 单用户配置（固定 1 行，id 恒为 1）
+model UserProfile {
+  id                Int       @id @default(1)
+  targetBandOverall Float     @default(6.5)
+  targetBandListen  Float?
+  targetBandRead    Float?
+  targetBandWrite   Float?
+  targetBandSpeak   Float?
+  /**
+   * v2.0 历史字段。v2.1 起**不再**是每日预算来源（预算见 `DailyBudget` 与 `PlannerSettings`），
+   * 仅保留用于旧数据回读与设置页展示「v2.0 旧值」，避免静默把 240 当默认预算。
+   */
+  dailyMinutes      Int       @default(240)
+  timezone          String    @default("Asia/Singapore")
+  examDate          String?
+  weeklyReviewDow   Int       @default(0)
+  aiEnabled         Boolean   @default(false)
+  lastExportedAt    DateTime?
+
+  // ── v2.0 三目标全局默认 ──
+  /**
+   * 长期通用英语目标等级（展示用，非官方认证）。
+   */
+  cefrTarget        String @default("B2")
+  /**
+   * 英语媒介学习的默认学科；初始 French，可改。
+   */
+  mediatedSubject   String @default("French")
+  /**
+   * 媒介学习的起始强度档：PRE_A2 接触术语 | A2_B1 低强度试学 | B1_PLUS 系统化。
+   */
+  mediatedStartBand String @default("A2_B1")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ── E2 阶段（4 行，seed 写入）
+model Stage {
+  id          String   @id @default(cuid())
+  code        String   @unique // S0_PREP|S1_A0_A2|S2_A2_B1|S3_B1_IELTS
+  nameZh      String
+  estDaysMin  Int
+  estDaysMax  Int? // null = 「或更久」
+  status      String   @default("NOT_STARTED") // NOT_STARTED|ACTIVE|COMPLETED|SKIPPED
+  startedAt   String?
+  completedAt String?
+  sortOrder   Int      @default(0)
+  /**
+   * v2.0：阶段 → SOP v2 的 profile_code 映射（PREPARATION / A0_A2 / A2_B1 / B1_B2）。
+   * 不改 `code`，避免所有既有引用（constants / 测试 / 页面）全部返工。
+   */
+  profileCode String? // PREPARATION|A0_A2|A2_B1|B1_B2
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  acceptanceItems StageAcceptanceItem[]
+  planTasks       PlanTask[]
+  studyRecords    StudyRecord[]
+  egiuLessons     EgiuLesson[]
+  mistakes        Mistake[]
+  sentenceItems   SentenceAnalysis[]
+
+  @@index([status])
+  @@index([sortOrder])
+}
+
+// ── E3 阶段验收项（每阶段 7 行，seed 写入；定义型子表 → Cascade）
+model StageAcceptanceItem {
+  id            String   @id @default(cuid())
+  stageId       String
+  dimension     String // LISTENING|READING|SPEAKING|WRITING|GRAMMAR|VOCAB|SENTENCE
+  isRequired    Boolean  @default(true)
+  criterionText String // SOP 原文，只读
+  myResult      String?
+  evidence      String?
+  verdict       String   @default("PENDING") // PENDING|PASSED|FAILED
+  judgedAt      String?
+  sortOrder     Int      @default(0)
+  updatedAt     DateTime @updatedAt
+
+  stage Stage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+
+  @@unique([stageId, dimension])
+  @@index([stageId])
+}
+
+// ── E4 计划任务（含实时计时状态；计时以服务端时钟为准）
+model PlanTask {
+  id              String    @id @default(cuid())
+  stageId         String
+  planDate        String // YYYY-MM-DD
+  module          String // VOCAB_REVIEW|GRAMMAR|LISTENING|READING|SPEAKING|WRITING|SENTENCE|REVIEW_PLAN|EXTENSIVE|MEDIATED|BASELINE_LISTEN|BASELINE_READ|BASELINE_OUTPUT
+  skill           String // VOCAB|GRAMMAR|LISTENING|READING|SPEAKING|WRITING|SENTENCE|META|LISTENING_EXT|READING_EXT
+  plannedMinutes  Int
+  actualMinutes   Int       @default(0) // 快照，真值 = Σ StudySessionDaySplit
+  sortOrder       Int       @default(0)
+  status          String    @default("TODO") // TODO|IN_PROGRESS|DONE|PARTIAL|MISSED|CANCELLED|DEFERRED
+  statusChangedAt DateTime?
+  movedFromDate   String?
+  movedToDate     String?
+  movedCount      Int       @default(0)
+  resourceId      String?
+  note            String?
+
+  // ── v2.1 自适应计划 ──
+  /**
+   * 优先级：P0 到期/逾期复习、P1 当前阶段核心、P2 有证据的弱项/目标差距、P3 拓展。
+   * 取值固定 `P0`–`P3`（字符串，SQLite 无 enum）。
+   */
+  priority            String  @default("P1")
+  /** 是否允许分段执行（不可拆的完整模考/整篇写作必须为 false）。 */
+  splittable          Boolean @default(false)
+  /** 分段的最小块（分钟），低于它不生成碎片任务。 */
+  minChunkMinutes     Int     @default(5)
+  /** 生成该任务时的计划版本；重排时递增，历史版本行保留。 */
+  planVersion         Int     @default(1)
+  /** 首次被安排到的日期；顺延/重排后不变，用于追溯原始安排。 */
+  originalScheduledDate String?
+  /** 最近一次重排原因（预算变更 / P0 挤压 / 手动延后 …）。 */
+  rescheduleReason    String?
+  /** 进入 backlog 的原因（如「P0 超额，按风险分批」）。 */
+  deferReason         String?
+  /** 任务来源：REVIEW|CORE|WEAKNESS|EXTENDED|MANUAL|LEGACY（v2.0 迁移行 = LEGACY）。 */
+  sourceKind          String  @default("CORE")
+
+  // ── v2.0 三轨道 ──
+  /**
+   * 主轨道。任务必须归属一个主轨道；允许加标签，但不允许一条学习时长被重复计入总时长。
+   * GENERAL_ENGLISH | IELTS_PREPARATION | ENGLISH_MEDIATED_LEARNING
+   */
+  track        String @default("GENERAL_ENGLISH")
+  /**
+   * 四技能粒度 + 支持性模块。技能时间统计**只看这个字段**（同一任务只有一个主技能），
+   * 与 `skill`（模块粒度，含泛听/泛读/复盘）分离，避免两套口径互相污染。
+   * LISTENING | READING | SPEAKING | WRITING | FOUNDATION
+   */
+  primarySkill String @default("FOUNDATION")
+
+  timerStatus             String    @default("IDLE") // IDLE|RUNNING|PAUSED|STOPPED
+  timerStartedAt          DateTime?
+  timerAccumulatedSeconds Int       @default(0)
+  timerLastActiveAt       DateTime?
+  timerVersion            Int       @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  stage    Stage          @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  resource Resource?      @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  sessions StudySession[]
+  records  StudyRecord[]
+
+  @@index([planDate, sortOrder])
+  @@index([stageId])
+  @@index([status])
+  @@index([timerStatus])
+  @@index([resourceId])
+  @@index([track])
+  @@index([primarySkill])
+  @@index([planDate, priority])
+  @@index([planVersion])
+}
+
+// ── v2.1 B1 每日时间预算（同一日期只有一条当前有效预算）
+//
+// 「预算」是计划净学习时间的**上限**，既不是实际学习时间，也不是打卡要求。
+// 0 分钟 = 休息日 / 未安排学习日：不生成强制任务，也不计入完成率失败分母。
+model DailyBudget {
+  id                      String   @id @default(cuid())
+  date                    String   @unique // YYYY-MM-DD
+  /** 计划净学习分钟上限（休息日为 0）。 */
+  plannedAvailableMinutes Int      @default(0)
+  /** PRESET | CUSTOM | REST_DAY */
+  budgetType              String   @default("PRESET")
+  /** EMERGENCY|MINIMUM|LIGHT|LIGHT_STANDARD|STANDARD|FOCUSED|DEEP|EXTENDED|CUSTOM|REST */
+  tierCode                String?
+  isRestDay               Boolean  @default(false)
+  /** 首次安装的 60 分钟建议值必须标记为建议，不得冒充用户真实可用时间。 */
+  isInitialSuggestion     Boolean  @default(false)
+  /** USER | WEEKDAY_TEMPLATE | DEFAULT_SUGGESTION | MIGRATION */
+  source                  String   @default("USER")
+  note                    String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@index([date])
+  @@index([isRestDay])
+}
+
+// ── v2.1 B2 周总学习目标（每周一行，预算与实际分开统计）
+model WeeklyTarget {
+  id            String   @id @default(cuid())
+  weekStart     String   @unique // ISO 周周一 YYYY-MM-DD
+  targetMinutes Int
+  /** ACTIVE | ADJUSTED */
+  status        String   @default("ACTIVE")
+  /** 建议来源：USER | SUGGESTION_ACCEPTED。系统建议不得自动写入。 */
+  source        String   @default("USER")
+  note          String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  allocations WeeklyDayAllocation[]
+
+  @@index([weekStart])
+}
+
+// ── v2.1 B3 周内每日分配（可含休息日；不要求平均分配）
+model WeeklyDayAllocation {
+  id             String  @id @default(cuid())
+  weeklyTargetId String
+  date           String // YYYY-MM-DD
+  availableMinutes Int   @default(0)
+  isRestDay      Boolean @default(false)
+
+  weeklyTarget WeeklyTarget @relation(fields: [weeklyTargetId], references: [id], onDelete: Cascade)
+
+  @@unique([weeklyTargetId, date])
+  @@index([date])
+}
+
+// ── v2.1 B4 规划器全局配置（单行，id 恒为 1）
+model PlannerSettings {
+  id                  Int      @id @default(1)
+  /** 未配置任何日程时的**初始建议**每日分钟数（可编辑，不是强制默认）。 */
+  defaultDailyMinutes Int      @default(60)
+  /** 周日..周六 7 个值，JSON 数组；null/0 表示休息日。 */
+  weekdayProfiles     String   @default("[60,60,60,60,60,60,0]")
+  /** 任务最小时间粒度（分钟），低于此值不创建任务。 */
+  minTaskMinutes      Int      @default(5)
+  /** 周目标分钟数；null = 未设置。 */
+  weeklyTargetMinutes Int?
+  /** 优先级规则参数 JSON（P0 上限比例、核心最低保障比例等）。 */
+  priorityPolicy      String   @default("{\"p0CapRatio\":0.6,\"coreMinRatio\":0.3}")
+  /** 用户是否亲自保存过本配置。false = 仍是迁移写入的初始建议值，不得当作真实可用时间。 */
+  isUserConfirmed     Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ── v2.1 B5 计划版本（append-only；保存调整前后快照与幂等键）
+model PlanVersion {
+  id            String   @id @default(cuid())
+  planDate      String
+  version       Int
+  /** GENERATE | REPLAN | MANUAL_ADJUST */
+  changeSource  String
+  reason        String?
+  /** 本次生成/重排使用的有效预算分钟。 */
+  budgetMinutes Int      @default(0)
+  /** 变更发生时的当日已发生净学习分钟（用于校验「事实不被改写」）。 */
+  actualMinutesAtChange Int @default(0)
+  beforeSnapshot String? // JSON：变更前的任务快照
+  afterSnapshot  String? // JSON：变更后的任务快照
+  /** 同一生成请求的幂等键；重复请求返回已有结果，不重复建任务。 */
+  idempotencyKey String? @unique
+  createdAt     DateTime @default(now())
+
+  @@unique([planDate, version])
+  @@index([planDate])
+}
+
+// ── E5 计时段（append-only；一 task 可多段）
+//
+// v2.0 关键改动：`taskId` 由必填改为可空。
+// 原因：英语媒介学习允许不经过「计划任务」直接记录一次学习（SOP §7.2），
+// 但它仍必须落在这张表里，才能保证「总净时长 = Σ DaySplit」这条唯一口径不破。
+// 若为它另建带 duration 的表，然后汇总时再相加，就是双重计时。
+model StudySession {
+  id               String   @id @default(cuid())
+  taskId           String?
+  startedAt        DateTime
+  endedAt          DateTime
+  activeMinutes    Int
+  idleMinutes      Int      @default(0)
+  countRatio       Float    @default(0) // clamp(active/planned, 0, 1.5)
+  anomalyFlag      Boolean  @default(false)
+  anomalyReason    String?
+  terminatedReason String // COMPLETED|PAUSED|ABANDONED|MOVED|TIMEOUT
+  sessionDate      String // 占比最大的自然日
+
+  // ── v2.0：轨道与主技能快照（聚合不再必须 join task，task 可空时也能归集） ──
+  track      String  @default("GENERAL_ENGLISH")
+  /**
+   * LISTENING | READING | SPEAKING | WRITING | FOUNDATION
+   */
+  skill      String  @default("FOUNDATION")
+  /**
+   * 若本段来自英语媒介学习，指向那条记录（1:1 反向）。
+   */
+  mediatedId String?
+
+  createdAt DateTime @default(now())
+
+  task      PlanTask?               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  mediated  EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
+  daySplits StudySessionDaySplit[]
+
+  @@index([taskId])
+  @@index([sessionDate])
+  @@index([track])
+  @@index([skill])
+  @@index([mediatedId])
+}
+
+// 跨零点分钟占比拆分 → 保证「日净时长」不虚高（日净时长只从这张表求和）
+model StudySessionDaySplit {
+  id        String @id @default(cuid())
+  sessionId String
+  date      String
+  minutes   Int
+
+  session StudySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, date])
+  @@index([date])
+}
+
+// ── E6 学习记录（核心，软删除）
+model StudyRecord {
+  id               String  @id @default(cuid())
+  stageId          String
+  taskId           String?
+  recordDate       String
+  skill            String
+  resourceId       String?
+  chapter          String?
+  content          String
+  plannedMinutes   Int     @default(0)
+  actualMinutes    Int     @default(0)
+  status           String  @default("DONE")
+  totalQuestions   Int     @default(0)
+  correctQuestions Int     @default(0)
+  difficulty       String? // EASY|MEDIUM|HARD
+  outputText       String? // G2 可检查产出
+  problemText      String?
+  errorTypes       String? // JSON string[]
+  nextReviewDate   String?
+  ext              String? // JSON，分科扩展（听力6/阅读6/口语8/写作7）
+
+  // ── v2.0 三轨道 ──
+  track        String @default("GENERAL_ENGLISH")
+  /**
+   * 四技能粒度快照（LISTENING|READING|SPEAKING|WRITING|FOUNDATION）。
+   */
+  primarySkill String @default("FOUNDATION")
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  stage         Stage              @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  task          PlanTask?          @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  resource      Resource?          @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  mistakes      Mistake[]
+  sentenceItems SentenceAnalysis[]
+  revisions     RecordRevision[]
+  outputs       LearningOutput[]
+
+  @@index([recordDate])
+  @@index([skill, recordDate])
+  @@index([stageId])
+  @@index([archivedAt])
+  @@index([resourceId])
+  @@index([track])
+}
+
+// ── P1-03 字段级修订历史（append-only）
+model RecordRevision {
+  id          String   @id @default(cuid())
+  recordId    String
+  field       String
+  beforeValue String?
+  afterValue  String?
+  changedAt   DateTime @default(now())
+
+  record StudyRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([recordId, changedAt])
+}
+
+// ── E7 EGIU 单元（只存当前态；历史在 EgiuReview）
+model EgiuLesson {
+  id             String    @id @default(cuid())
+  stageId        String
+  resourceId     String?
+  book           String    @default("Essential Grammar in Use")
+  version        String?
+  unitNo         String
+  knowledgePoint String
+  currentColor   String    @default("PENDING") // PENDING|GREEN|YELLOW|RED（= 最近一次有效判定）
+  currentScore   Float?
+  currentReason  String?
+  learnedDate    String // D0，复习点起算日（补录时为 user 填的学习日）
+  greenStreak    Int       @default(0)
+  masteredAt     DateTime?
+  inLowFreqPool  Boolean   @default(false)
+  nextReviewDate String?
+  retestCount    Int       @default(0)
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  stage    Stage        @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  resource Resource?    @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  reviews  EgiuReview[]
+
+  @@index([stageId])
+  @@index([currentColor])
+  @@index([nextReviewDate])
+  @@index([resourceId, unitNo])
+}
+
+// ── E8 复测记录（append-only，禁止覆盖；UI 无 update/delete 入口）
+model EgiuReview {
+  id               String   @id @default(cuid())
+  lessonId         String
+  reviewDate       String
+  reviewStage      String // D0|D1|D3|D7|D14|D21|D30|MANUAL
+  totalQuestions   Int
+  correctQuestions Int
+  explainOk        Boolean
+  sentencesCount   Int
+  coreRuleOk       Boolean
+  judgedColor      String
+  judgeReason      String // 命中规则，UI 必须原样展示
+  judgeBranch      String // ZERO|OVERRIDE|FULL|LOW_VOLUME
+  score            Float? // 仅 LOW_VOLUME 分支的 S
+  errorBreakdown   String? // JSON {rule_unclear,memory_confusion,careless,vocab}
+  reviewTaskId     String?
+  createdAt        DateTime @default(now())
+
+  lesson EgiuLesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([lessonId, reviewDate])
+  @@index([reviewDate])
+}
+
+// ── E9 错题（软删除）
+model Mistake {
+  id                 String    @id @default(cuid())
+  stageId            String
+  sourceType         String // EGIU_REVIEW|STUDY_RECORD|MANUAL|VOCAB
+  sourceId           String?
+  studyRecordId      String?
+  originalQuestion   String
+  myAnswer           String?
+  correctAnswer      String
+  errorReason        String
+  knowledgePoint     String // 薄弱点聚合键
+  errorCategory      String // RULE_NOT_UNDERSTOOD|MEMORY_CONFUSION|VOCAB_UNKNOWN|WORD_ORDER|CARELESS|OTHER
+  ieltsErrorCategory String? // VOCAB|LOCATING|COMPREHENSION|ATTENTION|STRATEGY（仅 S3）
+  reviewCount        Int       @default(0)
+  lastReviewAt       String?
+  nextReviewAt       String?
+  isMastered         Boolean   @default(false)
+  archivedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  stage       Stage        @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  studyRecord StudyRecord? @relation(fields: [studyRecordId], references: [id], onDelete: SetNull)
+
+  @@index([stageId])
+  @@index([knowledgePoint])
+  @@index([errorCategory])
+  @@index([isMastered])
+  @@index([nextReviewAt])
+}
+
+// ── E10 统一复习调度（唯一入口，4 种 targetType 共用，禁止为各类型另建调度器）
+model ReviewTask {
+  id             String    @id @default(cuid())
+  targetType     String // EGIU_LESSON|MISTAKE|VOCAB_WORD|GRAMMAR_POINT
+  targetId       String
+  targetLabel    String // 冗余展示名，避免多态 join / N+1
+  knowledgePoint String?
+  intervalCode   String // D1|D3|D7|D14|D21|D30|MANUAL|LOW_FREQ_30
+  dueDate        String
+  status         String    @default("PENDING") // PENDING|DONE|SKIPPED|SUPERSEDED
+  estMinutes     Int       @default(5)
+  result         String? // PASS|FAIL（status=DONE 时必填）
+  completedAt    DateTime?
+  skippedReason  String?
+  supersededById String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([targetType, targetId, intervalCode, dueDate])
+  @@index([status, dueDate])
+  @@index([targetType, targetId])
+  @@index([dueDate])
+}
+
+// ── E11 词汇（软删除；三档掌握度不可合并统计）
+model VocabWord {
+  id              String    @id @default(cuid())
+  word            String    @unique
+  phonetic        String?
+  partOfSpeech    String?
+  meaningZh       String
+  meaningEn       String?
+  collocation     String?
+  exampleSentence String?
+  source          String    @default("MANUAL") // Oxford3000|MANUAL
+  learnedDate     String
+  mastery         String    @default("RECOGNIZE_ONLY") // RECOGNIZE_ONLY|COMPREHEND|ACTIVE_USE
+  lastReviewAt    String?
+  nextReviewAt    String?
+  isNew           Boolean   @default(true)
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  quizItems VocabQuizItem[]
+
+  @@index([learnedDate])
+  @@index([mastery])
+  @@index([archivedAt])
+  @@index([nextReviewAt])
+}
+
+// 随机抽测会话（append-only）
+model VocabQuiz {
+  id               String   @id @default(cuid())
+  quizDate         String
+  sampleSize       Int
+  weightedAccuracy Float? // Σ权重 / 词数；样本 0 → null
+  recommendation   String?
+  createdAt        DateTime @default(now())
+
+  items VocabQuizItem[]
+
+  @@index([quizDate])
+}
+
+model VocabQuizItem {
+  id         String  @id @default(cuid())
+  quizId     String
+  wordId     String?
+  word       String
+  selfRating String // RECOGNIZE_ONLY|COMPREHEND|ACTIVE_USE
+  weight     Float // 0.3 | 0.7 | 1.0
+
+  quiz    VocabQuiz  @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  wordRef VocabWord? @relation(fields: [wordId], references: [id], onDelete: SetNull)
+
+  @@index([quizId])
+}
+
+// ── E12 句子成分（component 与 pos 两个独立取值集，不可复用同一字段）
+model SentenceAnalysis {
+  id             String    @id @default(cuid())
+  stageId        String
+  sentenceEn     String
+  sentenceZh     String?
+  tokens         String // JSON [{text,component,pos}]
+  isCorrect      Boolean   @default(true)
+  errorReason    String? // isCorrect=false 时必填（应用层校验）
+  patternTag     String? // FIVE_PATTERNS|RELATIVE_CLAUSE|ADVERBIAL_CLAUSE|NON_FINITE|PASSIVE
+  sourceRecordId String?
+  sentenceDate   String
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  stage        Stage        @relation(fields: [stageId], references: [id], onDelete: Restrict)
+  sourceRecord StudyRecord? @relation(fields: [sourceRecordId], references: [id], onDelete: SetNull)
+
+  @@index([stageId])
+  @@index([sentenceDate])
+}
+
+// ── E13 周复盘（(isoYear, isoWeek) 唯一）
+model WeeklyReview {
+  id             String    @id @default(cuid())
+  isoYear        Int
+  isoWeek        Int
+  weekStart      String // 周一
+  weekEnd        String // 周日
+  metrics        String // JSON：13 项 {auto, override, overriddenAt}
+  isPartial      Boolean   @default(false)
+  top3Weaknesses String // JSON 固定 3 项 [{name,score,evidence,manual}]
+  reviewNote     String?
+  exportedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([isoYear, isoWeek])
+  @@index([weekStart])
+}
+
+// ── E14 资源库（8 类初始资源由 seed 写入；代码内禁止出现资源名枚举）
+model Resource {
+  id               String    @id @default(cuid())
+  name             String
+  subject          String // GRAMMAR|VOCAB|PRONUNCIATION|LISTENING|READING|SPEAKING|WRITING|EXAM
+  type             String // BOOK|WORDLIST|WEBSITE|AUDIO_SERIES|GRADED_READER|EXAM_PAPER
+  applicableStages String    @default("[\"S1\"]") // JSON string[]
+  version          String?
+  totalUnits       Int?
+  currentUnit      Int?
+  startDate        String?
+  finishDate       String?
+  url              String?
+  note             String?
+  isPrimary        Boolean   @default(false) // SOP：每项能力固定一个主材料
+  archivedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  planTasks    PlanTask[]
+  studyRecords StudyRecord[]
+  egiuLessons  EgiuLesson[]
+
+  @@index([subject])
+  @@index([archivedAt])
+}
+
+// ── 辅助：阶段流转日志（append-only，只增不删）
+model StageTransitionLog {
+  id               String   @id @default(cuid())
+  fromStageCode    String?
+  toStageCode      String
+  decidedAt        DateTime @default(now())
+  decidedBy        String // SYSTEM_SUGGESTED|USER
+  reason           String
+  evidenceSnapshot String? // JSON
+}
+
+// ── 辅助：当日总结
+model DailySummary {
+  id                    String   @id @default(cuid())
+  summaryDate           String   @unique
+  netMinutes            Int      @default(0)
+  completionRateByTime  Float?
+  completionRateByCount Float?
+  outputs               String? // JSON
+  issues                String? // JSON
+  draftText             String?
+  generatedAt           DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+// ── P1-07 AI 建议（与学习成绩物理分区，UI 强制展示 basis）
+model AiSuggestion {
+  id        String   @id @default(cuid())
+  scope     String // WEEKLY|WEAKNESS|PLAN
+  refKey    String?
+  status    String   @default("unavailable") // available|unavailable
+  title     String
+  body      String
+  basis     String? // 依据
+  provider  String?
+  createdAt DateTime @default(now())
+
+  @@index([scope, createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.0 三轨道模型
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// 三条轨道必须分别统计、分别验收，**不生成混合「总能力分」**。
+// CEFR 估计（SkillAssessment）、IELTS 成绩（IeltsAssessment）与媒介学习里程碑
+// （GoalMilestone + EnglishMediatedSession）物理分表存储，代码层面也不提供互相换算。
+
+// ── V1 学习目标（三类各一行：GENERAL_ENGLISH / IELTS / ENGLISH_MEDIATED_LEARNING）
+model LearningGoal {
+  id           String   @id @default(cuid())
+  /**
+   * GENERAL_ENGLISH | IELTS | ENGLISH_MEDIATED_LEARNING
+   */
+  goalType     String   @unique
+  name         String
+  /**
+   * 目标值：通用英语为 CEFR 等级（B2）；IELTS 为总分（6.5）；媒介学习为里程碑数或等级描述。
+   */
+  targetValue  String?
+  /**
+   * 雅思单项最低分（仅 IELTS 目标使用；其余为 null）。
+   */
+  minListening Float?
+  minReading   Float?
+  minWriting   Float?
+  minSpeaking  Float?
+  targetDate   String? // YYYY-MM-DD，可空
+  /**
+   * ACTIVE | ACHIEVED | PAUSED
+   */
+  status       String   @default("ACTIVE")
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  milestones GoalMilestone[]
+
+  @@index([status])
+  @@index([goalType])
+}
+
+// ── V2 四技能配比（阶段级，可追溯：改配置=插新行 + 旧行 isActive=false）
+model SkillAllocationProfile {
+  id            String   @id @default(cuid())
+  /**
+   * PREPARATION | A0_A2 | A2_B1 | B1_B2 | IELTS_INTENSIVE
+   */
+  profileCode   String
+  /**
+   * GENERAL_ENGLISH | IELTS_PREPARATION（IELTS_INTENSIVE 专用）
+   */
+  track         String   @default("GENERAL_ENGLISH")
+  listeningPct  Int
+  readingPct    Int
+  speakingPct   Int
+  writingPct    Int
+  effectiveFrom String // YYYY-MM-DD
+  isActive      Boolean  @default(true)
+  /**
+   * 变更原因（审计要求：权重修改必须留痕）。
+   */
+  changeReason  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([profileCode, isActive])
+  @@index([track, isActive])
+}
+
+// ── V3 目标里程碑（每个目标自己的，不与其他目标共享完成状态）
+model GoalMilestone {
+  id            String    @id @default(cuid())
+  goalId        String
+  /**
+   * 稳定编码，用于去重与幂等 seed（如 GE_A2_EXIT / IELTS_BAND_6_5 / MEDIATED_FRENCH_BASICS）
+   */
+  milestoneCode String
+  title         String
+  description   String?
+  /**
+   * 目标阈值（数字或等级文本，展示用）。
+   */
+  target        String?
+  /**
+   * PENDING | ACHIEVED | FAILED
+   */
+  status        String    @default("PENDING")
+  completedAt   DateTime?
+  /**
+   * 证据 ID 列表（JSON string[]，指向 SkillAssessment / IeltsAssessment / EnglishMediatedSession / LearningOutput）。
+   */
+  evidenceIds   String?
+  sortOrder     Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  goal LearningGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@unique([goalId, milestoneCode])
+  @@index([goalId, status])
+}
+
+// ── V4 CEFR 能力评估（按技能独立；学习时长不得推断等级）
+model SkillAssessment {
+  id             String   @id @default(cuid())
+  /**
+   * LISTENING | READING | SPEAKING | WRITING
+   */
+  skill          String
+  /**
+   * 估计等级：A1|A2|B1|B2|C1（个人能力估计，**不是官方认证**）。
+   */
+  cefrLevel      String
+  /**
+   * SELF | TEST | EXTERNAL | AI_ESTIMATE
+   */
+  assessmentType String
+  /**
+   * 分数或量表描述（自由文本，便于填「雅思听力 6.0」「教师反馈 B1+」）。
+   */
+  score          String?
+  assessDate     String // YYYY-MM-DD
+  /**
+   * SELF | TEACHER | EXAM | AI | OTHER
+   */
+  assessor       String   @default("SELF")
+  /**
+   * 1..5 置信度（样本量/来源可靠性）。
+   */
+  confidence     Int      @default(3)
+  evidenceId     String?
+  note           String?
+  createdAt      DateTime @default(now())
+
+  @@index([skill, assessDate])
+  @@index([cefrLevel])
+  @@index([assessmentType])
+}
+
+// ── V5 IELTS 成绩（正式考试与模考同表，靠 testType 区分；**不参与 CEFR 计算**）
+model IeltsAssessment {
+  id            String   @id @default(cuid())
+  testDate      String // YYYY-MM-DD
+  /**
+   * OFFICIAL（正式考试）| MOCK（模考）| PRACTICE（单项练习）
+   */
+  testType      String
+  overallBand   Float
+  listeningBand Float?
+  readingBand   Float?
+  writingBand   Float?
+  speakingBand  Float?
+  /**
+   * 来源：Cambridge IELTS 19 Test 2 / BC 官方 / 机构模考 …
+   */
+  source        String?
+  notes         String?
+  createdAt     DateTime @default(now())
+
+  @@index([testDate])
+  @@index([testType])
+}
+
+// ── V6 英语媒介学习记录（通过英语学法语等新知识）
+//
+// 定位：这是**跨技能应用**，不是第五项语言技能。
+// `primarySkill` 必须是四项之一；时长落在 `StudySession`（同一条时长只计一次），
+// 本表的 `durationMinutes` 只是「这条记录声称的时长」，与 session 交叉校验，
+// **绝不参与任何总量求和**。
+model EnglishMediatedSession {
+  id                    String   @id @default(cuid())
+  sessionDate           String // YYYY-MM-DD
+  /**
+   * 所学学科，初始 French，可扩展为任意主题。
+   */
+  subject               String   @default("French")
+  /**
+   * 具体主题：French present tense / French articles …
+   */
+  topic                 String
+  /**
+   * 英文材料标题与链接（课程/视频/教材）。
+   */
+  sourceTitle           String?
+  sourceUrl             String?
+  /**
+   * COURSE | VIDEO | TEXTBOOK | ARTICLE | PODCAST | OTHER
+   */
+  sourceType            String   @default("COURSE")
+  /**
+   * 四技能之一：本段学习主要锻炼哪项语言技能。
+   */
+  primarySkill          String
+  /**
+   * 记录的时长（分钟）；真值以 StudySession 为准，本字段用于表内自洽校验。
+   */
+  durationMinutes       Int
+  /**
+   * 材料语言难度自评：A2 | B1 | B2 | C1
+   */
+  languageLevel         String?
+  /**
+   * 理解情况：FULL（能说出主旨与例子）| PARTIAL（需字幕/翻译）| LOW（无法理解）
+   */
+  understanding         String
+  /**
+   * 翻译依赖：NONE | SUBTITLE_EN | ZH_ASSIST | HEAVY_ZH
+   */
+  translationDependency String
+  /**
+   * 英文笔记（正文）。
+   */
+  notesEn               String?
+  /**
+   * 英文摘要（80–120 词级别的产出）。
+   */
+  summaryEn             String?
+  /**
+   * 提出的问题（英文）。
+   */
+  questionsEn           String?
+  /**
+   * A2_B1 试学 / B1_PLUS 系统化 —— 用于判断阶段强度是否达标。
+   */
+  intensity             String   @default("A2_B1")
+  note                  String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  sessions StudySession[]
+  outputs  LearningOutput[]
+
+  @@index([sessionDate])
+  @@index([subject])
+  @@index([primarySkill])
+  @@index([understanding])
+  @@index([translationDependency])
+}
+
+// ── V7 学习产出（英文笔记/摘要/问题/录音/写作；可挂 record 或 mediated session）
+model LearningOutput {
+  id           String   @id @default(cuid())
+  /**
+   * 二选一挂载（应用层校验至少一个非空）。
+   */
+  recordId     String?
+  mediatedId   String?
+  /**
+   * NOTE_EN | SUMMARY_EN | QUESTION_EN | ESSAY | RECORDING | MINDMAP
+   */
+  outputType   String
+  /**
+   * 正文（文本类产出）；文件类产出走 `uri`。
+   */
+  content      String?
+  uri          String?
+  /**
+   * DRAFT | REVIEWED | ACCEPTED
+   */
+  reviewStatus String   @default("DRAFT")
+  createdAt    DateTime @default(now())
+
+  record   StudyRecord?            @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  mediated EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: Cascade)
+
+  @@index([recordId])
+  @@index([mediatedId])
+  @@index([outputType])
+}
+
+// ── V8 证据附件（录音/写作/评分单/课程材料的元数据；不存二进制）
+model EvidenceAttachment {
+  id           String   @id @default(cuid())
+  fileUri      String
+  mimeType     String?
+  /**
+   * RECORDING | WRITING | SCORE_SHEET | COURSE_MATERIAL | SCREENSHOT | OTHER
+   */
+  evidenceType String
+  /**
+   * 多态挂载：SKILL_ASSESSMENT | IELTS_ASSESSMENT | MEDIATED_SESSION | STUDY_RECORD | GOAL_MILESTONE
+   */
+  linkedEntity String
+  linkedId     String
+  note         String?
+  createdAt    DateTime @default(now())
+
+  @@index([linkedEntity, linkedId])
+  @@index([evidenceType])
+}

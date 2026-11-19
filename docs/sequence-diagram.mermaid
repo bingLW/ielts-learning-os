@@ -1,0 +1,22 @@
+sequenceDiagram
+  participant U as 用户(JudgeForm)
+  participant A as submitEgiuReviewAction
+  participant DB as prisma (tx)
+  participant D as domain/egiu + domain/schedule
+  participant R as revalidatePath
+  U->>A: submitEgiuReview({lessonId,total,correct,explainOK,sentences,coreRuleOK,reviewStage})
+  A->>A: zod safeParse → 失败返回 {ok:false,code:'VALIDATION'}
+  A->>DB: $transaction
+  DB->>DB: create EgiuReview (append-only)
+  A->>D: judgeEgiuColor(input)
+  D-->>A: {ok:true,color,reason,branch}
+  A->>DB: update EgiuLesson.currentColor/currentReason/retestCount+1
+  A->>D: generateReviewPoints({d0:lesson.learnedDate,color,existing,today})
+  D-->>A: PlannedPoint[]
+  A->>DB: createMany ReviewTask (唯一键去重)
+  A->>D: shouldMarkMastered(reviews)
+  D-->>A: {mastered:false}
+  A->>DB: commit
+  A->>R: revalidatePath('/', '/grammar', '/grammar/[id]', '/mistakes')
+  A-->>U: {ok:true,data:{color,reason,createdPoints,nextReviewDate}}
+  U->>U: 用返回的 reason 直接渲染"为什么是黄灯"

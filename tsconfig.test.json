@@ -1,0 +1,10 @@
+{
+  "//": "单独给测试文件做类型检查。根 tsconfig 把 __tests__ 排除了（避免 next build 去检查测试），代价是测试里的类型错误永远不会暴露——本文件补上这一环。",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules"]
+}

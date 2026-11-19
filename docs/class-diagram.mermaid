@@ -1,0 +1,176 @@
+classDiagram
+  class UserProfile {
+    +int id
+    +float targetBandOverall
+    +int dailyMinutes
+    +string timezone
+    +int weeklyReviewDow
+  }
+  class Stage {
+    +string id
+    +string code
+    +string nameZh
+    +int estDaysMin
+    +int estDaysMax
+    +string status
+    +string startedAt
+  }
+  class StageAcceptanceItem {
+    +string id
+    +string dimension
+    +bool isRequired
+    +string myResult
+    +string evidence
+    +string verdict
+    +string judgedAt
+  }
+  class PlanTask {
+    +string id
+    +string planDate
+    +string module
+    +string skill
+    +int plannedMinutes
+    +string status
+    +string timerStatus
+    +int timerVersion
+    +startTimer(expectedVersion)
+    +pauseTimer(expectedVersion)
+  }
+  class StudySession {
+    +string id
+    +datetime startedAt
+    +datetime endedAt
+    +int activeMinutes
+    +float countRatio
+    +bool anomalyFlag
+  }
+  class StudySessionDaySplit {
+    +string date
+    +int minutes
+  }
+  class StudyRecord {
+    +string id
+    +string recordDate
+    +string skill
+    +int totalQuestions
+    +int correctQuestions
+    +string outputText
+    +string ext
+    +datetime archivedAt
+  }
+  class RecordRevision {
+    +string field
+    +string beforeValue
+    +string afterValue
+  }
+  class EgiuLesson {
+    +string id
+    +string unitNo
+    +string knowledgePoint
+    +string currentColor
+    +string learnedDate
+    +datetime masteredAt
+    +string nextReviewDate
+  }
+  class EgiuReview {
+    +string reviewDate
+    +string reviewStage
+    +int totalQuestions
+    +int correctQuestions
+    +bool explainOk
+    +int sentencesCount
+    +bool coreRuleOk
+    +string judgedColor
+    +string judgeReason
+  }
+  class Mistake {
+    +string id
+    +string errorCategory
+    +string knowledgePoint
+    +int reviewCount
+    +string nextReviewAt
+    +bool isMastered
+  }
+  class ReviewTask {
+    +string targetType
+    +string targetId
+    +string intervalCode
+    +string dueDate
+    +string status
+    +string result
+  }
+  class VocabWord {
+    +string word
+    +string mastery
+    +string learnedDate
+    +string nextReviewAt
+  }
+  class VocabQuiz {
+    +string quizDate
+    +int sampleSize
+    +float weightedAccuracy
+  }
+  class VocabQuizItem {
+    +string selfRating
+    +float weight
+  }
+  class SentenceAnalysis {
+    +string sentenceEn
+    +string tokens
+    +bool isCorrect
+    +string patternTag
+  }
+  class Resource {
+    +string name
+    +string subject
+    +string type
+    +int totalUnits
+    +int currentUnit
+    +bool isPrimary
+  }
+  class WeeklyReview {
+    +int isoYear
+    +int isoWeek
+    +string metrics
+    +string top3Weaknesses
+  }
+  class StageTransitionLog {
+    +string fromStageCode
+    +string toStageCode
+    +string decidedBy
+    +string reason
+  }
+  class DailySummary {
+    +string summaryDate
+    +int netMinutes
+  }
+  class AiSuggestion {
+    +string scope
+    +string status
+    +string basis
+  }
+
+  Stage "1" --> "7" StageAcceptanceItem : 验收清单
+  Stage "1" --> "*" PlanTask : 计划
+  Stage "1" --> "*" StudyRecord : 记录
+  Stage "1" --> "*" EgiuLesson : 语法单元
+  Stage "1" --> "*" Mistake : 错题
+  Stage "1" --> "*" SentenceAnalysis : 句子
+  Resource "0..1" --> "*" PlanTask : 被引用
+  Resource "0..1" --> "*" StudyRecord : 被引用
+  Resource "0..1" --> "*" EgiuLesson : 教材
+  PlanTask "1" --> "*" StudySession : 计时段
+  StudySession "1" --> "*" StudySessionDaySplit : 跨零点拆分
+  PlanTask "1" --> "*" StudyRecord : 产出记录
+  StudyRecord "1" --> "*" RecordRevision : 修订历史
+  StudyRecord "1" --> "*" Mistake : 生成错题
+  StudyRecord "1" --> "*" SentenceAnalysis : 来源
+  EgiuLesson "1" --> "*" EgiuReview : 复测(append-only)
+  EgiuReview "1" --> "*" Mistake : 生成错题
+  ReviewTask ..> EgiuLesson : targetType=EGIU_LESSON
+  ReviewTask ..> Mistake : targetType=MISTAKE
+  ReviewTask ..> VocabWord : targetType=VOCAB_WORD
+  VocabQuiz "1" --> "*" VocabQuizItem : 抽测明细
+  VocabWord "0..1" --> "*" VocabQuizItem : 被抽测
+  WeeklyReview ..> Stage : 聚合口径
+  StageTransitionLog ..> Stage : 流转记录

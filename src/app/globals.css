@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * 设计令牌：三色与语义色只在这里定义一次。
+ * 三色（GREEN/YELLOW/RED）同时具备「文字 + 图标 + 边框」，不依赖颜色单独传达状态。
+ */
+:root {
+  --color-green: #15803d;
+  --color-yellow: #b45309;
+  --color-red: #b91c1c;
+  --color-pending: #6b7280;
+  --color-ink: #0f172a;
+  --color-ink-muted: #52606d;
+  --color-surface: #ffffff;
+  --color-surface-alt: #f6f8fb;
+  --color-line: #dfe5ec;
+  --color-brand: #1d4ed8;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background: var(--color-surface-alt);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字统一使用等宽字形，表格对齐更稳 */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 全键盘可操作：focus 必须可见（对比度满足 ≥3:1） */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 隐藏滚动条但保留滚动能力（移动端横向图表） */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 打印：隐藏导航与操作按钮，只留数据 */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff;
+  }
+  main {
+    padding: 0 !important;
+  }
+}

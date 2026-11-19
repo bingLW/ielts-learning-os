@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  IELTS Learning OS —— macOS launchd LaunchAgent 备份模板（仅供参考，不自动安装）
+  安装前把 __PROJECT_DIR__ 全部替换成项目根目录的绝对路径，详见 README §11.6。
+
+  定时方式二选一：默认每天 09:00（StartCalendarInterval）。
+  若改用固定间隔，请删除 StartCalendarInterval 整个 dict，换成
+  StartInterval 键与整数 86400（单位秒，即每 24 小时一次）。
+
+  注意：脚本内部已显式设置 PATH=/usr/bin:/bin:/usr/sbin:/sbin，
+  这里再设一次 EnvironmentVariables.PATH 只是双保险（launchd 默认 PATH 极窄）。
+  日志文件放在 backups/ 下，加载本 plist 前请先手动创建该目录，
+  否则 launchd 在打开 StandardOutPath / StandardErrorPath 时会失败。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ielts-learning-os.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__PROJECT_DIR__/scripts/backup.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_DIR__</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>IELTS_BACKUP_DIR</key>
+        <string>__PROJECT_DIR__/backups</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__PROJECT_DIR__/backups/backup-launchd.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_DIR__/backups/backup-launchd.stderr.log</string>
+</dict>
+</plist>

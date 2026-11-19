@@ -1,0 +1,33 @@
+graph TD
+  subgraph UI["表现层 · Server Component 优先"]
+    P["src/app/**/page.tsx<br/>11 个一级路由"]
+    C["客户端组件<br/>表单/计时器/图表/拖拽"]
+  end
+  subgraph ACT["写入层 · Server Actions"]
+    A["src/lib/actions/*.ts<br/>use server + zod 校验<br/>返回 ActionResult"]
+  end
+  subgraph QRY["读取层"]
+    Q["src/lib/queries/*.ts<br/>只读聚合，返回已算好的 DTO"]
+  end
+  subgraph DOM["领域层 · 纯函数，零 IO"]
+    D["src/lib/domain/*.ts<br/>判定/调度/聚合/排序/门禁"]
+  end
+  subgraph INFRA["基础设施"]
+    Z["src/lib/schema/*.ts<br/>zod 双向复用"]
+    K["src/lib/constants.ts<br/>阈值单一来源"]
+    T["src/lib/date.ts<br/>唯一日期入口"]
+    DB["src/lib/prisma.ts<br/>globalThis 单例"]
+  end
+  P --> Q
+  P --> C
+  C -->|useTransition| A
+  C --> Z
+  A --> Z
+  A --> D
+  A --> DB
+  Q --> D
+  Q --> DB
+  D --> K
+  D --> T
+  Z --> K
+  A -->|revalidatePath| P
