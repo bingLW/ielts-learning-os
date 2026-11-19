@@ -78,6 +78,7 @@ function emptyAllocation(): Record<ModuleId, number> {
     BASELINE_LISTEN: 0,
     BASELINE_READ: 0,
     BASELINE_OUTPUT: 0,
+    EVIDENCE_RETEST: 0,
   };
 }
 

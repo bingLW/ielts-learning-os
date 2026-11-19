@@ -16,7 +16,7 @@ import {
   type ResourceSubject,
 } from '@/lib/constants';
 import { addDays, diffDays, today, weekRange } from '@/lib/date';
-import type { AdaptivePlanInput } from '@/lib/domain/adaptivePlan';
+import type { AdaptivePlanInput, DueRetestInput } from '@/lib/domain/adaptivePlan';
 import { checkAllocation } from '@/lib/domain/allocation';
 import { prisma } from '@/lib/prisma';
 import type { AllocationSkill, ModuleId, SkillAllocation, StageCode } from '@/lib/types';
@@ -104,6 +104,43 @@ export async function getDueReviewLoad(nowDate: string = today()): Promise<DueRe
     maxOverdueDays = Math.max(maxOverdueDays, diffDays(row.dueDate, nowDate));
   }
   return { estMinutes, count: rows.length, maxOverdueDays };
+}
+
+/**
+ * 到期技能型证据复测（v2.2），只取尚未关联计划任务的 PENDING 排期。
+ *
+ * 已关联 `planTaskId` 的复测说明它已经被某份计划占过时间，不能重复计入预算；
+ * 关联在生成/重排事务内写入，因此这里按 `planTaskId = null` 过滤即可。
+ *
+ * 重排场景例外：关联到「本次会被 DEFER 的未开始任务」上的复测，
+ * 事务内会解除关联，所以必须在计算剩余预算时就把它们算回来，
+ * 否则复测既没排进新计划、又被解除了关联，等于当天凭空消失。
+ */
+export async function getDueRetestLoad(
+  planDate: string,
+  includePlanTaskIds: string[] = [],
+): Promise<DueRetestInput | null> {
+  const rows = await prisma.retestSchedule.findMany({
+    where: {
+      status: 'PENDING',
+      dueDate: { lte: planDate },
+      ...(includePlanTaskIds.length > 0
+        ? { OR: [{ planTaskId: null }, { planTaskId: { in: includePlanTaskIds } }] }
+        : { planTaskId: null }),
+    },
+    orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
+    select: { id: true, estMinutes: true, dueDate: true },
+  });
+  if (rows.length === 0) return null;
+
+  let maxOverdueDays = 0;
+  for (const row of rows) {
+    maxOverdueDays = Math.max(maxOverdueDays, diffDays(row.dueDate, planDate));
+  }
+  return {
+    items: rows.map((row) => ({ id: row.id, minutes: Math.max(0, row.estMinutes) })),
+    maxOverdueDays,
+  };
 }
 
 /**
@@ -209,21 +246,25 @@ export type PlanEngineContext = Omit<AdaptivePlanInput, 'budgetMinutes' | 'isRes
 export async function loadPlanEngineContext(
   planDate: string,
   stage: { id: string; code: string; profileCode: string | null },
+  /** 重排专用：这些任务即将被 DEFER，挂在其上的复测要重新计入预算。 */
+  retestPlanTaskIdsToRelease: string[] = [],
 ): Promise<PlanEngineContext> {
-  const [allocation, dueReviews, weakSkills, settings, doneBaselines] = await Promise.all([
-    activeAllocationFor(stage.profileCode),
-    getDueReviewLoad(planDate),
-    getWeakSkills(planDate),
-    prisma.plannerSettings.findUnique({ where: { id: 1 } }),
-    // S0 的基线诊断每项只做一次：已完成的不再排
-    stage.code === 'S0_PREP'
-      ? prisma.planTask.findMany({
-          where: { stageId: stage.id, module: { in: S0_MODULES }, status: 'DONE' },
-          select: { module: true },
-          distinct: ['module'],
-        })
-      : Promise.resolve([]),
-  ]);
+  const [allocation, dueReviews, dueRetests, weakSkills, settings, doneBaselines] =
+    await Promise.all([
+      activeAllocationFor(stage.profileCode),
+      getDueReviewLoad(planDate),
+      getDueRetestLoad(planDate, retestPlanTaskIdsToRelease),
+      getWeakSkills(planDate),
+      prisma.plannerSettings.findUnique({ where: { id: 1 } }),
+      // S0 的基线诊断每项只做一次：已完成的不再排
+      stage.code === 'S0_PREP'
+        ? prisma.planTask.findMany({
+            where: { stageId: stage.id, module: { in: S0_MODULES }, status: 'DONE' },
+            select: { module: true },
+            distinct: ['module'],
+          })
+        : Promise.resolve([]),
+    ]);
   const weeklyGap = await getWeeklySkillGap(planDate, allocation);
 
   let p0CapRatio = P0_CAP_RATIO;
@@ -244,6 +285,7 @@ export async function loadPlanEngineContext(
     stageCode: stage.code as StageCode,
     allocation,
     dueReviews,
+    dueRetests,
     weakSkills,
     weeklyGap,
     minTaskMinutes: settings?.minTaskMinutes ?? MIN_TASK_MINUTES,

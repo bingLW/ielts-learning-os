@@ -406,3 +406,86 @@ describe('预算利用口径', () => {
     expect(budgetUsageRatio(45, 90)).toBeCloseTo(0.5, 5);
   });
 });
+
+describe('v2.2 复测计入预算', () => {
+  it('到期复测先于复习预留，并标记 RETEST 来源', () => {
+    const plan = mustPlan(
+      makeInput({
+        budgetMinutes: 60,
+        tierCode: 'LIGHT_STANDARD',
+        dueReviews: { estMinutes: 20, count: 4, maxOverdueDays: 2 },
+        dueRetests: { items: [{ id: 'r1', minutes: 10 }], maxOverdueDays: 3 },
+      }),
+    );
+    const retest = plan.items.find((item) => item.module === 'EVIDENCE_RETEST');
+    expect(retest).toBeDefined();
+    expect(retest!.minutes).toBe(10);
+    expect(retest!.priority).toBe('P0');
+    expect(retest!.sourceKind).toBe('RETEST');
+    expect(retest!.primarySkill).toBe('FOUNDATION');
+    expect(plan.scheduledRetestIds).toEqual(['r1']);
+    // 复测是第一个任务：约定时间点优先
+    expect(plan.items[0].module).toBe('EVIDENCE_RETEST');
+    expect(plan.totalPlannedMinutes).toBeLessThanOrEqual(60);
+    expect(plan.warnings.some((line) => line.includes('证据复测'))).toBe(true);
+  });
+
+  it('放不下的复测整项顺延，不拆半截，进 backlog 说明原因', () => {
+    const plan = mustPlan(
+      makeInput({
+        budgetMinutes: 15,
+        tierCode: 'EMERGENCY',
+        dueRetests: { items: [{ id: 'big', minutes: 25 }], maxOverdueDays: 1 },
+      }),
+    );
+    expect(plan.items.some((item) => item.module === 'EVIDENCE_RETEST')).toBe(false);
+    expect(plan.scheduledRetestIds).toEqual([]);
+    const backlog = plan.backlog.find((entry) => entry.kind === 'RETEST');
+    expect(backlog).toBeDefined();
+    expect(backlog!.minutes).toBe(25);
+    expect(plan.totalPlannedMinutes).toBeLessThanOrEqual(15);
+  });
+
+  it('多条复测按时长逐条尝试：放得下的排、放不下的顺延', () => {
+    const items = [
+      { id: 'short', minutes: 10 },
+      { id: 'long', minutes: 20 },
+    ];
+    const tight = mustPlan(makeInput({ budgetMinutes: 25, tierCode: 'CUSTOM', dueRetests: { items } }));
+    expect(tight.scheduledRetestIds).toEqual(['short']);
+    expect(tight.backlog.find((entry) => entry.kind === 'RETEST')!.minutes).toBe(20);
+
+    const roomy = mustPlan(makeInput({ budgetMinutes: 30, tierCode: 'MINIMUM', dueRetests: { items } }));
+    expect(roomy.scheduledRetestIds).toEqual(['short', 'long']);
+    expect(roomy.backlog.some((entry) => entry.kind === 'RETEST')).toBe(false);
+  });
+
+  it('复测计入预算上限：任意预算下 Σ 计划分钟 <= 预算', () => {
+    for (const budget of [5, 15, 30, 45, 60, 90, 120, 180, 240]) {
+      const plan = mustPlan(
+        makeInput({
+          budgetMinutes: budget,
+          tierCode: 'CUSTOM',
+          dueRetests: { items: [{ id: 'a', minutes: 10 }, { id: 'b', minutes: 30 }] },
+        }),
+      );
+      expect(plan.totalPlannedMinutes, `预算 ${budget}`).toBeLessThanOrEqual(budget);
+      const retestMinutes = plan.items
+        .filter((item) => item.module === 'EVIDENCE_RETEST')
+        .reduce((sum, item) => sum + item.minutes, 0);
+      expect(retestMinutes).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('休息日不排复测，但保留在 backlog', () => {
+    const plan = mustPlan(
+      makeInput({
+        budgetMinutes: 0,
+        isRestDay: true,
+        dueRetests: { items: [{ id: 'r1', minutes: 10 }] },
+      }),
+    );
+    expect(plan.items).toHaveLength(0);
+    expect(plan.backlog.find((entry) => entry.kind === 'RETEST')!.minutes).toBe(10);
+  });
+});

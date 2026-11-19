@@ -45,7 +45,8 @@ export type ModuleId =
   | 'BASELINE_LISTEN'
   | 'BASELINE_READ'
   | 'BASELINE_OUTPUT'
-  | 'P0_REVIEW';
+  | 'P0_REVIEW'
+  | 'EVIDENCE_RETEST';
 
 /** 科目 ID。泛听泛读单独成桶，不并入精听/精读。 */
 export type SkillId =
@@ -99,7 +100,15 @@ export type TaskStatus =
 export type TaskPriority = 'P0' | 'P1' | 'P2' | 'P3';
 
 /** 任务来源分类（决定它在调度器里的默认优先级）。 */
-export type TaskSourceKind = 'REVIEW' | 'CORE' | 'WEAKNESS' | 'EXTENDED' | 'MANUAL' | 'LEGACY';
+export type TaskSourceKind =
+  | 'REVIEW'
+  | 'CORE'
+  | 'WEAKNESS'
+  | 'EXTENDED'
+  | 'MANUAL'
+  | 'LEGACY'
+  /** v2.2：由到期 RetestSchedule 排入的证据复测；生成引擎只预留时间，不产出技能池任务。 */
+  | 'RETEST';
 
 /** 每日预算的创建来源。 */
 export type BudgetSource = 'USER' | 'WEEKDAY_TEMPLATE' | 'DEFAULT_SUGGESTION' | 'MIGRATION';
@@ -349,6 +358,8 @@ export interface MediatedSessionDto {
   /** 真实落库 session 的净分钟（与 `durationMinutes` 交叉校验）。 */
   actualNetMinutes: number;
   outputCount: number;
+  /** 由本记录生成的证据 ID（一条记录最多一条，未生成时为 null）。 */
+  evidenceId: string | null;
 }
 
 /** 能力评估行 DTO。 */
@@ -597,6 +608,8 @@ export interface PlanPageDto {
   budget: PlanBudgetDto;
   /** 当日计划版本数（>1 表示重排过）。 */
   planVersionCount: number;
+  /** v2.2：当日计划中计入预算的证据复测分钟（module = EVIDENCE_RETEST）。 */
+  retestPlannedMinutes: number;
 }
 
 export interface DailySummaryDto {
@@ -1344,3 +1357,342 @@ export interface AiSuggestionDto {
   createdAt: string;
 }
 
+
+// ───────────────────────── v2.2 证据域 ─────────────────────────
+
+/** 证据覆盖的技能。GRAMMAR / VOCABULARY 用于知识型证据（不参与四技能迁移链）。 */
+export type EvidenceSkill =
+  | 'LISTENING'
+  | 'READING'
+  | 'SPEAKING'
+  | 'WRITING'
+  | 'GRAMMAR'
+  | 'VOCABULARY';
+
+/** 学习证据类型（E0–E5 生命周期）。注意与 v2.0 附件类型 `EvidenceType` 区分。 */
+export type LearningEvidenceType =
+  | 'BASELINE'
+  | 'ASSISTED'
+  | 'IMMEDIATE_RETEST'
+  | 'DELAYED_RETEST'
+  | 'APPLIED_TASK'
+  | 'TRANSFER';
+
+/** 证据记录级别：Quick 日常 / Standard 阶段关键 / Full 完整证据链。 */
+export type EvidenceLevel = 'QUICK' | 'STANDARD' | 'FULL';
+
+/** AI / 工具辅助级别。A4 绝不计为学习者独立产出。 */
+export type AssistanceLevel = 'A0' | 'A1' | 'A2' | 'A3' | 'A4';
+
+export type EvidenceConfidence = 'LOW' | 'MEDIUM' | 'HIGH';
+export type AssessorType = 'SELF' | 'TEACHER' | 'PEER' | 'AI' | 'EXAM';
+export type EvidencePrivacy = 'PRIVATE' | 'SHAREABLE' | 'METADATA_ONLY';
+
+/** 分项能力方向（仅方向性描述，不是官方等级）。 */
+export type SkillDirection = 'Pre-A1' | 'A1' | 'A2' | 'B1' | 'B2' | 'C1';
+
+export type RetestType = 'IMMEDIATE' | 'DELAYED' | 'APPLIED' | 'TRANSFER';
+export type RetestStatus = 'PENDING' | 'DONE' | 'SKIPPED' | 'SUPERSEDED';
+
+export type CycleStatus = 'CALIBRATION' | 'BUILD' | 'DELIVER' | 'COMPLETED' | 'PAUSED';
+export type CyclePhaseCode = 'CALIBRATION' | 'BUILD' | 'DELIVER';
+export type WeeklyFocusStatus = 'OPEN' | 'REVIEWED';
+
+export type AIActionType =
+  | 'HINT'
+  | 'EXPLAIN'
+  | 'CORRECT'
+  | 'REWRITE'
+  | 'GENERATE'
+  | 'SCORE'
+  | 'TRANSLATE'
+  | 'OTHER';
+export type AdoptionStatus = 'ADOPTED' | 'PARTIAL' | 'REJECTED';
+
+export type ResourcePriority = 'P0' | 'P1' | 'P2';
+export type ResourceReadStatus =
+  | 'NOT_STARTED'
+  | 'READING'
+  | 'SUMMARIZED'
+  | 'APPLIED'
+  | 'DONE';
+
+/** 方法论资料库分类（六类，与阅读阶段无关）。 */
+export type MethodologyCategory = '入口' | '诊断' | '证据' | '复盘' | 'AI' | '工具';
+
+/** 任务/条件快照（证据的「在什么条件下完成」）。 */
+export interface EvidenceConditionDto {
+  prompt: string | null;
+  materialSource: string | null;
+  timeLimitMinutes: number | null;
+  toolsAllowed: string[];
+  audience: string | null;
+  environment: string | null;
+}
+
+/** 证据列表行。 */
+export interface EvidenceRowDto {
+  id: string;
+  skill: EvidenceSkill;
+  evidenceType: LearningEvidenceType;
+  level: EvidenceLevel;
+  parentEvidenceId: string | null;
+  chainRootId: string | null;
+  outputPreview: string | null;
+  score: number | null;
+  scoreReason: string | null;
+  evidenceAnchor: string | null;
+  assistanceLevel: AssistanceLevel;
+  independent: boolean;
+  assessorType: AssessorType;
+  confidence: EvidenceConfidence;
+  hasArtifact: boolean;
+  childCount: number;
+  archivedAt: string | null;
+  createdAt: string;
+}
+
+/** 证据详情（含条件、维度、附件与链关系）。 */
+export interface EvidenceDetailDto extends EvidenceRowDto {
+  condition: EvidenceConditionDto | null;
+  dimensions: Record<string, number> | null;
+  outputText: string | null;
+  privacyLevel: EvidencePrivacy;
+  note: string | null;
+  artifact: {
+    id: string;
+    fileUri: string;
+    mimeType: string | null;
+    evidenceType: string;
+    privacyLevel: EvidencePrivacy;
+    consentStatus: string;
+  } | null;
+  parent: { id: string; evidenceType: LearningEvidenceType; createdAt: string } | null;
+  children: Array<{ id: string; evidenceType: LearningEvidenceType; createdAt: string }>;
+}
+
+/** 分项能力画像。 */
+export interface SkillProfileDto {
+  skill: 'LISTENING' | 'READING' | 'SPEAKING' | 'WRITING';
+  direction: SkillDirection | null;
+  confidence: EvidenceConfidence;
+  evidenceBasis: string[];
+  lastAssessedAt: string | null;
+  reviewDueAt: string | null;
+  doNotInfer: string | null;
+  note: string | null;
+}
+
+/** 画像页可选作「证据依据」的记录。 */
+export interface ProfileEvidenceOptionDto {
+  id: string;
+  evidenceType: LearningEvidenceType;
+  assistanceLevel: AssistanceLevel;
+  independent: boolean;
+  preview: string | null;
+  createdAt: string;
+}
+
+/** 画像页单技能视图：画像 + 证据规模 + 系统建议 + 可选依据。 */
+export interface SkillProfileRowDto extends SkillProfileDto {
+  evidenceCount: number;
+  independentCount: number;
+  suggestion: EvidenceConfidence;
+  suggestionReasons: string[];
+  gaps: string[];
+  options: ProfileEvidenceOptionDto[];
+}
+
+export type BarrierStatus = 'ACTIVE' | 'RESOLVED' | 'SUPERSEDED';
+
+export type InterventionStatus = 'PLANNED' | 'RUNNING' | 'DONE' | 'ABANDONED';
+
+/** 障碍诊断可选作「原始样本」的活动证据。 */
+export interface BarrierEvidenceOptionDto {
+  id: string;
+  evidenceType: LearningEvidenceType;
+  independent: boolean;
+  preview: string | null;
+  createdAt: string;
+}
+
+export interface BarrierDiagnosisDto {
+  id: string;
+  skill: EvidenceSkill;
+  barrierType: string;
+  barrierLabel: string;
+  evidenceId: string | null;
+  evidenceAnchor: string | null;
+  impact: string;
+  confidence: EvidenceConfidence;
+  selectedFocus: boolean;
+  status: BarrierStatus;
+  note: string | null;
+  archivedAt: string | null;
+  interventions: InterventionPlanDto[];
+  createdAt: string;
+}
+
+export interface InterventionPlanDto {
+  id: string;
+  barrierId: string;
+  action: string;
+  successCriteria: string;
+  scaffoldLevel: AssistanceLevel;
+  estimatedMinutes: number;
+  status: InterventionStatus;
+  preEvidenceId: string | null;
+  postEvidenceId: string | null;
+}
+
+/** 诊断页按技能分组的证据选项。 */
+export type BarrierEvidenceOptionsBySkill = Partial<
+  Record<EvidenceSkill, BarrierEvidenceOptionDto[]>
+>;
+
+export interface RetestQueueItemDto {
+  id: string;
+  parentEvidenceId: string;
+  parentType: LearningEvidenceType;
+  parentSkill: EvidenceSkill;
+  parentPreview: string | null;
+  parentCreatedAt: string;
+  retestType: RetestType;
+  dueDate: string;
+  estMinutes: number;
+  status: RetestStatus;
+  planTaskId: string | null;
+  completedEvidenceId: string | null;
+  overdueDays: number;
+}
+
+/** 从 /retest 进入证据录入时，用于锁定技能/阶段并回填完成状态。 */
+export interface RetestCompletionContextDto {
+  scheduleId: string;
+  skill: EvidenceSkill;
+  retestType: RetestType;
+  evidenceType: LearningEvidenceType;
+  level: EvidenceLevel;
+  dueDate: string;
+  estMinutes: number;
+  parentPreview: string | null;
+  parentPrompt: string | null;
+  parentMaterialSource: string | null;
+}
+
+export interface LearningCycleDto {
+  id: string;
+  title: string;
+  goal: string;
+  deliverable: string | null;
+  startDate: string;
+  endDate: string;
+  status: CycleStatus;
+  phase: CyclePhaseCode | null;
+  dayIndex: number;
+  baselineRefs: string[];
+  recoveryNote: string | null;
+  weeklyFocus: WeeklyFocusDto[];
+}
+
+export interface WeeklyFocusDto {
+  id: string;
+  cycleId: string;
+  weekIndex: number;
+  weekStart: string;
+  focusQuestion: string;
+  inputText: string | null;
+  outputText: string | null;
+  feedbackText: string | null;
+  transferEvidenceId: string | null;
+  nextDecision: string | null;
+  status: WeeklyFocusStatus;
+}
+
+/** 周主问题的六个槽位（复盘必须填满前五项中的四个文本槽，迁移证据可后补）。 */
+export type WeeklyFocusSlot =
+  | 'question'
+  | 'input'
+  | 'output'
+  | 'feedback'
+  | 'transfer'
+  | 'decision';
+
+/** 可挂到周复盘的证据选项（用于迁移证据下拉）。 */
+export interface CycleEvidenceOptionDto {
+  id: string;
+  skill: EvidenceSkill;
+  evidenceType: LearningEvidenceType;
+  level: EvidenceLevel;
+  preview: string | null;
+  businessDate: string;
+}
+
+/** /cycle 页面一次性取数结果。 */
+export interface CycleBoardDto {
+  active: LearningCycleDto | null;
+  history: LearningCycleDto[];
+  evidenceOptions: CycleEvidenceOptionDto[];
+  /** 当前周期内「可比较输出」数量（Quick 不计）。 */
+  comparableOutputs: number;
+  /** 当前周期内实际应用 + 迁移验证证据数量。 */
+  deliveryEvidence: number;
+}
+
+export interface AiUsageRecordDto {
+  id: string;
+  toolName: string;
+  modelVersion: string | null;
+  assistanceLevel: AssistanceLevel;
+  actionType: AIActionType;
+  purpose: string | null;
+  inputRef: string | null;
+  outputRef: string | null;
+  adoptedOrRejected: AdoptionStatus;
+  independent: boolean;
+  evidenceId: string | null;
+  evidenceSkill: EvidenceSkill | null;
+  evidencePreview: string | null;
+  createdAt: string;
+}
+
+/** Coach 协议步骤：先自己尝试，再诊断、提示、练习、复测、回到证据。 */
+export type CoachStep =
+  | 'ATTEMPT'
+  | 'DIAGNOSE'
+  | 'HINT'
+  | 'PRACTICE'
+  | 'RETEST'
+  | 'EVIDENCE';
+
+export interface MethodologyResourceDto {
+  id: string;
+  title: string;
+  creator: string | null;
+  url: string;
+  resourceType: string;
+  priority: ResourcePriority;
+  sourceUpdated: string | null;
+  accessedAt: string | null;
+  licenseNote: string | null;
+  stageFit: string[];
+  status: string;
+  category: string | null;
+  summary: string | null;
+  reading: {
+    status: ResourceReadStatus;
+    personalSummary: string | null;
+    plannedAction: string | null;
+    appliedEvidenceId: string | null;
+    lastReadAt: string | null;
+  } | null;
+}
+
+/** 资料库「已实践」可关联的证据选项（只读下拉用）。 */
+export interface LibraryEvidenceOptionDto {
+  id: string;
+  skill: EvidenceSkill;
+  evidenceType: LearningEvidenceType;
+  preview: string;
+  businessDate: string;
+}

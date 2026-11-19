@@ -7,16 +7,28 @@
 
 import type {
   AcceptanceDimension,
+  AdoptionStatus,
+  AIActionType,
   AiScope,
   AiStatus,
   AllocationSkill,
   AssessmentType,
   AssessorKind,
+  AssessorType,
+  AssistanceLevel,
+  BarrierStatus,
   BatchReviewOp,
   CefrLevel,
+  CoachStep,
+  CyclePhaseCode,
+  CycleStatus,
   ErrorCategory,
   EgiuColor,
+  EvidenceConfidence,
   EvidenceEntity,
+  EvidenceLevel,
+  EvidencePrivacy,
+  EvidenceSkill,
   EvidenceType,
   GlobalFilterKey,
   GoalStatus,
@@ -25,10 +37,12 @@ import type {
   IeltsTestType,
   IntervalCode,
   JudgeBranch,
+  LearningEvidenceType,
   LearningTrack,
   MasteryLevel,
   MediatedIntensity,
   MediatedUnderstanding,
+  MethodologyCategory,
   MilestoneStatus,
   MistakeSource,
   ModuleId,
@@ -36,11 +50,16 @@ import type {
   PartOfSpeech,
   PatternTag,
   PrimarySkill,
+  ResourcePriority,
+  ResourceReadStatus,
+  RetestStatus,
+  RetestType,
   ReviewStageCode,
   ReviewStatus,
   SentenceComponent,
   SkillAllocation,
   SkillBucket,
+  SkillDirection,
   SkillId,
   StageCode,
   StageProfileCode,
@@ -50,6 +69,8 @@ import type {
   TransitionDecidedBy,
   TranslationDependency,
   Verdict,
+  WeeklyFocusSlot,
+  WeeklyFocusStatus,
   WeeklyMetricKey,
 } from './types';
 
@@ -144,6 +165,11 @@ export const MODULE_META: Record<ModuleId, ModuleMeta> = {
    * **不进入四技能分母**（primarySkill = FOUNDATION）。
    */
   P0_REVIEW: { labelZh: '到期复习', skill: 'META', defaultMinutes: 0, canExtend: true },
+  /**
+   * v2.2 技能型证据复测块（由 `RetestSchedule` 到期排入，生成引擎不产出本模块）。
+   * 计入 FOUNDATION 桶，**不进入四技能分母**，避免复测把技能训练量虚高。
+   */
+  EVIDENCE_RETEST: { labelZh: '证据复测', skill: 'META', defaultMinutes: 10, canExtend: true },
 };
 
 export const SKILL_IDS: SkillId[] = [
@@ -534,6 +560,7 @@ export const TASK_SOURCE_KINDS = [
   'EXTENDED',
   'MANUAL',
   'LEGACY',
+  'RETEST',
 ] as const;
 
 export const TASK_SOURCE_LABEL_ZH: Record<string, string> = {
@@ -543,6 +570,7 @@ export const TASK_SOURCE_LABEL_ZH: Record<string, string> = {
   EXTENDED: '拓展',
   MANUAL: '手工',
   LEGACY: 'v2.0 历史',
+  RETEST: '证据复测',
 };
 
 // ───────────────────────── EGIU 三色判定 ─────────────────────────
@@ -989,9 +1017,16 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/mistakes', labelZh: '错题与复习', shortZh: '复习', group: 'DIAGNOSE' },
   { href: '/vocabulary', labelZh: '词汇', shortZh: '词汇', group: 'DIAGNOSE' },
   { href: '/sentences', labelZh: '句子成分', shortZh: '句子', group: 'DIAGNOSE' },
+  { href: '/evidence', labelZh: 'Evidence Center', shortZh: '证据', group: 'DIAGNOSE' },
+  { href: '/profile', labelZh: '能力画像', shortZh: '画像', group: 'DIAGNOSE' },
+  { href: '/diagnosis', labelZh: '障碍诊断', shortZh: '障碍', group: 'DIAGNOSE' },
+  { href: '/retest', labelZh: '复测与迁移', shortZh: '复测', group: 'DIAGNOSE' },
+  { href: '/coach', labelZh: 'AI Coach 日志', shortZh: 'AI', group: 'DIAGNOSE' },
   { href: '/general', labelZh: '通用英语', shortZh: '通用', group: 'TRACKS' },
   { href: '/ielts', labelZh: '雅思工作区', shortZh: '雅思', group: 'TRACKS' },
   { href: '/mediated', labelZh: '英语媒介学习', shortZh: '媒介', group: 'TRACKS' },
+  { href: '/cycle', labelZh: '90 天周期', shortZh: '周期', group: 'ANALYZE' },
+  { href: '/library', labelZh: '方法论资料库', shortZh: '方法', group: 'ANALYZE' },
   { href: '/resources', labelZh: '资源库', shortZh: '资源', group: 'ANALYZE' },
   { href: '/weekly', labelZh: '每周复盘', shortZh: '复盘', group: 'ANALYZE' },
   { href: '/stages', labelZh: '阶段与验收', shortZh: '验收', group: 'ANALYZE' },
@@ -1569,6 +1604,7 @@ export const MODULE_TO_PRIMARY: Record<ModuleId, PrimarySkill> = {
   BASELINE_LISTEN: 'LISTENING',
   BASELINE_READ: 'READING',
   BASELINE_OUTPUT: 'SPEAKING',
+  EVIDENCE_RETEST: 'FOUNDATION',
 };
 
 /** 模块 → 轨道（`MEDIATED` 恒属媒介轨道）。 */
@@ -1587,6 +1623,7 @@ export const MODULE_TRACK: Record<ModuleId, LearningTrack> = {
   BASELINE_LISTEN: 'GENERAL_ENGLISH',
   BASELINE_READ: 'GENERAL_ENGLISH',
   BASELINE_OUTPUT: 'GENERAL_ENGLISH',
+  EVIDENCE_RETEST: 'GENERAL_ENGLISH',
 };
 
 /**
@@ -1609,3 +1646,646 @@ export const SKILL_TRACK: Record<SkillId, LearningTrack> = {
   READING_EXT: 'GENERAL_ENGLISH',
   MEDIATED: 'ENGLISH_MEDIATED_LEARNING',
 };
+
+// ───────────────────────── v2.2 证据域 ─────────────────────────
+
+/** 证据可覆盖的技能（与画像四技能分开展示，GRAMMAR/VOCABULARY 仅知识型证据）。 */
+export const EVIDENCE_SKILLS: EvidenceSkill[] = [
+  'LISTENING',
+  'READING',
+  'SPEAKING',
+  'WRITING',
+  'GRAMMAR',
+  'VOCABULARY',
+];
+
+export const EVIDENCE_SKILL_LABEL_ZH: Record<EvidenceSkill, string> = {
+  LISTENING: '听力',
+  READING: '阅读',
+  SPEAKING: '口语',
+  WRITING: '写作',
+  GRAMMAR: '语法',
+  VOCABULARY: '词汇',
+};
+
+/** 四技能（分项画像只用这四项，且不取平均）。 */
+export const PROFILE_SKILLS: Array<'LISTENING' | 'READING' | 'SPEAKING' | 'WRITING'> = [
+  'LISTENING',
+  'READING',
+  'SPEAKING',
+  'WRITING',
+];
+
+/** 证据类型（E0–E5）。顺序即生命周期顺序。 */
+export const LEARNING_EVIDENCE_TYPES: LearningEvidenceType[] = [
+  'BASELINE',
+  'ASSISTED',
+  'IMMEDIATE_RETEST',
+  'DELAYED_RETEST',
+  'APPLIED_TASK',
+  'TRANSFER',
+];
+
+export const LEARNING_EVIDENCE_TYPE_LABEL_ZH: Record<LearningEvidenceType, string> = {
+  BASELINE: '首版基线',
+  ASSISTED: '辅助学习版',
+  IMMEDIATE_RETEST: '即时复测',
+  DELAYED_RETEST: '延迟复测',
+  APPLIED_TASK: '实际应用',
+  TRANSFER: '迁移验证',
+};
+
+/** 生命周期编码（展示用）。 */
+export const LEARNING_EVIDENCE_TYPE_CODE: Record<LearningEvidenceType, string> = {
+  BASELINE: 'E0',
+  ASSISTED: 'E1',
+  IMMEDIATE_RETEST: 'E2',
+  DELAYED_RETEST: 'E3',
+  APPLIED_TASK: 'E4',
+  TRANSFER: 'E5',
+};
+
+export const EVIDENCE_LEVELS: EvidenceLevel[] = ['QUICK', 'STANDARD', 'FULL'];
+
+export const EVIDENCE_LEVEL_LABEL_ZH: Record<EvidenceLevel, string> = {
+  QUICK: 'Quick 轻量',
+  STANDARD: 'Standard 阶段',
+  FULL: 'Full 完整链',
+};
+
+/** 各级别最少要记录的字段说明（用于表单提示，不强制在 schema 层锁死）。 */
+export const EVIDENCE_LEVEL_HINT_ZH: Record<EvidenceLevel, string> = {
+  QUICK: '目标技能、材料、净时长、一个可见产出、一个问题或感受。',
+  STANDARD: '任务、原始结果、辅助情况、错误类别、修复动作、即时复测。',
+  FULL: 'E0–E5 版本关系、条件、评价维度、证据位置、外部反馈、迁移结论。',
+};
+
+export const ASSISTANCE_LEVELS: AssistanceLevel[] = ['A0', 'A1', 'A2', 'A3', 'A4'];
+
+export const ASSISTANCE_LEVEL_LABEL_ZH: Record<AssistanceLevel, string> = {
+  A0: 'A0 无辅助',
+  A1: 'A1 轻辅助（词义/播放/拼写）',
+  A2: 'A2 结构提示',
+  A3: 'A3 详细反馈/局部修改',
+  A4: 'A4 代写/代答/完整改写',
+};
+
+/** 只有 A0 才算独立表现；A4 绝不计为学习者独立产出。 */
+export const INDEPENDENT_ASSISTANCE_LEVEL: AssistanceLevel = 'A0';
+export const AI_SUBSTITUTE_ASSISTANCE_LEVEL: AssistanceLevel = 'A4';
+
+export const EVIDENCE_CONFIDENCES: EvidenceConfidence[] = ['LOW', 'MEDIUM', 'HIGH'];
+
+export const EVIDENCE_CONFIDENCE_LABEL_ZH: Record<EvidenceConfidence, string> = {
+  LOW: '低',
+  MEDIUM: '中',
+  HIGH: '高',
+};
+
+export const ASSESSOR_TYPES: AssessorType[] = ['SELF', 'TEACHER', 'PEER', 'AI', 'EXAM'];
+
+export const ASSESSOR_TYPE_LABEL_ZH: Record<AssessorType, string> = {
+  SELF: '自评',
+  TEACHER: '教师',
+  PEER: '同伴/听众',
+  AI: 'AI 反馈',
+  EXAM: '考试/官方',
+};
+
+export const EVIDENCE_PRIVACY_LEVELS: EvidencePrivacy[] = [
+  'PRIVATE',
+  'SHAREABLE',
+  'METADATA_ONLY',
+];
+
+export const EVIDENCE_PRIVACY_LABEL_ZH: Record<EvidencePrivacy, string> = {
+  PRIVATE: '仅自己可见',
+  SHAREABLE: '可分享',
+  METADATA_ONLY: '只存元数据',
+};
+
+export const SKILL_DIRECTIONS: SkillDirection[] = [
+  'Pre-A1',
+  'A1',
+  'A2',
+  'B1',
+  'B2',
+  'C1',
+];
+
+/** 内部 0–2 证据评分：仅供同一学习者纵向比较，不是官方等级。 */
+export const EVIDENCE_SCORE_MIN = 0;
+export const EVIDENCE_SCORE_MAX = 2;
+
+export const EVIDENCE_SCORE_LABEL_ZH: Record<number, string> = {
+  0: '未完成/无证据',
+  1: '部分完成或依赖帮助',
+  2: '在标明条件下独立完成',
+};
+
+/** 输出预览截断长度（列表页）。 */
+export const EVIDENCE_OUTPUT_PREVIEW_CHARS = 140;
+
+// ───────────────────────── 障碍诊断 ─────────────────────────
+
+export const BARRIER_TYPES_BY_SKILL: Record<EvidenceSkill, string[]> = {
+  LISTENING: [
+    'VOCABULARY',
+    'SOUND_SEGMENTATION',
+    'SYNTAX',
+    'BACKGROUND',
+    'ATTENTION_LOAD',
+    'DEVICE_ENV',
+  ],
+  READING: [
+    'VOCAB_DENSITY',
+    'SENTENCE_STRUCTURE',
+    'REFERENCE_COHESION',
+    'CLAIM_EVIDENCE',
+    'BACKGROUND_FORMAT',
+  ],
+  SPEAKING: [
+    'LEXICAL_RETRIEVAL',
+    'PRONUNCIATION',
+    'FLUENCY_ORGANIZATION',
+    'INTERACTION',
+    'REPAIR_REGISTER',
+  ],
+  WRITING: [
+    'TASK_AUDIENCE',
+    'FACTUAL_ACCURACY',
+    'ORGANIZATION',
+    'SENTENCE_GRAMMAR',
+    'LEXICAL_REGISTER',
+    'REVISION_DEPENDENCE',
+  ],
+  GRAMMAR: [
+    'RULE_RECOGNITION',
+    'RULE_EXPLANATION',
+    'CONTROLLED_USE',
+    'INDEPENDENT_USE',
+    'DELAYED_RETENTION',
+  ],
+  VOCABULARY: ['RECEPTIVE_GAP', 'PRODUCTIVE_GAP', 'COLLOCATION_GAP'],
+};
+
+export const BARRIER_TYPE_LABEL_ZH: Record<string, string> = {
+  VOCABULARY: '词汇（词形与意思都陌生）',
+  SOUND_SEGMENTATION: '声音/词界切分（认识词但听不出）',
+  SYNTAX: '句法（无法建立句间/从句关系）',
+  BACKGROUND: '背景知识',
+  ATTENTION_LOAD: '注意/负荷（长度、速度、密度过高）',
+  DEVICE_ENV: '设备/环境（先排除技术因素）',
+  VOCAB_DENSITY: '生词密度',
+  SENTENCE_STRUCTURE: '句子结构（找主干/逻辑）',
+  REFERENCE_COHESION: '指代与衔接',
+  CLAIM_EVIDENCE: '主张/证据/推断混淆',
+  BACKGROUND_FORMAT: '背景知识或文档格式',
+  LEXICAL_RETRIEVAL: '词汇提取（有想法找不到词块）',
+  PRONUNCIATION: '发音/可理解度',
+  FLUENCY_ORGANIZATION: '流利度与组织',
+  INTERACTION: '互动（无法处理追问）',
+  REPAIR_REGISTER: '修复与语域',
+  TASK_AUDIENCE: '任务目的/受众',
+  FACTUAL_ACCURACY: '事实准确性',
+  ORGANIZATION: '段落组织',
+  SENTENCE_GRAMMAR: '句子/语法',
+  LEXICAL_REGISTER: '词汇范围/语域',
+  REVISION_DEPENDENCE: '修订依赖（AI 改得好但独立写不出）',
+  RULE_RECOGNITION: '规则识别',
+  RULE_EXPLANATION: '规则解释',
+  CONTROLLED_USE: '控制性使用',
+  INDEPENDENT_USE: '独立使用',
+  DELAYED_RETENTION: '延迟保持',
+  RECEPTIVE_GAP: '听读识别不足',
+  PRODUCTIVE_GAP: '说写主动调用不足',
+  COLLOCATION_GAP: '搭配与用法',
+};
+
+export const INTERVENTION_STATUSES = ['PLANNED', 'RUNNING', 'DONE', 'ABANDONED'] as const;
+export const INTERVENTION_STATUS_LABEL_ZH: Record<string, string> = {
+  PLANNED: '待执行',
+  RUNNING: '进行中',
+  DONE: '已完成',
+  ABANDONED: '已放弃',
+};
+
+/** 每轮只聚焦一个主要障碍（UI 层的约束提示）。 */
+export const BARRIER_FOCUS_PER_CYCLE = 1;
+
+export const BARRIER_STATUSES: BarrierStatus[] = ['ACTIVE', 'RESOLVED', 'SUPERSEDED'];
+
+export const BARRIER_STATUS_LABEL_ZH: Record<BarrierStatus, string> = {
+  ACTIVE: '诊断中',
+  RESOLVED: '已解决',
+  SUPERSEDED: '已替代',
+};
+
+export const BARRIER_IMPACT_MIN_CHARS = 4;
+export const INTERVENTION_ACTION_MIN_CHARS = 6;
+export const INTERVENTION_CRITERIA_MIN_CHARS = 8;
+
+/** 修复期默认允许的支架级别：A1（轻辅助）；复测时必须撤回到 A0。 */
+export const INTERVENTION_DEFAULT_SCAFFOLD: AssistanceLevel = 'A1';
+
+/** A4 是代写/代答，不能作为「修复支架」——那会把练习变成系统代替学习者完成。 */
+export const INTERVENTION_FORBIDDEN_SCAFFOLD: AssistanceLevel = 'A4';
+
+/** 各技能修复动作与成功标准模板；只是起点，用户必须按自己的证据改写。 */
+export const BARRIER_REPAIR_PRESET_ZH: Record<
+  EvidenceSkill,
+  { action: string; successCriteria: string; minutes: number }
+> = {
+  LISTENING: {
+    action:
+      '用同一材料的 60–90 秒片段做逐句听写：先盲听一遍写下听到的内容，再对照原文标出切分失败处，最后重听该句。',
+    successCriteria:
+      '换一段同难度平行材料，能在不暂停的情况下写出关键信息点（不少于 3 处），并口头说明失败句的意思。',
+    minutes: 15,
+  },
+  READING: {
+    action:
+      '对一段 150–250 词文本做「主干标注」：每句只标主语+谓语+核心宾语，再回答一个作者主张/证据问题。',
+    successCriteria:
+      '换一段平行文本，在不查词的前提下 3 分钟内找出每段主张句，并用自己的话概括证据如何支持主张。',
+    minutes: 20,
+  },
+  SPEAKING: {
+    action:
+      '针对一个熟悉话题做 30 秒准备 + 60 秒独白录音，回听只标「卡住/找不到词」的位置，再用词块重说同一段。',
+    successCriteria:
+      '换一个话题，能在 60 秒内连续表达且停顿不超过 3 处；回听能指出至少 2 个已修复的词块。',
+    minutes: 15,
+  },
+  WRITING: {
+    action:
+      '就一个具体任务写 80–120 词，写完先自评任务要求覆盖了几项，再只改一类问题（结构 / 语法 / 用词）。',
+    successCriteria:
+      '换一个新任务，30 分钟内独立写出结构完整段落；对照成功标准逐项自查，无需 AI 重写即可达标。',
+    minutes: 25,
+  },
+  GRAMMAR: {
+    action:
+      '针对一个结构做「识别→解释→造句」三步练习：先标出给定句子中的目标结构，再说明它表达什么，最后自己造 3 句。',
+    successCriteria:
+      '换 10 个新句子，能识别并解释目标结构，且自己造的 3 句在无提示情况下语法正确。',
+    minutes: 15,
+  },
+  VOCABULARY: {
+    action:
+      '选 10 个目标词块：先做听读识别，再在真实句子中主动调用（说或写），最后回看哪些词只在识别层面熟悉。',
+    successCriteria: '间隔复测时能主动说出/写出其中至少 7 个词块，并放进完整句子。',
+    minutes: 15,
+  },
+};
+
+/** 诊断页顶部口径提示。 */
+export const BARRIER_FOCUS_NOTE_ZH =
+  '每轮只聚焦一个主要障碍；其他障碍先记录不展开。修复计划复测时必须撤回支架（A1–A3），只有 A0 才算独立表现。';
+
+
+// ───────────────────────── 复测与迁移 ─────────────────────────
+
+export const RETEST_TYPES: RetestType[] = ['IMMEDIATE', 'DELAYED', 'APPLIED', 'TRANSFER'];
+
+export const RETEST_TYPE_LABEL_ZH: Record<RetestType, string> = {
+  IMMEDIATE: '即时复测',
+  DELAYED: '延迟复测（平行材料）',
+  APPLIED: '实际应用',
+  TRANSFER: '迁移验证（新条件）',
+};
+
+/** 相对父证据创建日的偏移天数。知识型复习仍走 ReviewTask（1/3/7/14）。 */
+export const RETEST_OFFSET_DAYS: Record<RetestType, number> = {
+  IMMEDIATE: 0,
+  DELAYED: 7,
+  APPLIED: 30,
+  TRANSFER: 84,
+};
+
+export const RETEST_DEFAULT_MINUTES: Record<RetestType, number> = {
+  IMMEDIATE: 10,
+  DELAYED: 15,
+  APPLIED: 20,
+  TRANSFER: 25,
+};
+
+export const RETEST_STATUSES: RetestStatus[] = ['PENDING', 'DONE', 'SKIPPED', 'SUPERSEDED'];
+
+export const RETEST_STATUS_LABEL_ZH: Record<RetestStatus, string> = {
+  PENDING: '待完成',
+  DONE: '已完成',
+  SKIPPED: '已跳过',
+  SUPERSEDED: '已被替代',
+};
+
+/** 默认只为基线/阶段证据排复测；Quick 日常证据不自动排链。 */
+export const RETEST_AUTO_PARENT_TYPES: LearningEvidenceType[] = [
+  'BASELINE',
+  'IMMEDIATE_RETEST',
+  'DELAYED_RETEST',
+];
+
+/** 复测任务排入当日计划时使用的模块。 */
+export const RETEST_PLAN_MODULE = 'EVIDENCE_RETEST';
+export const RETEST_PLAN_PRIORITY = 1;
+
+/** 复测页口径提示：技能复测与知识复习是两套队列。 */
+export const RETEST_QUEUE_NOTE_ZH =
+  '技能型复测按证据链排期（D0 即时 / D7 延迟 / D30 实际应用 / D84 迁移验证）；知识型错题与词汇仍走复习中心，两套状态互不复用。';
+
+/** 迁移验证的硬规则提示。 */
+export const RETEST_TRANSFER_NOTE_ZH =
+  '重做原题只能记为「实际应用」；迁移验证必须换新题/新材料或新情境，否则不算迁移。';
+
+/** 复测必须撤除支架。 */
+export const RETEST_A0_NOTE_ZH = '复测必须无辅助（A0）完成；A1–A4 只能算练习，不能标记复测完成。';
+
+// ───────────────────────── 90 天周期 ─────────────────────────
+
+export const CYCLE_TOTAL_DAYS = 90;
+export const CYCLE_CALIBRATION_END_DAY = 14;
+export const CYCLE_BUILD_END_DAY = 56;
+
+export const CYCLE_PHASES: CyclePhaseCode[] = ['CALIBRATION', 'BUILD', 'DELIVER'];
+
+export const CYCLE_PHASE_LABEL_ZH: Record<CyclePhaseCode, string> = {
+  CALIBRATION: '校准（第 1–14 天）',
+  BUILD: '积累（第 15–56 天）',
+  DELIVER: '交付（第 57–90 天）',
+};
+
+export const CYCLE_PHASE_ADVICE_ZH: Record<CyclePhaseCode, string> = {
+  CALIBRATION: '确认真实目标、L/R/S/W 基线、主要障碍和每周可持续时间。',
+  BUILD: '围绕一个主要障碍定向训练；每周一个可观察问题，保留多次输出和反馈。',
+  DELIVER: '换材料/主题/受众或进入真实场景，完成独立交付和迁移验证。',
+};
+
+/** 进入积累阶段的证据门槛：至少 4 次可比较输出。 */
+export const CYCLE_BUILD_MIN_COMPARABLE_OUTPUTS = 4;
+
+export const CYCLE_STATUSES: CycleStatus[] = [
+  'CALIBRATION',
+  'BUILD',
+  'DELIVER',
+  'COMPLETED',
+  'PAUSED',
+];
+
+export const CYCLE_STATUS_LABEL_ZH: Record<CycleStatus, string> = {
+  CALIBRATION: '校准中',
+  BUILD: '积累中',
+  DELIVER: '交付中',
+  COMPLETED: '已完成',
+  PAUSED: '已暂停',
+};
+
+/** 周复盘默认时长（分钟）。 */
+export const WEEKLY_REVIEW_MINUTES = 20;
+
+/** 中断恢复：给出 24 小时内可完成的最小下一步。 */
+export const RECOVERY_NEXT_STEP_HOURS = 24;
+
+/** 周期内周数（90 天按整周向上取整 = 13 周）。 */
+export const CYCLE_WEEKS = Math.ceil(CYCLE_TOTAL_DAYS / 7);
+
+/** 中断恢复建议的最小下一步时长（分钟），低于日常任务量。 */
+export const RECOVERY_MINIMAL_MINUTES = 15;
+
+/** 可比较输出口径：Quick 记录只算日常痕迹，不计入阶段门槛。 */
+export const CYCLE_COMPARABLE_NOTE_ZH =
+  '可比较输出 = 标准或完整级（非 Quick）、带产出原文、未归档的证据；Quick 轻量记录不计入阶段门槛。';
+
+/** 阶段推进门槛说明。 */
+export const CYCLE_PHASE_GATE_NOTE_ZH = `进入积累阶段需 ≥ ${CYCLE_BUILD_MIN_COMPARABLE_OUTPUTS} 次可比较输出；进入交付阶段需 ≥ 1 条实际应用或迁移验证证据。`;
+
+/** 中断恢复口径：不补积压、不合并缺周。 */
+export const CYCLE_RECOVERY_NOTE_ZH =
+  '中断恢复：先写客观原因，再选 24 小时内能完成的最小下一步；不补做积压任务，也不合并缺失的周。';
+
+/** 每周主问题口径。 */
+export const CYCLE_FOCUS_NOTE_ZH =
+  '每周只保留一个主问题：一项输入、一项输出、一次反馈、一项迁移证据；问题不扩展成清单。';
+
+/** 缺周处理口径。 */
+export const CYCLE_NO_BACKLOG_NOTE_ZH = '缺周的记录不补排、不合并，直接从本周重新开始。';
+
+export const WEEKLY_FOCUS_STATUSES: WeeklyFocusStatus[] = ['OPEN', 'REVIEWED'];
+
+export const WEEKLY_FOCUS_STATUS_LABEL_ZH: Record<WeeklyFocusStatus, string> = {
+  OPEN: '进行中',
+  REVIEWED: '已复盘',
+};
+
+export const WEEKLY_FOCUS_SLOT_LABEL_ZH: Record<WeeklyFocusSlot, string> = {
+  question: '一个主问题',
+  input: '一项输入',
+  output: '一项输出',
+  feedback: '一次反馈',
+  transfer: '一项迁移证据',
+  decision: '下周决定',
+};
+
+// ───────────────────────── AI 使用日志 ─────────────────────────
+
+export const AI_ACTION_TYPES: AIActionType[] = [
+  'HINT',
+  'EXPLAIN',
+  'CORRECT',
+  'REWRITE',
+  'GENERATE',
+  'SCORE',
+  'TRANSLATE',
+  'OTHER',
+];
+
+export const AI_ACTION_TYPE_LABEL_ZH: Record<AIActionType, string> = {
+  HINT: '提示',
+  EXPLAIN: '解释',
+  CORRECT: '纠错',
+  REWRITE: '改写',
+  GENERATE: '生成',
+  SCORE: '评分',
+  TRANSLATE: '翻译',
+  OTHER: '其他',
+};
+
+export const ADOPTION_STATUSES: AdoptionStatus[] = ['ADOPTED', 'PARTIAL', 'REJECTED'];
+
+export const ADOPTION_STATUS_LABEL_ZH: Record<AdoptionStatus, string> = {
+  ADOPTED: '全部采纳',
+  PARTIAL: '部分采纳',
+  REJECTED: '未采纳',
+};
+
+/** Coach 协议顺序：AI 提示必须发生在一次自己的尝试之后。 */
+export const COACH_STEPS: CoachStep[] = [
+  'ATTEMPT',
+  'DIAGNOSE',
+  'HINT',
+  'PRACTICE',
+  'RETEST',
+  'EVIDENCE',
+];
+
+export const COACH_STEP_LABEL_ZH: Record<CoachStep, string> = {
+  ATTEMPT: '1. 先自己尝试',
+  DIAGNOSE: '2. 诊断卡点',
+  HINT: '3. 提示阶梯',
+  PRACTICE: '4. 定向练习',
+  RETEST: '5. 复测',
+  EVIDENCE: '6. 更新证据',
+};
+
+export const COACH_STEP_GUIDE_ZH: Record<CoachStep, string> = {
+  ATTEMPT: '不看答案、不用 AI，先完整做一次（30 秒口语、短句写作、1 分钟听写都算），并保存为 A0 证据。',
+  DIAGNOSE: '回看自己的产出，指出卡住的那一环（词汇、切分、句法、组织…），在诊断页记录一条障碍。',
+  HINT: '按 A1→A2→A3 逐级请求最小提示；一次只要一层，用完先自己重做，再决定是否需要下一层。',
+  PRACTICE: '用提示做定向练习，但产出必须由自己写/说；AI 改写只能当参照，不能当作练习结果。',
+  RETEST: '换平行材料、撤掉所有支架（A0）复测同一个卡点；复测结果单独保存为证据。',
+  EVIDENCE: '把复测样本挂到证据链，更新分项画像与复测计划；仍不达标就回到诊断，换一个更小的目标。',
+};
+
+/** 只有 A0 的 AI 使用才可能视为独立产出；A4（代写/代答）永远不算。 */
+export const AI_USAGE_NOTE_ZH =
+  'AI 输出默认是辅助材料：A4 代写/代答永远不算你的独立产出；「改写/生成」类操作至少要按 A3 记录。';
+
+export const AI_A4_DEPENDENCY_WARN_PERCENT = 30;
+export const AI_USAGE_RECENT_DAYS = 30;
+export const AI_USAGE_RECENT_LIMIT = 100;
+
+// ───────────────────────── 方法论资料库 ─────────────────────────
+
+export const RESOURCE_PRIORITIES: ResourcePriority[] = ['P0', 'P1', 'P2'];
+
+export const RESOURCE_PRIORITY_LABEL_ZH: Record<ResourcePriority, string> = {
+  P0: 'P0 先读',
+  P1: 'P1 技能方法',
+  P2: 'P2 长期扩展',
+};
+
+export const RESOURCE_READ_STATUSES: ResourceReadStatus[] = [
+  'NOT_STARTED',
+  'READING',
+  'SUMMARIZED',
+  'APPLIED',
+  'DONE',
+];
+
+export const RESOURCE_READ_STATUS_LABEL_ZH: Record<ResourceReadStatus, string> = {
+  NOT_STARTED: '未开始',
+  READING: '阅读中',
+  SUMMARIZED: '已写摘要',
+  APPLIED: '已实践',
+  DONE: '已完成',
+};
+
+/** 阅读进度只在真正完成一项实践后标记完成；收藏/打开链接不算掌握。 */
+export const RESOURCE_DONE_REQUIRES_ACTION = true;
+
+/** 方法论资料库分类（六类）。 */
+export const METHODOLOGY_CATEGORIES: MethodologyCategory[] = [
+  '入口',
+  '诊断',
+  '证据',
+  '复盘',
+  'AI',
+  '工具',
+];
+
+export const METHODOLOGY_CATEGORY_LABEL_ZH: Record<MethodologyCategory, string> = {
+  入口: '官方入口',
+  诊断: '诊断与评分',
+  证据: '产出规范',
+  复盘: '复盘参考',
+  AI: 'AI 与记忆',
+  工具: '练习工具',
+};
+
+export const METHODOLOGY_CATEGORY_NOTE_ZH: Record<MethodologyCategory, string> = {
+  入口: '核对考试事实与流程，不替代练习',
+  诊断: '定位技能短板与评分标准',
+  证据: '写出口语/写作可检查样本的规范来源',
+  复盘: '对照自己的样本复盘，而不是只看范文',
+  AI: '辅助记忆与检索，产物仍按辅助级别记录',
+  工具: '长期练习与输入输出材料',
+};
+
+/** 资料库只允许存元数据、许可说明与个人摘要，不复制正文。 */
+export const LIBRARY_NO_COPY_NOTE_ZH =
+  '本资料库只保存标题、链接、许可说明、阶段适配与你自己的摘要/实践记录；不复制原文内容，正文版权与访问条件以原站为准。';
+
+/** 阅读状态推进规则（与 domain/library.ts 的 gate 一致）。 */
+export const LIBRARY_STATUS_RULE_NOTE_ZH =
+  '标记「已写摘要」需至少 20 字个人摘要；「已实践」需写明实际做了什么；「已完成」需填写实践计划——收藏或打开链接不算掌握。';
+
+export const LIBRARY_SUMMARY_MIN_CHARS = 20;
+
+/** 预设资料条数（seed 必须恰好 16 条）。 */
+export const LIBRARY_SEED_SIZE = 16;
+
+/** ResourceReference 的资源类型（v2.2 方法论资料库）。 */
+export type LibraryResourceType = 'REPO' | 'ARTICLE' | 'TEMPLATE' | 'GUIDE';
+
+export const LIBRARY_RESOURCE_TYPE_LABEL_ZH: Record<LibraryResourceType, string> = {
+  REPO: '开源仓库',
+  ARTICLE: '文章 / 频道',
+  TEMPLATE: '模板 / 范式',
+  GUIDE: '指南 / 课程',
+};
+
+// ───────────────────────── 证据与预算的融合 ─────────────────────────
+
+/** ≤15 分钟只要求微型证据；≥180 分钟才展开完整证据链。 */
+export const EVIDENCE_NO_CHAIN_BUDGET_MAX = 15;
+export const EVIDENCE_STANDARD_BUDGET_MIN = 60;
+export const EVIDENCE_FULL_CHAIN_BUDGET_MIN = 180;
+
+/** 预算档 → 建议的证据级别（计划引擎与页面提示共用，覆盖全部非负分钟）。 */
+export const BUDGET_EVIDENCE_LEVEL_HINT_ZH: Array<{
+  minMinutes: number;
+  maxMinutes: number | null;
+  level: EvidenceLevel | null;
+  advice: string;
+}> = [
+  {
+    minMinutes: 0,
+    maxMinutes: EVIDENCE_NO_CHAIN_BUDGET_MAX,
+    level: null,
+    advice: '应急维护：不要求完整证据链，到期知识复习或一个微型听/读任务，记录一个结果即可。',
+  },
+  {
+    minMinutes: EVIDENCE_NO_CHAIN_BUDGET_MAX + 1,
+    maxMinutes: EVIDENCE_STANDARD_BUDGET_MIN - 1,
+    level: 'QUICK',
+    advice: 'Quick Evidence：记录主技能、材料、实际时长、一个产出和一个主要障碍。',
+  },
+  {
+    minMinutes: EVIDENCE_STANDARD_BUDGET_MIN,
+    maxMinutes: EVIDENCE_FULL_CHAIN_BUDGET_MIN - 1,
+    level: 'STANDARD',
+    advice: 'Quick + Standard：对重点任务保存首版/反馈/即时复测中的必要部分。',
+  },
+  {
+    minMinutes: EVIDENCE_FULL_CHAIN_BUDGET_MIN,
+    maxMinutes: null,
+    level: 'FULL',
+    advice: '可开展 Full Evidence Chain：完整诊断、定向修复、作品修订和独立复测。',
+  },
+];
+
+// ───────────────────────── 分项画像 ─────────────────────────
+
+/** 各置信度的建议复评间隔（天）：低 14 / 中 30 / 高 90。 */
+export const PROFILE_REVIEW_DAYS: Record<EvidenceConfidence, number> = {
+  LOW: 14,
+  MEDIUM: 30,
+  HIGH: 90,
+};
+
+/** 画像页固定提示：四项分开展示，不取平均。 */
+export const PROFILE_NO_AVERAGE_NOTE =
+  '四项技能分别判断；系统不计算四项平均等级，也不把内部证据分换算成 CEFR 或 IELTS Band。';
+
+export const PROFILE_DO_NOT_INFER_PRESET =
+  '本判断只基于已保存的证据样本与条件；不能说明未测试的主题、真实交流压力下的表现或官方考试分数。';

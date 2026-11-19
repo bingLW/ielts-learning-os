@@ -100,6 +100,8 @@ export interface ReplanResult {
   remainingBudgetMinutes: number;
   /** 重排后计划总分钟（保留行 planned + 新任务 planned），仅用于展示。 */
   plannedAfterReplan: number;
+  /** 新任务中已排入的到期复测（调用方据此回写 RetestSchedule.planTaskId）。 */
+  scheduledRetestIds: string[];
 }
 
 export type ReplanError = { ok: false; code: 'INVALID_BUDGET'; error: string };
@@ -231,6 +233,7 @@ export function replanDailyTasks(input: ReplanInput): ReplanResult | ReplanError
 
   // ⑥ 剩余预算交给自适应引擎
   const newTasks: NewTaskSpec[] = [];
+  let scheduledRetestIds: string[] = [];
   if (isRestDay || budget === 0) {
     warnings.push('休息日 / 零预算：不生成学习任务，本次不计为学习失败。');
     const deferredMinutes = notStarted.reduce((sum, task) => sum + task.plannedMinutes, 0);
@@ -256,6 +259,7 @@ export function replanDailyTasks(input: ReplanInput): ReplanResult | ReplanError
     }
     warnings.push(...adaptive.warnings);
     backlog.push(...adaptive.backlog);
+    scheduledRetestIds = adaptive.scheduledRetestIds;
 
     const sortBase = Math.max(-1, ...existingTasks.map((task) => task.sortOrder)) + 1;
     adaptive.items.forEach((item, index) => {
@@ -289,6 +293,7 @@ export function replanDailyTasks(input: ReplanInput): ReplanResult | ReplanError
     actualMinutesSnapshot,
     remainingBudgetMinutes,
     plannedAfterReplan: totalPlannedAfterReplan(actions, existingTasks, newTasks),
+    scheduledRetestIds,
   };
 }
 

@@ -17,10 +17,12 @@ import {
   BUDGET_INITIAL_SUGGESTION,
   BUDGET_PRESET_MINUTES,
   BUDGET_TIER_CODES,
+  EVIDENCE_LEVEL_LABEL_ZH,
   MIN_TASK_MINUTES,
   tierCodeOf,
   tierLabelZh,
 } from '@/lib/constants';
+import { evidenceHintForBudget } from '@/lib/domain/planFusion';
 import { buttonClass } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { inputClass } from '@/components/ui/FormField';
@@ -33,6 +35,8 @@ export interface BudgetPickerProps {
   /** 当日已发生净学习分钟（Σ 计时段日拆分，与重排引擎同口径），仅用于展示与幂等键。 */
   actualMinutesToday: number;
   planVersionCount: number;
+  /** v2.2：当日计划中计入预算的证据复测分钟。 */
+  retestPlannedMinutes: number;
   onToast: (message: string, tone: 'success' | 'error') => void;
 }
 
@@ -54,6 +58,7 @@ export function BudgetPicker({
   hasTasks,
   actualMinutesToday,
   planVersionCount,
+  retestPlannedMinutes,
   onToast,
 }: BudgetPickerProps) {
   const router = useRouter();
@@ -68,6 +73,7 @@ export function BudgetPicker({
 
   const isPreset = BUDGET_PRESET_MINUTES.includes(minutes);
   const dirty = minutes !== budget.minutes;
+  const evidenceHint = evidenceHintForBudget(minutes);
 
   const apply = () => {
     startTransition(async () => {
@@ -237,7 +243,18 @@ export function BudgetPicker({
           </span>
         )}
         {budget.tierCode && <span>档位：{tierLabelZh(budget.tierCode)}</span>}
+        {retestPlannedMinutes > 0 && (
+          <span className="text-emerald-700">
+            含证据复测 {retestPlannedMinutes} 分钟（已计入预算，不重复计时）
+          </span>
+        )}
       </div>
+
+      <p className="text-[11px] text-inkMuted">
+        证据记录级别：
+        {evidenceHint.level ? EVIDENCE_LEVEL_LABEL_ZH[evidenceHint.level] : '不强制（维护模式）'} ·{' '}
+        {evidenceHint.advice}
+      </p>
 
       {minutes > 0 && minutes < 15 && (
         <p className="text-[11px] text-inkMuted">

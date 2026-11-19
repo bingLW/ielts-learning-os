@@ -16,11 +16,16 @@
 
 import { revalidatePath } from 'next/cache';
 import { splitAcrossMidnight, toUtcInstant } from '@/lib/date';
+import {
+  buildMediatedEvidenceDraft,
+  checkMediatedEvidenceUniqueness,
+} from '@/lib/domain/mediatedEvidence';
+import { stringify } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
-import { failValidation, ok } from '@/lib/result';
+import { fail, failValidation, ok } from '@/lib/result';
 import { nullIfEmpty } from '@/lib/schema/common';
-import { createMediatedSessionSchema } from '@/lib/schema/mediated';
-import type { ActionResult } from '@/lib/types';
+import { createMediatedSessionSchema, mediatedEvidenceSchema } from '@/lib/schema/mediated';
+import type { ActionResult, PrimarySkill, TranslationDependency } from '@/lib/types';
 
 /** 把一段英文产出（非空才落库）转成 `LearningOutput` 的 create 数据。 */
 function toOutput(
@@ -116,4 +121,79 @@ export async function createMediatedSessionAction(
   revalidatePath('/');
   revalidatePath('/weekly');
   return ok({ sessionId });
+}
+
+/**
+ * 由一条媒介学习记录生成证据（每条记录最多一次，不能撤销只能归档）。
+ *
+ * 证据类型固定 APPLIED_TASK：媒介学习是「用英语学知识」的应用任务，
+ * 不进入复测阶梯，因此这里不调用 `ensureRetestChain`。
+ */
+export async function createMediatedEvidenceAction(
+  raw: unknown,
+): Promise<ActionResult<{ evidenceId: string }>> {
+  const parsed = mediatedEvidenceSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+
+  const session = await prisma.englishMediatedSession.findUnique({
+    where: { id: parsed.data.mediatedId },
+    include: { sessions: { select: { id: true }, take: 1 } },
+  });
+  if (!session) return fail('NOT_FOUND', '媒介学习记录不存在');
+
+  const built = buildMediatedEvidenceDraft({
+    subject: session.subject,
+    topic: session.topic,
+    sourceTitle: session.sourceTitle,
+    sourceUrl: session.sourceUrl,
+    primarySkill: session.primarySkill as PrimarySkill,
+    translationDependency: session.translationDependency as TranslationDependency,
+    notesEn: session.notesEn,
+    summaryEn: session.summaryEn,
+    questionsEn: session.questionsEn,
+  });
+  if (!built.ok) return fail('VALIDATION', built.error);
+
+  const draft = built.draft;
+  const createdAt = toUtcInstant(session.sessionDate);
+
+  const outcome = await prisma.$transaction(async (tx) => {
+    // 唯一性在事务内再查一次，避免并发下重复生成重复计数。
+    const existingCount = await tx.evidenceRecord.count({
+      where: { mediatedId: session.id, archivedAt: null },
+    });
+    const gate = checkMediatedEvidenceUniqueness(existingCount);
+    if (!gate.ok) return { kind: 'conflict' as const, error: gate.error };
+
+    const created = await tx.evidenceRecord.create({
+      data: {
+        skill: draft.skill,
+        evidenceType: draft.evidenceType,
+        level: draft.level,
+        sessionId: session.sessions[0]?.id ?? null,
+        mediatedId: session.id,
+        conditionJson: stringify({
+          prompt: draft.prompt,
+          materialSource: draft.materialSource,
+        }),
+        outputText: draft.outputText,
+        assistanceLevel: draft.assistanceLevel,
+        assessorType: 'SELF',
+        note: draft.note,
+        createdAt,
+        updatedAt: createdAt,
+      },
+      select: { id: true },
+    });
+    return { kind: 'created' as const, id: created.id };
+  });
+
+  if (outcome.kind === 'conflict') return fail('CONFLICT', outcome.error);
+
+  revalidatePath('/mediated');
+  revalidatePath('/evidence');
+  revalidatePath('/profile');
+  revalidatePath('/cycle');
+  revalidatePath('/');
+  return ok({ evidenceId: outcome.id });
 }

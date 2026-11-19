@@ -54,6 +54,7 @@ export async function listMediatedSessions(): Promise<MediatedSessionDto[]> {
     include: {
       outputs: { select: { outputType: true } },
       sessions: { include: { daySplits: { select: { minutes: true } } } },
+      evidenceRecords: { where: { archivedAt: null }, select: { id: true }, take: 1 },
     },
   });
 
@@ -84,6 +85,7 @@ export async function listMediatedSessions(): Promise<MediatedSessionDto[]> {
       intensity: row.intensity as MediatedIntensity,
       actualNetMinutes,
       outputCount: inlineOutputCount(row),
+      evidenceId: row.evidenceRecords[0]?.id ?? null,
     };
   });
 }

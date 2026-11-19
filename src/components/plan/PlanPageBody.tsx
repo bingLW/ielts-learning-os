@@ -60,6 +60,7 @@ export function PlanPageBody({ data, todayStr, weekStrip }: PlanPageBodyProps) {
           hasTasks={hasTasks}
           actualMinutesToday={data.netMinutes}
           planVersionCount={data.planVersionCount}
+          retestPlannedMinutes={data.retestPlannedMinutes}
           onToast={show}
         />
       </Card>

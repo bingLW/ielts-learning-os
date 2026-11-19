@@ -321,6 +321,21 @@ export async function generateAdaptivePlanAction(
       }),
     });
 
+    // v2.2：复测任务与排期同一事务关联，避免次日重复把同一批复测排进预算
+    const retestTask =
+      result.scheduledRetestIds.length > 0
+        ? await tx.planTask.findFirst({
+            where: { planDate, planVersion: version, module: 'EVIDENCE_RETEST' },
+            select: { id: true },
+          })
+        : null;
+    if (retestTask && result.scheduledRetestIds.length > 0) {
+      await tx.retestSchedule.updateMany({
+        where: { id: { in: result.scheduledRetestIds }, status: 'PENDING' },
+        data: { planTaskId: retestTask.id },
+      });
+    }
+
     await tx.planVersion.create({
       data: {
         planDate,
@@ -331,6 +346,7 @@ export async function generateAdaptivePlanAction(
         afterSnapshot: JSON.stringify({
           taskCount: result.items.length,
           totalMinutes: result.totalPlannedMinutes,
+          retestCount: result.scheduledRetestIds.length,
           backlog: result.backlog,
         }),
       },

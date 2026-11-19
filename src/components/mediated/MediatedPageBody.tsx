@@ -10,12 +10,15 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
+import { createMediatedEvidenceAction } from '@/lib/actions/mediated';
 import { PRIMARY_SKILL_LABEL_ZH, SOURCE_TYPE_LABEL_ZH } from '@/lib/constants';
 import { formatDurationZh } from '@/lib/format';
 import type { MediatedSessionDto } from '@/lib/types';
 import type { TrackGateResult } from '@/lib/domain/tracks';
-import { buttonClass } from '@/components/ui/Button';
+import { Button, buttonClass } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Icon } from '@/components/ui/Icon';
 import { StatTile } from '@/components/ui/StatTile';
@@ -52,6 +55,23 @@ export function MediatedPageBody({
 }: MediatedPageBodyProps) {
   const router = useRouter();
   const { toast, show, dismiss } = useToastState();
+  const [evidenceTarget, setEvidenceTarget] = useState<MediatedSessionDto | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  function confirmEvidence() {
+    const target = evidenceTarget;
+    if (!target) return;
+    startTransition(async () => {
+      const result = await createMediatedEvidenceAction({ mediatedId: target.id });
+      setEvidenceTarget(null);
+      if (!result.ok) {
+        show(result.error, 'error');
+        return;
+      }
+      show('已生成证据，可在证据中心查看');
+      router.refresh();
+    });
+  }
 
   const gate = overview.gate;
   const skillsUsed = ['LISTENING', 'READING', 'SPEAKING', 'WRITING'].filter(
@@ -196,6 +216,22 @@ export function MediatedPageBody({
                     <span className="text-[10px] text-inkMuted">
                       产出 {session.outputCount} 条
                     </span>
+                    {session.evidenceId ? (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+                        已生成证据
+                      </span>
+                    ) : session.outputCount > 0 ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={pending}
+                        onClick={() => setEvidenceTarget(session)}
+                      >
+                        生成证据
+                      </Button>
+                    ) : (
+                      <span className="text-[10px] text-inkMuted">无英文产出，不能生成证据</span>
+                    )}
                   </div>
                 </div>
               </li>
@@ -203,6 +239,21 @@ export function MediatedPageBody({
           </ul>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={evidenceTarget !== null}
+        title="由这条媒介学习记录生成证据？"
+        danger={false}
+        confirmLabel="生成证据"
+        busy={pending}
+        description={
+          evidenceTarget
+            ? `「${evidenceTarget.topic}」将生成一条 APPLIED_TASK 证据：仅计入 ${PRIMARY_SKILL_LABEL_ZH[evidenceTarget.primarySkill]} 一项技能；级别按摘要长度判定，辅助级别按翻译依赖判定。每条记录只能生成一次，生成后可在证据中心归档。`
+            : undefined
+        }
+        onConfirm={confirmEvidence}
+        onCancel={() => setEvidenceTarget(null)}
+      />
 
       <Toast toast={toast} onDismiss={dismiss} />
     </div>

@@ -63,3 +63,9 @@ export const createMediatedSessionSchema = z
   );
 
 export type CreateMediatedSessionInput = z.infer<typeof createMediatedSessionSchema>;
+
+/** 由一条媒介学习记录生成证据（每条记录最多一次）。 */
+export const mediatedEvidenceSchema = z.object({
+  mediatedId: z.string().min(1, '缺少媒介学习记录 ID'),
+});
+export type MediatedEvidenceInput = z.infer<typeof mediatedEvidenceSchema>;

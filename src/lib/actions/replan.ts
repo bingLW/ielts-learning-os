@@ -120,8 +120,13 @@ export async function replanDailyTasksAction(
 
   const actualMinutes = actualAgg._sum.minutes ?? 0;
 
-  // ② 引擎输入（与生成入口共用同一份装配）
-  const context = await loadPlanEngineContext(planDate, stage);
+  // ② 引擎输入（与生成入口共用同一份装配）。
+  //    未开始任务即将被 DEFER，挂在其上的复测会在事务内解除关联；
+  //    先把它们放回到期复测输入，否则这部分时间会被漏排。
+  const deferrableIds = existingTasks
+    .filter((task) => task.status === 'TODO' && task.actualMinutes <= 0)
+    .map((task) => task.id);
+  const context = await loadPlanEngineContext(planDate, stage, deferrableIds);
 
   // ③ 调用领域层。
   //    休息日只看本次传入的新预算；不传档次 —— 交给引擎的是「剩余预算」，
@@ -174,6 +179,7 @@ export async function replanDailyTasksAction(
     });
 
     // 执行每条指令
+    const moduleById = new Map(existingTasks.map((task) => [task.id, task.module]));
     for (const action of result.actions) {
       if (action.type === 'KEEP') {
         keptCount += 1;
@@ -194,6 +200,13 @@ export async function replanDailyTasksAction(
             rescheduleReason: reason ?? '预算变更后重新规划',
           },
         });
+        // 复测任务被延期：解除排期关联，让它能重新进入下一次生成/重排
+        if (moduleById.get(action.taskId) === 'EVIDENCE_RETEST') {
+          await tx.retestSchedule.updateMany({
+            where: { planTaskId: action.taskId },
+            data: { planTaskId: null },
+          });
+        }
         deletedCount += 1;
       }
     }
@@ -226,6 +239,20 @@ export async function replanDailyTasksAction(
           note: spec.rationale,
         })),
       });
+
+      // v2.2：重排新增的复测任务同样要回写排期关联
+      if (result.scheduledRetestIds.length > 0) {
+        const retestTask = await tx.planTask.findFirst({
+          where: { planDate, planVersion: nextVersion, module: 'EVIDENCE_RETEST' },
+          select: { id: true },
+        });
+        if (retestTask) {
+          await tx.retestSchedule.updateMany({
+            where: { id: { in: result.scheduledRetestIds }, status: 'PENDING' },
+            data: { planTaskId: retestTask.id },
+          });
+        }
+      }
     }
 
     // 写入审计记录

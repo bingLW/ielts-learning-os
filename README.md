@@ -18,23 +18,33 @@
 
 ## 1. 页面功能地图
 
-一级入口共 11 个，清单的唯一来源是 `src/lib/constants.ts` 的 `NAV_ITEMS`。
+一级入口共 21 个，清单的唯一来源是 `src/lib/constants.ts` 的 `NAV_ITEMS`。v2.2 在原 11 个入口上新增 10 个证据驱动入口（下表「诊断与复盘」「复盘与配置」分组）。
 
-| 路径 | 页面 | 核心能力 |
-| --- | --- | --- |
-| `/` | Dashboard 总览 | 今日计划完成率（按时长加权）、本周净时长、四科投入、Top3 薄弱点、复习负载预警、阶段进度 |
-| `/plan` | 学习计划 | 按 9 模块生成每日计划；单任务计时/暂停/完成；未完成任务顺延（≤2 次）；日汇总 |
-| `/records` | 学习记录 | 学习记录增删改查；正确率（Σ正确/Σ总数）、有效产出判定、跨零点时长归属、修订留痕 |
-| `/grammar` | 语法诊断（EGIU） | 单元管理、练习录入、三色判定（GREEN/YELLOW/RED/PENDING）、append-only 复测、自动排复习点 |
-| `/mistakes` | 错题与复习 | 错题本与错误类别、四类复习目标（EGIU 单元/错题/单词/语法点）、逾期分桶、批量完成与推迟 |
-| `/vocabulary` | 词汇 | 词表管理、三档掌握度（认识/理解/主动用）、50–100 词抽测加权正确率、下周新词量建议 |
-| `/sentences` | 句子成分 | 句子切分与 token 标注、成分与词性两套取值集互不串用、语块合并、句数与未标注统计 |
-| `/resources` | 资源库 | 8 类科目 / 6 种类型的资源清单与适用阶段；资源名称只来自 seed 与用户录入 |
-| `/weekly` | 每周复盘 | 13 项指标自动计算 + 手工覆盖、Top3 薄弱点必须填满、一键导出复盘文本 |
-| `/stages` | 阶段与验收 | 4 阶段、28 条验收项结果录入；H1–H5 门禁评估（**只给建议，绝不自动升级**）；升级留痕 |
-| `/settings` | 系统设置 | 每日可用分钟（240/270/300）、薄弱项权重微调、五类领域数据导出（CSV/JSON）、危险操作 |
+| 分组 | 路径 | 页面 | 核心能力 |
+| --- | --- | --- | --- |
+| 每日执行 | `/` | Dashboard 总览 | 今日计划完成率（按时长加权）、本周净时长、四科投入、Top3 薄弱点、复习负载预警、阶段进度 |
+| 每日执行 | `/plan` | 学习计划 | 按 9 模块生成每日计划；单任务计时/暂停/完成；未完成任务顺延（≤2 次）；v2.2 到期复测先占预算 |
+| 每日执行 | `/records` | 学习记录 | 学习记录增删改查；正确率（Σ正确/Σ总数）、有效产出判定、跨零点时长归属、修订留痕 |
+| 诊断与复盘 | `/grammar` | 语法诊断（EGIU） | 单元管理、练习录入、三色判定（GREEN/YELLOW/RED/PENDING）、append-only 复测、自动排复习点 |
+| 诊断与复盘 | `/mistakes` | 错题与复习 | 错题本与错误类别、四类复习目标（EGIU 单元/错题/单词/语法点）、逾期分桶、批量完成与推迟 |
+| 诊断与复盘 | `/vocabulary` | 词汇 | 词表管理、三档掌握度（认识/理解/主动用）、50–100 词抽测加权正确率、下周新词量建议 |
+| 诊断与复盘 | `/sentences` | 句子成分 | 句子切分与 token 标注、成分与词性两套取值集互不串用、语块合并、句数与未标注统计 |
+| 诊断与复盘 | `/evidence` | Evidence Center | v2.2 证据录入与查看：A0–A4 辅助级别、证据链 E0–E5、独立产出占比、条件快照 |
+| 诊断与复盘 | `/profile` | 能力画像 | 四项技能分别给方向与置信度（LOW/MEDIUM/HIGH），证据依据可追溯，不做平均、不换算 CEFR |
+| 诊断与复盘 | `/diagnosis` | 障碍诊断 | 每轮聚焦一个主障碍，配置定向修复、成功标准与前后测样本 |
+| 诊断与复盘 | `/retest` | 复测与迁移 | 技能型复测队列（逾期/今日/未来 7 天），D0/D7/D30/D84 阶梯，一键加入今日计划 |
+| 诊断与复盘 | `/coach` | AI Coach 日志 | 六步学习协议、AI 使用登记（工具/级别/动作/采纳），A4 依赖占比提醒 |
+| 三轨道 | `/general` | 通用英语 | General English 轨道：CEFR 分项评估，独立统计 |
+| 三轨道 | `/ielts` | 雅思工作区 | IELTS Preparation 轨道：正式/模考成绩，独立统计 |
+| 三轨道 | `/mediated` | 英语媒介学习 | English-mediated Learning 轨道：用英语学法语等知识，独立验收 |
+| 复盘与配置 | `/cycle` | 90 天周期 | 校准/积累/交付三阶段门禁、每周主问题、中断恢复（只给最小下一步） |
+| 复盘与配置 | `/library` | 方法论资料库 | 外部资源元数据 + 链接 + 自己的摘要/计划实践，不复制正文 |
+| 复盘与配置 | `/resources` | 资源库 | 8 类科目 / 6 种类型的资源清单与适用阶段；资源名称只来自 seed 与用户录入 |
+| 复盘与配置 | `/weekly` | 每周复盘 | 13 项指标自动计算 + 手工覆盖、Top3 薄弱点必须填满、一键导出复盘文本 |
+| 复盘与配置 | `/stages` | 阶段与验收 | 4 阶段、28 条验收项结果录入；H1–H5 门禁评估（**只给建议，绝不自动升级**）；升级留痕 |
+| 复盘与配置 | `/settings` | 系统设置 | 每日可用分钟（15–240/自定义）、薄弱项权重微调、五类领域数据导出（CSV/JSON）、危险操作 |
 
-除 11 个一级入口外，还有二级页面 `/review`（复习中心），以及详情页 `/records/[id]`、`/grammar/[id]`。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
+除 21 个一级入口外，还有二级页面 `/review`（复习中心），以及详情页 `/records/[id]`、`/grammar/[id]`。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
 
 ## 2. 技术栈
 
@@ -43,10 +53,10 @@
 | 框架 | Next.js 15 App Router + React 19 | 全站 Server Component，写操作走 Server Action，不暴露 REST 层 |
 | 语言 | TypeScript 5（strict） | 路径别名 `@/*` → `./src/*` |
 | 样式 | Tailwind CSS v3 | 三色 GREEN/YELLOW/RED 由 CSS 变量承载，`mobile:600px` / `md:768px` / `tablet:1024px` |
-| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，21 张表 |
+| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，45 张表（v2.2 新增 11 张证据域表） |
 | 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误 |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | 只测纯函数，不连数据库 |
+| 测试 | Vitest 3 | 只测纯函数，不连数据库；29 个文件 / 587 个用例 |
 
 ## 3. 环境要求
 
@@ -109,22 +119,26 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/domain/__tests__/` 下全部纯函数测试 |
+| `npm test` | 跑 `src/lib/domain/__tests__/` 下全部纯函数测试（29 文件 / 587 用例） |
 | `npm run test:watch` | 监听模式 |
+| `npm run test:e2e` | v2.1 + v2.2 两段端到端验收（均使用数据库副本，不改真实库） |
+| `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
+| `npm run test:e2e:v22` | 仅 v2.2 全链路（37 条断言） |
 | `npm run typecheck` | `tsc --noEmit`；注意 `tsconfig.json` 排除了测试目录 |
-| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 14 个测试文件** |
+| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 29 个测试文件** |
 | `npm run db:push` | 把 `schema.prisma` 同步到 SQLite（不丢数据） |
 | `npm run db:generate` | 重新生成 Prisma Client |
 | `npm run db:seed` | 重跑 seed（幂等：`upsert` + 验收项整组重建 + v2 五个回填函数；重复执行新增数恒为 0） |
 | `npm run db:reset` | **删库重建**：`rm dev.db` → `db push` → `generate` → `seed`，所有学习数据会丢失 |
 | `bash scripts/backup.sh` | 生成一份 SQLite 一致性备份并自检（**不需要 Node**，详见 §11） |
 | `bash scripts/restore.sh <备份文件>` | 二次确认后从备份恢复（**不需要 Node**，详见 §11） |
+| `node scripts/migrations/v2.2.mjs --db prisma/dev.db` | v2.1 → v2.2 版本化迁移（要求先有备份；`--dry-run` 只打印 DDL） |
 
 ## 6. 数据文件与导出（概览）
 
 | 项目 | 说明 |
 | --- | --- |
-| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，29 张表；v2.0 新增 8 张：`LearningGoal`/`GoalMilestone`/`SkillAllocationProfile`/`SkillAssessment`/`IeltsAssessment`/`EnglishMediatedSession`/`LearningOutput`/`EvidenceAttachment`） |
+| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，45 张表；v2.2 新增 11 张证据域表：`EvidenceRecord`/`SkillProfile`/`BarrierDiagnosis`/`InterventionPlan`/`RetestSchedule`/`LearningCycle`/`WeeklyFocus`/`AIUsageRecord`/`ResourceReference`/`ResourceReadingLog`/`AppMigration`） |
 | 备份 | **不要**直接 `cp` 正在运行的 `dev.db`；用 `bash scripts/backup.sh` 生成一致性快照，详见 **§11 数据备份与恢复** |
 | 恢复 | `bash scripts/restore.sh <备份文件>`，脚本会在覆盖前自动留一份安全网，详见 §11 |
 | 定时备份 | `scripts/backup-launchd.plist.template`（macOS launchd 模板，只交付模板不自动安装），详见 §11.6 |
@@ -185,7 +199,7 @@ node -v    # 应显示 v22.x
 | `vocab.test.ts` | 三档加权、抽测正确率、新词量建议 | 16 |
 | `weekly.test.ts` | 13 项指标文案、手工覆盖、Top3 校验 | 26 |
 
-测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查 14 个测试文件——首次运行它就抓到了一处写错的导入路径（见 §10）。
+测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查测试文件（v2.0 验收时为 14 个，v2.2 已增至 29 个）——首次运行它就抓到了一处写错的导入路径（见 §10）。
 
 ---
 
@@ -197,7 +211,7 @@ node -v    # 应显示 v22.x
 | --- | --- | --- |
 | 依赖 | `npm ci` | 227 个包，零 ETARGET |
 | 客户端 | `npx prisma generate` | Prisma Client **6.16.2**（与 CLI 一致） |
-| 建库 | `npx prisma db push` | `prisma/dev.db` 生成，21 张表 |
+| 建库 | `npx prisma db push` | `prisma/dev.db` 生成，21 张表（v2.0 当时口径；v2.2 为 45 张） |
 | 种子 | `npm run db:seed` | 4 阶段 / 28 验收项 / 8 类资源，**零学习假数据** |
 | 类型 | `npx tsc --noEmit` | 通过，0 错误 |
 | 测试类型 | `npx tsc -p tsconfig.test.json` | 通过，0 错误 |
@@ -221,7 +235,7 @@ docker run --rm -v "$PWD":/src:ro -e NEXT_TELEMETRY_DISABLED=1 node:22 \
 
 ## 11. 数据备份与恢复（SQLite 一致性快照）
 
-本节是一套**不依赖 Node/npm** 的方案：`scripts/backup.sh` 与 `scripts/restore.sh` 只调用系统自带的 `/usr/bin/sqlite3`（实测 3.54.0）与 POSIX shell 工具（date / mkdir / mv / rm / wc / tr / basename / dirname），因此**在没有 Node 的终端、`launchd`、`cron` 里都能直接跑**。已用 `env PATH=/usr/bin:/bin /bin/bash scripts/backup.sh` 实测通过（该 PATH 下 `node`、`npm` 均 NOT FOUND）。脚本兼容 macOS 自带 `/bin/bash` 3.2，不使用 bash 4+ 特性。数据库文件仍是唯一的 `prisma/dev.db`（21 张表）。
+本节是一套**不依赖 Node/npm** 的方案：`scripts/backup.sh` 与 `scripts/restore.sh` 只调用系统自带的 `/usr/bin/sqlite3`（实测 3.54.0）与 POSIX shell 工具（date / mkdir / mv / rm / wc / tr / basename / dirname），因此**在没有 Node 的终端、`launchd`、`cron` 里都能直接跑**。已用 `env PATH=/usr/bin:/bin /bin/bash scripts/backup.sh` 实测通过（该 PATH 下 `node`、`npm` 均 NOT FOUND）。脚本兼容 macOS 自带 `/bin/bash` 3.2，不使用 bash 4+ 特性。数据库文件仍是唯一的 `prisma/dev.db`（v2.2 起 45 张表）。
 
 ### 11.1 为什么不能用 `cp`
 
@@ -517,3 +531,61 @@ npm run db:generate
 | L9 | P1 只完成基础设施与 Dashboard 三目标卡/配比卡 | `/general`、`/ielts`、`/mediated` 三个页面与记录表单轨道化在 P2–P4 交付；当前从 Dashboard 点「详情 →」会 404 |
 | L10 | `IELTS_INTENSIVE` 档无内置配比 | 该档必须由用户在设置页自行配置（因为取决于目标分数），seed 不预置 |
 | L11 | 里程碑状态需手工判定 | 系统只提供骨架与达成度分母，不会自动把里程碑标为 ACHIEVED（避免伪造证据） |
+
+## 13. v2.1 → v2.2 证据驱动学习升级
+
+v2.2 不重建、不换栈、不覆盖 v2.1 历史数据：在现有 45 张表上新增 11 张证据域表，页面从 11 个一级入口扩到 21 个。
+
+### 13.1 新增能力
+
+| 能力 | 入口 | 关键约束 |
+| --- | --- | --- |
+| 原始证据（E0–E5） | `/evidence` | 只有 A0 算独立产出；A1–A4 最高 1 分；辅助版本必须真有工具介入 |
+| 分项画像 | `/profile` | 四项技能各自独立，不取平均、不换算 CEFR / IELTS Band |
+| 障碍诊断与定向修复 | `/diagnosis` | 每轮只聚焦一个障碍；修复完成必须挂后测样本 |
+| 技能型复测 | `/retest` | D0/D7/D30/D84；延迟复测换平行材料；迁移验证拒绝重做原题 |
+| AI 使用边界 | `/coach` | A4 永远不计独立产出；依赖占比只提醒，不是能力指标 |
+| 90 天周期 | `/cycle` | 第 1–14 天校准、15–56 天积累、57–90 天交付；阶段推进只给建议 + 门禁 |
+| 方法论资料库 | `/library` | 只存元数据、链接与自己的摘要，不复制原文 |
+| 计划融合 | `/plan` | 到期复测先占预算（P0），从预算与 P0 额度中扣除，不重复计时 |
+
+ER 图与字段口径：`docs/08-er-evidence-domain.md`。
+测试与验收报告：`docs/09-v2.2-test-report.md`。
+使用手册：`docs/10-v2.2-user-guide.md`。
+界面截图：`docs/screenshots/v2.2-*.png`（9 张，来自真实构建与演示数据副本）。
+
+### 13.2 迁移（v2.1 → v2.2）
+
+前置：先做一次一致性备份。
+
+```bash
+bash scripts/backup.sh                      # 生成 backups/dev-*.db
+node scripts/migrations/v2.2.mjs --db prisma/dev.db --dry-run   # 只看 DDL
+node scripts/migrations/v2.2.mjs --db prisma/dev.db             # 正式迁移
+```
+
+脚本行为：
+
+- 单事务执行；全部 `CREATE TABLE/INDEX IF NOT EXISTS` + 条件 `ALTER TABLE ADD COLUMN`，可重复执行。
+- 已登记的版本若 checksum 不一致，直接拒绝执行（防止用旧脚本改新库）。
+- 写入 `AppMigration(version='v2.2', checksum, appliedAt)`。
+- 迁移后自动跑 `PRAGMA integrity_check`、`PRAGMA foreign_key_check`、核心表行数漂移与缺失表/列检查。
+- 报告写到 `backups/migrations/v2.2-<timestamp>.json`。
+
+### 13.3 回滚（v2.2 → v2.1）
+
+```bash
+bash scripts/restore.sh backups/dev-20261119-165704.db   # 升级前备份
+npm run db:generate
+```
+
+回滚后校验：11 张新表不存在；`EvidenceAttachment` 回到 8 列；`PRAGMA foreign_key_check` 为空；`PlanTask` 与 `Stage` 行数与升级前一致。
+
+### 13.4 v2.2 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L12 | `EvidenceAttachment` 的 4 个新列由 `ALTER` 追加，列顺序在 `createdAt` 之后 | 与全新 `db push` 建库的列顺序不同；列名/类型/默认值一致，读写无影响 |
+| L13 | 迁移只能靠升级前备份回滚，不提供反向迁移脚本 | 回滚前必须先停写入，避免丢失迁移后新增的数据 |
+| L14 | D84 迁移验证在 E2E 中用 fixture 日期 | 真实 84 天跨度需真实时间验证 |
+| L15 | 复测与计划融合只处理「未开始且未计时」的 DEFER 任务 | 已开始或已计时的任务不会被重排回收 |

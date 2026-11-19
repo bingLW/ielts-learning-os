@@ -307,3 +307,54 @@ describe('replanDailyTasks', () => {
     expect(result.plannedAfterReplan).toBeLessThanOrEqual(60);
   });
 });
+
+describe('v2.2 复测与重排融合', () => {
+  test('到期复测计入剩余预算，并回传待关联的排期 ID', () => {
+    const existing: ExistingTask[] = [makeTask({ id: 't1', plannedMinutes: 30 })];
+    const result = replanDailyTasks({
+      existingTasks: existing,
+      newBudgetMinutes: 60,
+      planInput: {
+        stageCode: 'S1_A0_A2' as StageCode,
+        allocation: null,
+        dueRetests: { items: [{ id: 'r1', minutes: 10 }] },
+      },
+      nextVersion: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.scheduledRetestIds).toEqual(['r1']);
+    const retest = result.newTasks.find((task) => task.module === 'EVIDENCE_RETEST');
+    expect(retest).toBeDefined();
+    expect(retest!.sourceKind).toBe('RETEST');
+    expect(retest!.priority).toBe('P0');
+    const totalNew = result.newTasks.reduce((sum, task) => sum + task.plannedMinutes, 0);
+    expect(totalNew).toBeLessThanOrEqual(60);
+    // 重排本身仍保留既有任务处置：未开始的 t1 被延期，不删除
+    expect(result.actions.find((action) => action.taskId === 't1')?.type).toBe('DEFER');
+  });
+
+  test('已发生时长占用预算后，复测只拿剩余部分；放不下就顺延', () => {
+    const existing: ExistingTask[] = [
+      makeTask({ id: 't1', plannedMinutes: 30, actualMinutes: 55, status: 'IN_PROGRESS' }),
+    ];
+    const result = replanDailyTasks({
+      existingTasks: existing,
+      newBudgetMinutes: 60,
+      planInput: {
+        stageCode: 'S1_A0_A2' as StageCode,
+        allocation: null,
+        dueRetests: { items: [{ id: 'r1', minutes: 10 }] },
+      },
+      nextVersion: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // 已发生 55 分钟 → 剩余 5 分钟，10 分钟的复测整项顺延
+    expect(result.scheduledRetestIds).toEqual([]);
+    expect(result.newTasks.some((task) => task.module === 'EVIDENCE_RETEST')).toBe(false);
+  });
+});

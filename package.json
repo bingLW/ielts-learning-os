@@ -10,13 +10,15 @@
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "tsx scripts/e2e-v21.mts",
+    "test:e2e": "tsx scripts/e2e-v21.mts && tsx scripts/e2e-v22.mts",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "rm -f prisma/dev.db && prisma db push && prisma generate && tsx prisma/seed.ts",
     "typecheck": "tsc --noEmit",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "test:e2e:v21": "tsx scripts/e2e-v21.mts",
+    "test:e2e:v22": "tsx scripts/e2e-v22.mts"
   },
   "keywords": [
     "ielts",

@@ -32,6 +32,9 @@ export type IconName =
   | 'alert'
   | 'clock'
   | 'external'
+  | 'target'
+  | 'bulb'
+  | 'search'
   | 'circle';
 
 const PATHS: Record<IconName, string> = {
@@ -60,6 +63,9 @@ const PATHS: Record<IconName, string> = {
   alert: 'M12 4l9 16H3zM12 10v5M12 18h.01',
   clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
   external: 'M14 4h6v6M20 4l-8 8M18 14v6H4V6h6',
+  target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 13.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
+  bulb: 'M9 18h6M10 21h4M12 3a6 6 0 0 1 3.5 10.9c-.6.5-1 1.2-1 2v.1h-5v-.1c0-.8-.4-1.5-1-2A6 6 0 0 1 12 3z',
+  search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
   circle: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
 };
 

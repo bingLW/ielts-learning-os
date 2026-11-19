@@ -136,6 +136,9 @@ export async function getPlanPage(planDate: string): Promise<PlanPageDto> {
   );
   const totalPlannedMinutes = scheduledTasks.reduce((sum, task) => sum + task.plannedMinutes, 0);
   const totalActualMinutes = taskDtos.reduce((sum, task) => sum + task.actualMinutes, 0);
+  const retestPlannedMinutes = scheduledTasks
+    .filter((task) => task.module === 'EVIDENCE_RETEST')
+    .reduce((sum, task) => sum + task.plannedMinutes, 0);
 
   const summaryDto: DailySummaryDto | null = summary
     ? {
@@ -174,6 +177,7 @@ export async function getPlanPage(planDate: string): Promise<PlanPageDto> {
       tierCode: budget.tierCode,
     },
     planVersionCount: versionCount,
+    retestPlannedMinutes,
   };
 }
 

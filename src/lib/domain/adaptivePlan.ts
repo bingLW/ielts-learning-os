@@ -64,7 +64,7 @@ export interface AdaptivePlanItem {
 
 /** 未能排入当天的部分（含原因），进入 backlog 或转周轮换。 */
 export interface BacklogEntry {
-  kind: 'REVIEW' | 'SKILL_ROTATION' | 'EXTENDED' | 'CORE_DEFERRED';
+  kind: 'REVIEW' | 'SKILL_ROTATION' | 'EXTENDED' | 'CORE_DEFERRED' | 'RETEST';
   label: string;
   minutes: number;
   reason: string;
@@ -80,6 +80,24 @@ export interface DueReviewInput {
   maxOverdueDays: number;
 }
 
+/** 一条到期的技能型证据复测（由 `RetestSchedule` 驱动）。 */
+export interface DueRetestItem {
+  id: string;
+  minutes: number;
+}
+
+/**
+ * 到期证据复测。
+ *
+ * 复测是「约定时间点」而不是可随意切的练习：单项放不下就整项顺延，
+ * 不做半截复测（半截复测会污染证据链）。
+ */
+export interface DueRetestInput {
+  items: DueRetestItem[];
+  /** 最长逾期天数（仅用于文案）。 */
+  maxOverdueDays?: number;
+}
+
 export interface AdaptivePlanInput {
   /** 当日有效预算（分钟）。0 或不传 isRestDay 时按休息日处理。 */
   budgetMinutes: number;
@@ -89,6 +107,8 @@ export interface AdaptivePlanInput {
   allocation?: SkillAllocation | null;
   /** 到期/逾期复习。 */
   dueReviews?: DueReviewInput | null;
+  /** 到期证据复测（v2.2）：先于 P0 复习预留，计入当日预算。 */
+  dueRetests?: DueRetestInput | null;
   /** 有证据的弱项技能（按强度降序，最多 3 项）。 */
   weakSkills?: AllocationSkill[];
   /** 本周各技能相对目标的缺口分钟（正数 = 还欠多少）。 */
@@ -117,6 +137,8 @@ export interface AdaptivePlanResult {
   warnings: string[];
   /** 低于最小粒度而未生成的技能份额（转周轮换）。 */
   weeklyRotation: Partial<Record<AllocationSkill, number>>;
+  /** 本次已排入的复测（调用方据此把 RetestSchedule 关联到新任务）。 */
+  scheduledRetestIds: string[];
 }
 
 export type AdaptivePlanError = { ok: false; code: 'INVALID_BUDGET' | 'NEGATIVE_MINUTES' };
@@ -155,9 +177,11 @@ function finishPlan(
   backlog: BacklogEntry[],
   warnings: string[],
   weeklyRotation: Partial<Record<AllocationSkill, number>>,
+  scheduledRetestIds: string[] = [],
 ): AdaptivePlanResult | AdaptivePlanError {
   const totalPlannedMinutes = items.reduce((sum, item) => sum + item.minutes, 0);
   if (totalPlannedMinutes > budget) {
+
     // 防御性分支：理论上不可达（每步都先 min(remaining)）
     return { ok: false, code: 'NEGATIVE_MINUTES' };
   }
@@ -168,15 +192,16 @@ function finishPlan(
   if (remaining > 0) {
     warnings.push(`已安排 ${totalPlannedMinutes} / ${budget} 分钟，剩余 ${remaining} 分钟不强行填满。`);
   }
-  return { ok: true, items, totalPlannedMinutes, priorityMinutes, backlog, warnings, weeklyRotation };
+  return { ok: true, items, totalPlannedMinutes, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds };
 }
 
 /**
  * 生成自适应日计划。
  *
  * 执行顺序（不可调换）：
- * ① 预算校验 → ② 休息日短路 → ③ 取模板 → ④ P0 切片（受上限与核心保障双重约束）
- * → ⑤ 基础支持模块 → ⑥ 技能池按配比 + 粒度切分 → ⑦ 复盘/拓展收尾 → ⑧ 总量复核。
+ * ① 预算校验 → ② 休息日短路 → ③ 取模板 → ③.5 证据复测预留（到期约定优先）
+ * → ④ P0 切片（受上限与核心保障双重约束）→ ⑤ 基础支持模块
+ * → ⑥ 技能池按配比 + 粒度切分 → ⑦ 复盘/拓展收尾 → ⑧ 总量复核。
  */
 export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResult | AdaptivePlanError {
   const warnings: string[] = [];
@@ -197,6 +222,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     backlog,
     warnings,
     weeklyRotation,
+    scheduledRetestIds: [],
   };
 
   // ② 休息日 / 零预算：不生成强制任务，复习留在 backlog
@@ -207,6 +233,17 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
         label: '到期复习',
         minutes: input.dueReviews?.estMinutes ?? 0,
         reason: '休息日不安排学习任务；复习保留在 backlog，次日按 P0 优先处理',
+      });
+    }
+    if ((input.dueRetests?.items.length ?? 0) > 0) {
+      backlog.push({
+        kind: 'RETEST',
+        label: '到期证据复测',
+        minutes: (input.dueRetests?.items ?? []).reduce(
+          (sum, retest) => sum + Math.max(0, Math.round(retest.minutes)),
+          0,
+        ),
+        reason: '休息日不安排复测；复测排期保留，次日优先排入',
       });
     }
     warnings.push('休息日 / 零预算：不生成学习任务，本次不计为学习失败。');
@@ -228,11 +265,56 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     remaining -= item.minutes;
   };
 
-  // ④ P0 切片：min(到期复习量, 预算×p0上限, 预算−核心保障)
+  // ③.5 证据复测预留（v2.2）：到期复测是约定时间点，先于 P0 复习占预算。
+  //     单项放不下就整项顺延（不拆半截），继续尝试后续更短的项；
+  //     它们不进入四技能分母，也不受 P0 上限比例约束（那不是「可选复习」）。
+  const retestItems = input.dueRetests?.items ?? [];
+  const scheduledRetestIds: string[] = [];
+  let retestMinutes = 0;
+  for (const retest of retestItems) {
+    const minutes = Math.max(0, Math.round(retest.minutes));
+    if (minutes <= 0 || retestMinutes + minutes > remaining) continue;
+    retestMinutes += minutes;
+    scheduledRetestIds.push(retest.id);
+  }
+  if (retestMinutes > 0) {
+    const overdue = input.dueRetests?.maxOverdueDays ?? 0;
+    push({
+      module: 'EVIDENCE_RETEST',
+      skill: 'META',
+      minutes: retestMinutes,
+      track: 'GENERAL_ENGLISH',
+      primarySkill: 'FOUNDATION',
+      priority: 'P0',
+      sourceKind: 'RETEST',
+      splittable: false,
+      minChunkMinutes: retestMinutes,
+      rationale:
+        overdue > 0
+          ? `到期证据复测 ${scheduledRetestIds.length} 项（最久逾期 ${overdue} 天），先预留 ${retestMinutes} 分钟；不进入四技能分母`
+          : `今天到期证据复测 ${scheduledRetestIds.length} 项，先预留 ${retestMinutes} 分钟；不进入四技能分母`,
+    });
+    warnings.push(
+      `本日先预留 ${retestMinutes} 分钟证据复测（${scheduledRetestIds.length} 项），复测不计入四技能训练量。`,
+    );
+  }
+  const deferredRetests = retestItems.filter(
+    (retest) => Math.max(0, Math.round(retest.minutes)) > 0 && !scheduledRetestIds.includes(retest.id),
+  );
+  if (deferredRetests.length > 0) {
+    backlog.push({
+      kind: 'RETEST',
+      label: '到期证据复测（未排入）',
+      minutes: deferredRetests.reduce((sum, retest) => sum + Math.max(0, Math.round(retest.minutes)), 0),
+      reason: '当日预算放不下完整的复测项；复测不拆分，整体顺延到下一个可用日期',
+    });
+  }
+
+  // ④ P0 切片：min(到期复习量, 预算×p0上限, 预算−核心保障−复测预留)
   const dueMinutes = Math.max(0, Math.round(input.dueReviews?.estMinutes ?? 0));
   const coreReserve = Math.round(budget * coreMinRatio);
   const p0Cap = Math.floor(budget * p0CapRatio);
-  const p0Available = Math.max(0, Math.min(dueMinutes, p0Cap, budget - coreReserve));
+  const p0Available = Math.max(0, Math.min(dueMinutes, p0Cap, budget - coreReserve - retestMinutes));
   const p0Minutes = floorTo(p0Available, granularity);
 
   if (p0Minutes > 0) {
@@ -298,7 +380,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     } else {
       warnings.push('阶段零只生成基线诊断任务，暂不生成技能训练计划。');
     }
-    return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation);
+    return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds);
   }
 
   // ⑤ 基础支持模块（词汇复习 + 语法/句子），从模板 foundation 中切。
@@ -417,7 +499,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
           reason: '短时预算只安排一项主技能，其余技能转入本周轮换',
         });
       }
-      return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation);
+      return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds);
     }
 
     // 每项先向下取整到粒度，余数用于补块（最大余数法，平局按固定顺序）
@@ -493,7 +575,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     });
   }
 
-  return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation);
+  return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds);
 }
 
 /** 当日计划总分钟（供 UI 与校验复用）。 */
