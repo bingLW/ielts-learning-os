@@ -7,6 +7,7 @@
  * 三色（GREEN/YELLOW/RED）同时具备「文字 + 图标 + 边框」，不依赖颜色单独传达状态。
  */
 :root {
+  /* 十六进制色值：供本文件内 var(--color-*) 直接引用（body 背景/文字、focus 描边等）。 */
   --color-green: #15803d;
   --color-yellow: #b45309;
   --color-red: #b91c1c;
@@ -17,6 +18,23 @@
   --color-surface-alt: #f6f8fb;
   --color-line: #dfe5ec;
   --color-brand: #1d4ed8;
+
+  /*
+   * RGB 通道值（空格分隔）：供 tailwind.config 的 rgb(... / <alpha-value>) 使用。
+   * 必须与上面的 hex 值保持一致——同一语义两个表示，缺一会导致 /N 透明度类不生成。
+   * 修改任一色值时，两处需同步更新。
+   */
+  --color-green-rgb: 21 128 61;
+  --color-yellow-rgb: 180 83 9;
+  --color-red-rgb: 185 28 28;
+  --color-pending-rgb: 107 114 128;
+  --color-ink-rgb: 15 23 42;
+  --color-ink-muted-rgb: 82 96 109;
+  --color-surface-rgb: 255 255 255;
+  --color-surface-alt-rgb: 246 248 251;
+  --color-line-rgb: 223 229 236;
+  --color-brand-rgb: 29 78 216;
+
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
 }
