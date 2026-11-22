@@ -20,6 +20,8 @@ const ICON_BY_HREF: Record<string, IconName> = {
   '/evidence': 'check',
   '/profile': 'target',
   '/diagnosis': 'search',
+  '/listening': 'play',
+  '/speaking': 'quote',
   '/coach': 'bulb',
   '/general': 'check',
   '/ielts': 'chart',

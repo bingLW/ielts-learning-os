@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { updateProfileAction } from '@/lib/actions/settings';
+import { shutdownApplicationAction } from '@/lib/actions/listening';
 import {
   BUDGET_PRESET_MINUTES,
   DISCLAIMER_BAND,
@@ -331,6 +332,32 @@ export function SettingsBody({ profile }: { profile: SettingsProfileDto }) {
           </li>
           <li>当前目标分：Band {formatBand(profile.targetBandOverall)}（个人目标，非官方成绩）。</li>
         </ul>
+      </Card>
+
+      <Card title="退出系统" description="关闭本机正在运行的应用进程（单用户本机应用）。">
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-inkMuted">
+            点击「退出系统」将关闭当前程序。请先确认已保存所有学习记录，未完成的计时会被保留在服务端。
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('确定要退出系统、关闭程序吗？')) {
+                void shutdownApplicationAction().then((result) => {
+                  if (result.ok) {
+                    // 服务端 300ms 后终止进程；前端随后提示，避免页面卡死。
+                    window.setTimeout(() => {
+                      window.alert('应用已关闭。可以安全关闭此标签页。');
+                    }, 600);
+                  }
+                });
+              }
+            }}
+            className="w-fit rounded-lg bg-alert px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+          >
+            退出系统
+          </button>
+        </div>
       </Card>
 
       <Toast toast={toast} onDismiss={dismiss} />

@@ -810,3 +810,38 @@ npx prisma generate                                  # 重新生成 Prisma Clien
 | --- | --- | --- |
 | L32 | 加密密钥不随数据库迁移 | 只复制 `dev.db` 到新机器时无法解密已存 Key，页面会提示重新填写；或改用 `AI_CREDENTIALS_SECRET` 统一密钥 |
 | L33 | 管理页无账号鉴权 | 本项目为单用户本机应用；能访问 `/ai-coach/admin` 的人即可修改凭据，部署到公网前必须加访问控制 |
+
+---
+
+## 18. v2.4.2 → v2.5 Listening & Speaking Lab
+
+### 18.1 变更
+
+- `/listening` 听力实验室：音频上传（mp3/m4a/wav/webm/ogg/aac，≤50MB）、播放器（0.75/1/1.25x 变速、A-B 循环、Range 拖动）、转写对照、练习与作答。
+- `/speaking` 口语实验室：麦克风录音、回放、重录保留历史 take、九类口语题目、会话记录。
+- 本地文件落盘：音频/录音写入 `storage/uploads`（gitignore），DB 只存相对路径 + sha256；`/api/audio/[id]` 流式读取支持 Range。
+- ASR Provider Adapter 抽象 `src/lib/speech/provider.ts`；当前未接真实供应商，走手动转写降级。
+- `/settings` 底部新增「退出系统」：二次确认后优雅关闭本机应用进程。
+
+### 18.2 迁移（v2.4.2 → v2.5）
+
+```bash
+bash scripts/backup.sh                              # 升级前一致性备份
+node scripts/migrations/v2.5.mjs --dry-run           # 只看 DDL
+node scripts/migrations/v2.5.mjs                     # 正式迁移
+npx prisma generate                                  # 重新生成 Prisma Client
+```
+
+纯加法新增 13 张表；单事务 `BEGIN IMMEDIATE`；checksum `6657ce882593958a`；回滚 `bash scripts/restore.sh backups/<升级前备份>`。
+
+### 18.3 测试
+
+52 文件 / 747 用例；`typecheck` / `typecheck:test` / `build` 通过；`/listening`、`/speaking`、`/settings` 冒烟 200。详见 `docs/29-v2.5-test-report.md`。
+
+### 18.4 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L34 | 未接入真实 ASR/TTS/发音分析 | 语音转写当前走手动降级；口语不产出自动评分 |
+| L35 | 口语 AI 反馈依赖外部 AI 通道 | 未启用外部 AI 时只保存录音与作答 |
+| L36 | 听力训练交互表单为增量 | 九种模式的完整编辑表单逐步补齐 |

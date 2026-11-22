@@ -2348,3 +2348,307 @@ model DiagnosticReviewRequest {
 
   @@index([status])
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// v2.5 Listening & Speaking Lab（纯加法；音频落盘 storage/uploads，DB 只存相对路径 + sha256）
+// ─────────────────────────────────────────────────────────────────────────
+
+// ── v2.5-A 音源（上传音频 / 材料音频 / 题库内部音频 / 外部链接） ──
+model AudioAsset {
+  id             String   @id @default(cuid())
+  title          String
+  /**
+   * UPLOAD | MATERIAL | INTERNAL | EXTERNAL_URL
+   */
+  source         String   @default("UPLOAD")
+  sourceUrl      String?
+  /**
+   * 相对路径（storage/uploads 下）或外部 URL；audio 二进制不写 DB。
+   */
+  filePath       String
+  fileName       String?
+  mimeType       String?
+  sizeBytes      Int?
+  sha256         String?
+  durationSec    Int?
+  language       String?
+  /**
+   * 方言/口音标签（仅素材描述，不作为能力推断依据）。
+   */
+  dialectTag     String?
+  /**
+   * 作者/权利信息（已知时填写）。
+   */
+  rightsInfo     String?
+  /**
+   * ACTIVE | ARCHIVED
+   */
+  permissionState String  @default("ACTIVE")
+  createdAt      DateTime @default(now())
+
+  transcripts        Transcript[]
+  listeningExercises ListeningExercise[]
+
+  @@index([source])
+  @@index([sha256])
+}
+
+// ── v2.5-C 转写（机器原始 / 手动 / 用户修订，版本链分离） ──
+model Transcript {
+  id                String   @id @default(cuid())
+  audioAssetId      String?
+  recordingAssetId  String?
+  /**
+   * MACHINE | MANUAL | REVISED
+   */
+  kind              String   @default("MACHINE")
+  parentTranscriptId String?
+  provider          String?
+  model             String?
+  language          String?
+  /**
+   * LOW | MEDIUM | HIGH
+   */
+  confidence        String?
+  /**
+   * DRAFT | CONFIRMED
+   */
+  status            String   @default("DRAFT")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  segments TranscriptSegment[]
+
+  audioAsset     AudioAsset?     @relation(fields: [audioAssetId], references: [id], onDelete: Cascade)
+  recordingAsset RecordingAsset? @relation(fields: [recordingAssetId], references: [id], onDelete: Cascade)
+
+  @@index([audioAssetId])
+  @@index([recordingAssetId])
+}
+
+model TranscriptSegment {
+  id           String   @id @default(cuid())
+  transcriptId String
+  seq          Int
+  startMs      Int?
+  endMs        Int?
+  text         String
+  speaker      String?
+  confidence   String?
+
+  transcript Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, seq])
+}
+
+// ── v2.5-B 听力练习与作答（首听 / 辅助后结果分离） ──
+model ListeningExercise {
+  id           String   @id @default(cuid())
+  audioAssetId String
+  /**
+   * BLIND | GIST | DETAIL | DICTATION | TRANSCRIPT_COMPARISON |
+   * CHUNKING | SHADOWING | RETELLING | TRANSFER
+   */
+  mode         String
+  title        String
+  promptJson   String?
+  createdAt    DateTime @default(now())
+
+  audioAsset AudioAsset         @relation(fields: [audioAssetId], references: [id], onDelete: Cascade)
+  attempts   ListeningAttempt[]
+
+  @@index([audioAssetId])
+}
+
+model ListeningAttempt {
+  id           String   @id @default(cuid())
+  exerciseId   String
+  evidenceId   String?
+  /**
+   * 首听结果 JSON（辅助前，不可被覆盖）。
+   */
+  firstListenResultJson String?
+  /**
+   * 辅助后结果 JSON（与首听分离保存）。
+   */
+  assistedResultJson    String?
+  replayCount  Int      @default(0)
+  /**
+   * DRAFT | SUBMITTED
+   */
+  status       String   @default("DRAFT")
+  createdAt    DateTime @default(now())
+
+  exercise ListeningExercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+  errors   ListeningError[]
+
+  @@index([exerciseId])
+}
+
+model ListeningError {
+  id           String   @id @default(cuid())
+  attemptId    String
+  /**
+   * UNKNOWN_VOCABULARY | KNOWN_WORD_NOT_RECOGNIZED | SEGMENTATION |
+   * REDUCED_FORMS | SENTENCE_STRUCTURE | DISCOURSE_MARKER | MISSED_DETAIL |
+   * ATTENTION_LOAD | BACKGROUND_KNOWLEDGE | AUDIO_QUALITY | UNKNOWN
+   */
+  errorType    String
+  /**
+   * RULE | AI | USER
+   */
+  source       String   @default("USER")
+  note         String?
+  /**
+   * 技术质量/音频问题不计为英语能力错误。
+   */
+  isTechnical  Boolean  @default(false)
+  userCorrected Boolean @default(false)
+  createdAt    DateTime @default(now())
+
+  attempt ListeningAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+}
+
+// ── v2.5-D/E 口语题目、会话、录音、转写、评估 ──
+model SpeakingPrompt {
+  id           String   @id @default(cuid())
+  /**
+   * READ_ALOUD | SHORT_ANSWER | TOPIC_MONOLOGUE | PICTURE_DESCRIPTION |
+   * RETELLING | ROLE_PLAY | FOLLOW_UP | CLARIFICATION | IELTS_PART
+   */
+  taskType     String
+  title        String
+  prompt       String
+  rubricVersion String?
+  createdAt    DateTime @default(now())
+
+  sessions SpeakingSession[]
+
+  @@index([taskType])
+}
+
+model SpeakingSession {
+  id         String   @id @default(cuid())
+  promptId   String?
+  /**
+   * PRACTICE | INTERACTION | RETEST
+   */
+  mode       String   @default("PRACTICE")
+  /**
+   * ACTIVE | COMPLETED | CANCELLED
+   */
+  status     String   @default("ACTIVE")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  prompt    SpeakingPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  turns     SpeakingTurn[]
+  recordings RecordingAsset[]
+
+  @@index([promptId])
+}
+
+model SpeakingTurn {
+  id               String   @id @default(cuid())
+  sessionId        String
+  /**
+   * USER | AI
+   */
+  role             String
+  seq              Int
+  text             String?
+  recordingAssetId String?
+  transcriptId     String?
+  createdAt        DateTime @default(now())
+
+  session SpeakingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model RecordingAsset {
+  id          String   @id @default(cuid())
+  sessionId   String?
+  /**
+   * 相对路径（storage/uploads 下）；录音二进制不写 DB。
+   */
+  filePath    String
+  mimeType    String?
+  sizeBytes   Int?
+  sha256      String?
+  durationSec Int?
+  /**
+   * 重录版本号（保留历史 take，从 1 递增）。
+   */
+  takeNumber  Int      @default(1)
+  createdAt   DateTime @default(now())
+
+  session     SpeakingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  transcripts Transcript[]
+  asrResults  ASRResult[]
+
+  @@index([sessionId])
+}
+
+model ASRResult {
+  id               String   @id @default(cuid())
+  recordingAssetId String
+  transcriptId     String?
+  provider         String
+  model            String
+  language         String?
+  /**
+   * PENDING | SUCCEEDED | FAILED
+   */
+  status           String   @default("PENDING")
+  confidence       String?
+  errorCode        String?
+  latencyMs        Int?
+  costUsd          Float?
+  createdAt        DateTime @default(now())
+
+  recordingAsset RecordingAsset @relation(fields: [recordingAssetId], references: [id], onDelete: Cascade)
+
+  @@index([recordingAssetId])
+}
+
+// ── v2.5-E 口语评分（版本化 rubric；证据引用 + 置信度 + 局限） ──
+model SpeechEvaluation {
+  id               String   @id @default(cuid())
+  sessionId        String?
+  recordingAssetId String?
+  rubricVersion    String
+  /**
+   * 分析维度 JSON；可见证据 JSON；局限 JSON（与评分理由分离）。
+   */
+  dimensionsJson   String
+  evidenceJson     String?
+  limitationsJson  String?
+  confidence       String   @default("MEDIUM")
+  needsFollowUp    Boolean  @default(false)
+  /**
+   * SELF | AI | HUMAN
+   */
+  assessorType     String   @default("AI")
+  isOfficialScore  Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([recordingAssetId])
+}
+
+// ── v2.5-E 音频技术检查（与英语能力分离） ──
+model AudioTechnicalCheck {
+  id               String   @id @default(cuid())
+  recordingAssetId String
+  /**
+   * OK | SILENT | NOISE | CORRUPT | TOO_SHORT | UNKNOWN
+   */
+  status           String
+  note             String?
+  createdAt        DateTime @default(now())
+
+  @@index([recordingAssetId])
+}

@@ -16,6 +16,9 @@ prisma/dev.db
 # 本机凭据加密密钥（v2.4.2：管理页填写的 API Key 用它加密入库，绝不提交）
 .local/
 
+# v2.5 音频/录音本地落盘（二进制不提交；DB 只存相对路径 + sha256）
+storage/
+
 # 系统与工具杂项
 .DS_Store
 .workbuddy/

@@ -2,6 +2,40 @@
 
 本项目采用手工维护的版本记录；每个条目只列已实际执行并验证的内容。
 
+## v2.5 — 2026-11-22
+
+Listening & Speaking Lab：听力与口语训练、诊断、证据采集与复测工作台。
+
+### 新增
+
+- `/listening` 听力实验室：音频上传（mp3/m4a/wav/webm/ogg/aac，≤50MB）、播放器（变速 0.75/1/1.25x、A-B 循环、Range 拖动）、转写对照、练习与作答。
+- `/speaking` 口语实验室：麦克风录音（MediaRecorder）、回放、重录保留历史 take、九类口语题目、会话记录。
+- 本地文件落盘：音频/录音写入 `storage/uploads`（gitignore），DB 只存相对路径 + sha256；`/api/audio/[id]` 流式读取支持 Range。
+- ASR Provider Adapter 抽象：`src/lib/speech/provider.ts`；当前未接真实供应商，走手动转写降级（有意的安全默认）。
+- 「退出系统」功能：`/settings` 底部新增二次确认关闭本机应用进程。
+
+### 数据模型
+
+- 新增 13 张表：AudioAsset、Transcript、TranscriptSegment、ListeningExercise、ListeningAttempt、ListeningError、SpeakingPrompt、SpeakingSession、SpeakingTurn、RecordingAsset、ASRResult、SpeechEvaluation、AudioTechnicalCheck。
+- 首听结果与辅助后结果分字段保存，绝不覆盖；技术质量问题不计为英语能力错误。
+
+### 数据库迁移
+
+- 脚本：`scripts/migrations/v2.5.mjs`（纯加法、单事务、幂等、版本 + checksum 校验）。
+- checksum：`6657ce882593958a`；真实库 `integrity_check=ok`、外键违规 0、核心表行数漂移 0。
+
+### 验证
+
+- `npm test`：52 文件 / 747 用例全部通过（净增 2 文件 23 用例）。
+- `npm run typecheck`、`npm run typecheck:test`：通过。
+- `npm run build`：通过（Docker node:22 容器）；`/listening`、`/speaking`、`/settings` 冒烟 200。
+
+### 已知限制
+
+- 未接入真实 ASR/TTS/发音分析 Provider（手动转写降级）。
+- 口语 AI 反馈依赖 v2.4 外部 AI 通道。
+- 听力九种训练模式交互表单与诊断集成（Phase F 运行时接线）为后续增量。
+
 ## v2.4.2 — 2026-11-22
 
 Provider 凭据入库：API Key、Base URL、模型名改为前端页面配置。

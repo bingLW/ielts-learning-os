@@ -1022,6 +1022,8 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/diagnosis', labelZh: '障碍诊断', shortZh: '障碍', group: 'DIAGNOSE' },
   { href: '/diagnostics', labelZh: 'AI 初始诊断', shortZh: '初诊', group: 'DIAGNOSE' },
   { href: '/retest', labelZh: '复测与迁移', shortZh: '复测', group: 'DIAGNOSE' },
+  { href: '/listening', labelZh: '听力实验室', shortZh: '听力', group: 'DIAGNOSE' },
+  { href: '/speaking', labelZh: '口语实验室', shortZh: '口语', group: 'DIAGNOSE' },
   { href: '/coach', labelZh: 'AI Coach 日志', shortZh: 'AI', group: 'DIAGNOSE' },
   { href: '/ai-coach', labelZh: 'AI Learning Coach', shortZh: '教练', group: 'DIAGNOSE' },
   { href: '/general', labelZh: '通用英语', shortZh: '通用', group: 'TRACKS' },
@@ -2653,3 +2655,156 @@ export const AI_TURN_STATUS_LABELS_ZH: Record<string, string> = {
   INVALID_OUTPUT: '输出格式不合法',
   BLOCKED: '预算/开关拦截',
 };
+
+// ───────────────────────── v2.5 Listening & Speaking Lab ─────────────────────────
+
+/** 音频来源类型。 */
+export const AUDIO_SOURCE_TYPES = ['UPLOAD', 'MATERIAL', 'INTERNAL', 'EXTERNAL_URL'] as const;
+export type AudioSourceType = (typeof AUDIO_SOURCE_TYPES)[number];
+
+/** 转写类型：机器原始 / 手动 / 用户修订。 */
+export const TRANSCRIPT_KINDS = ['MACHINE', 'MANUAL', 'REVISED'] as const;
+export type TranscriptKind = (typeof TRANSCRIPT_KINDS)[number];
+
+/** 听力训练九种模式。 */
+export const LISTENING_MODES = [
+  'BLIND',
+  'GIST',
+  'DETAIL',
+  'DICTATION',
+  'TRANSCRIPT_COMPARISON',
+  'CHUNKING',
+  'SHADOWING',
+  'RETELLING',
+  'TRANSFER',
+] as const;
+export type ListeningMode = (typeof LISTENING_MODES)[number];
+
+export const LISTENING_MODE_LABELS_ZH: Record<ListeningMode, string> = {
+  BLIND: '盲听',
+  GIST: '主旨理解',
+  DETAIL: '细节捕捉',
+  DICTATION: '听写',
+  TRANSCRIPT_COMPARISON: '转写对照',
+  CHUNKING: '语块切分',
+  SHADOWING: '跟读',
+  RETELLING: '听后复述',
+  TRANSFER: '迁移听力',
+};
+
+/** 听力错误分类（技术质量问题不计为英语能力错误）。 */
+export const LISTENING_ERROR_TYPES = [
+  'UNKNOWN_VOCABULARY',
+  'KNOWN_WORD_NOT_RECOGNIZED',
+  'SEGMENTATION',
+  'REDUCED_FORMS',
+  'SENTENCE_STRUCTURE',
+  'DISCOURSE_MARKER',
+  'MISSED_DETAIL',
+  'ATTENTION_LOAD',
+  'BACKGROUND_KNOWLEDGE',
+  'AUDIO_QUALITY',
+  'UNKNOWN',
+] as const;
+export type ListeningErrorType = (typeof LISTENING_ERROR_TYPES)[number];
+
+export const LISTENING_ERROR_LABELS_ZH: Record<ListeningErrorType, string> = {
+  UNKNOWN_VOCABULARY: '生词',
+  KNOWN_WORD_NOT_RECOGNIZED: '认识但连读听不出',
+  SEGMENTATION: '词界/切分',
+  REDUCED_FORMS: '弱读/连读/缩读',
+  SENTENCE_STRUCTURE: '句子结构',
+  DISCOURSE_MARKER: '语篇标记/关系',
+  MISSED_DETAIL: '漏掉关键细节',
+  ATTENTION_LOAD: '注意力/工作记忆负荷',
+  BACKGROUND_KNOWLEDGE: '背景知识不足',
+  AUDIO_QUALITY: '音频质量（非能力问题）',
+  UNKNOWN: '待复核',
+};
+
+/** 听力错误来源。 */
+export const LISTENING_ERROR_SOURCES = ['RULE', 'AI', 'USER'] as const;
+
+/** 口语任务类型。 */
+export const SPEAKING_TASK_TYPES = [
+  'READ_ALOUD',
+  'SHORT_ANSWER',
+  'TOPIC_MONOLOGUE',
+  'PICTURE_DESCRIPTION',
+  'RETELLING',
+  'ROLE_PLAY',
+  'FOLLOW_UP',
+  'CLARIFICATION',
+  'IELTS_PART',
+] as const;
+export type SpeakingTaskType = (typeof SPEAKING_TASK_TYPES)[number];
+
+export const SPEAKING_TASK_TYPE_LABELS_ZH: Record<SpeakingTaskType, string> = {
+  READ_ALOUD: '朗读',
+  SHORT_ANSWER: '简短问答',
+  TOPIC_MONOLOGUE: '话题独白',
+  PICTURE_DESCRIPTION: '看图描述',
+  RETELLING: '复述',
+  ROLE_PLAY: '角色扮演',
+  FOLLOW_UP: '追问',
+  CLARIFICATION: '澄清/修复',
+  IELTS_PART: '雅思口语题',
+};
+
+/** 口语会话模式。 */
+export const SPEAKING_SESSION_MODES = ['PRACTICE', 'INTERACTION', 'RETEST'] as const;
+
+/** 口语分析维度（内容组织与语言能力同音频技术质量分离）。 */
+export const SPEAKING_DIMENSIONS = [
+  'fluency',
+  'vocabulary',
+  'grammar',
+  'coherence',
+  'intelligibility',
+  'pronunciation',
+  'interaction',
+  'repair',
+] as const;
+
+export const SPEAKING_DIMENSION_LABELS_ZH: Record<string, string> = {
+  fluency: '流利度与连贯',
+  vocabulary: '词汇广度与检索',
+  grammar: '语法广度与准确',
+  coherence: '连贯与相关',
+  intelligibility: '可理解度',
+  pronunciation: '发音特征',
+  interaction: '互动',
+  repair: '澄清与修复策略',
+};
+
+/** 音频技术检查结果。 */
+export const AUDIO_TECH_STATUSES = ['OK', 'SILENT', 'NOISE', 'CORRUPT', 'TOO_SHORT', 'UNKNOWN'] as const;
+
+/** 上传音频允许的 MIME 类型与扩展名。 */
+export const AUDIO_ALLOWED_MIME = [
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/webm',
+  'audio/ogg',
+  'audio/aac',
+] as const;
+
+export const AUDIO_ALLOWED_EXTENSIONS = ['mp3', 'm4a', 'wav', 'webm', 'ogg', 'aac'] as const;
+
+/** 上传音频大小上限（字节）。 */
+export const AUDIO_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** 录音单条上限：约 1.6MB / 90 秒（延续 v2.4.1 约定）。 */
+export const RECORDING_MAX_BYTES = 1_600_000;
+export const RECORDING_MAX_SECONDS = 90;
+
+/** 音频存储根目录（相对项目根，gitignore）。 */
+export const STORAGE_DIR = 'storage';
+export const UPLOAD_DIR = 'storage/uploads';
+
+/** 口语评分 rubric 默认版本。 */
+export const SPEAKING_RUBRIC_VERSION = 'speaking.rubric.v1';
+/** 听力转写默认语言。 */
+export const ASR_DEFAULT_LANGUAGE = 'en';
