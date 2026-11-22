@@ -95,7 +95,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
               <button
                 type="button"
                 onClick={startRecording}
-                className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
               >
                 开始录音
               </button>
@@ -103,7 +103,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
               <button
                 type="button"
                 onClick={stopRecording}
-                className="rounded-lg bg-egRed px-4 py-2 text-sm font-medium text-white"
+                className="rounded-lg bg-egRed px-3 py-1.5 text-xs font-medium text-white"
               >
                 停止
               </button>
@@ -113,7 +113,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
                 type="button"
                 onClick={uploadRecording}
                 disabled={uploading}
-                className="rounded-lg border border-ink/10 px-4 py-2 text-sm disabled:opacity-50"
+                className="rounded-lg border border-ink/10 px-3 py-1.5 text-xs disabled:opacity-50"
               >
                 {uploading ? '保存中…' : '保存录音'}
               </button>

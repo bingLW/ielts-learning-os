@@ -61,7 +61,7 @@ export function ListeningPageBody({ assets, exercises, transcripts }: Props) {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
-          className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          className="rounded-lg bg-ink px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {uploading ? '上传中…' : '上传音频'}
         </button>
@@ -169,7 +169,7 @@ function AudioPlayer({ asset }: { asset: AudioAssetDto }) {
       <div className="mb-2 flex items-center gap-2">
         <button
           type="button"
-          className="rounded-lg border border-ink/10 px-3 py-1 text-sm"
+          className="rounded-lg border border-ink/10 px-2.5 py-1 text-xs"
           onClick={() => {
             const audio = audioRef.current;
             if (!audio) return;
