@@ -201,6 +201,34 @@ export function writeOriginalMaterialFile(
   };
 }
 
+/**
+ * 落盘派生文件（解析快照等）：`storage/uploads/materials/{materialId}/{fileName}`。
+ *
+ * 与原文的差别：派生文件**允许覆盖**（重跑解析会重写同一路径），因此用 `flag:'w'`
+ * 且不 chmod 0444；它随时可以由原文重新生成，不承担审计基线职责。
+ *
+ * @param fileName 只允许字母数字与点（如 `parsed.json`），防止路径穿越
+ */
+export function writeDerivedMaterialFile(
+  buffer: Buffer,
+  materialId: string,
+  fileName: string,
+): StoredMaterialFile {
+  const safeId = assertSafeMaterialId(materialId);
+  const safeName = fileName.replace(/[^A-Za-z0-9._-]/g, '').replace(/^\.+/, '');
+  if (!safeName) throw new Error('非法派生文件名');
+  const dir = path.join(ensureMaterialsDir(), safeId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const absolutePath = path.join(dir, safeName);
+  writeFileSync(absolutePath, buffer, { flag: 'w' });
+  return {
+    relativePath: path.posix.join('materials', safeId, safeName),
+    absolutePath,
+    sizeBytes: buffer.byteLength,
+    sha256: sha256Hex(buffer),
+  };
+}
+
 /** 删除某材料的整个目录（含派生文件）；目录不存在则静默跳过。 */
 export function deleteMaterialDir(materialId: string): void {
   const safeId = assertSafeMaterialId(materialId);

@@ -986,7 +986,7 @@ export interface NavItem {
   labelZh: string;
   /** 简写用于移动端底部导航。 */
   shortZh: string;
-  group: 'CORE' | 'DIAGNOSE' | 'TRACKS' | 'ANALYZE';
+  group: 'CORE' | 'MATERIALS' | 'DIAGNOSE' | 'TRACKS' | 'ANALYZE';
   /**
    * 阶段 C/D 已全部落地，当前没有「待开放」入口。
    * 字段保留：后续若再引入分期能力，UI 用同一套机制标注而不是隐藏入口。
@@ -1013,6 +1013,9 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/', labelZh: 'Dashboard 总览', shortZh: '总览', group: 'CORE' },
   { href: '/plan', labelZh: '学习计划', shortZh: '计划', group: 'CORE' },
   { href: '/records', labelZh: '学习记录', shortZh: '记录', group: 'CORE' },
+  // v2.6 学习材料（Smart Materials）：材料库 + 导入失败与重试
+  { href: '/materials', labelZh: '材料库（Smart Materials）', shortZh: '材料', group: 'MATERIALS' },
+  { href: '/materials/failed', labelZh: '导入失败与重试', shortZh: '失败', group: 'MATERIALS' },
   { href: '/grammar', labelZh: '语法诊断（EGIU）', shortZh: '语法', group: 'DIAGNOSE' },
   { href: '/mistakes', labelZh: '错题与复习', shortZh: '复习', group: 'DIAGNOSE' },
   { href: '/vocabulary', labelZh: '词汇', shortZh: '词汇', group: 'DIAGNOSE' },
@@ -1192,6 +1195,7 @@ export const AI_ROADMAP_NOTE = 'AI 建议为本地规则引擎生成，每条都
 
 export const NAV_GROUP_LABEL_ZH: Record<NavItem['group'], string> = {
   CORE: '每日执行',
+  MATERIALS: '学习材料',
   DIAGNOSE: '诊断与复习',
   TRACKS: '三轨道',
   ANALYZE: '复盘与配置',
@@ -3129,6 +3133,7 @@ export const MATERIAL_ERROR_MESSAGES_ZH: Record<string, string> = {
   CHUNK_LIMIT: '内容过长，仅处理前 800 个分块',
   EXTRACTED_TOO_LARGE: '提取文本超过 8MB 上限，已停止解析剩余内容',
   CANCELLED: '已按你的要求取消处理',
+  INTERNAL_STORAGE: '解析结果写入失败（磁盘空间或权限问题），可重试',
 };
 
 /** 材料域错误码集合（与 `MATERIAL_ERROR_MESSAGES_ZH` 的键保持一致）。 */
@@ -3150,6 +3155,7 @@ export const MATERIAL_ERROR_CODES = [
   'CHUNK_LIMIT',
   'EXTRACTED_TOO_LARGE',
   'CANCELLED',
+  'INTERNAL_STORAGE',
 ] as const;
 export type MaterialErrorCode = (typeof MATERIAL_ERROR_CODES)[number];
 
@@ -3176,9 +3182,15 @@ export const MATERIAL_LIMITS = {
   chunksPerAiCall: 8,
   /** 单次 AI 调用的输入字符上限。 */
   maxInputCharsPerCall: 16000,
-  /** 单材料 AI 调用次数上限。 */
+  /**
+   * **单次运行**（一个 `ProcessingJob`）的 AI 调用次数上限。
+   *
+   * 跨运行累计不在这里：总量记在 `LearningMaterial.aiCallCount` /
+   * `estimatedCostUsd`（由 pipeline 每次 `applyOutcome` 累加），界面**必须**展示
+   * 累计调用次数与预估成本 —— 否则用户点了「继续分析」也看不到花了多少。
+   */
   maxAiCalls: 60,
-  /** 单材料输入 token 累计上限。 */
+  /** 单次运行的输入 token 累计上限（跨运行口径同 `maxAiCalls`）。 */
   maxTotalInputTokens: 260_000,
   /** 解析（validating + extracting）单次超时。 */
   parseTimeoutMs: 60_000,

@@ -90,9 +90,47 @@ function normHeader(value: string): string {
   return value.trim().toLowerCase().replace(/[\s_\-()（）]/g, '');
 }
 
-/** 词条归一：小写、合并空白、去掉首尾引号。不改变拼写（不做词形还原）。 */
+/**
+ * 零宽类字符（PDF 抽取的常见噪声：软连字符、BOM、零宽连接符）。
+ *
+ * 它们肉眼不可见，却会**逐字节**污染词条键：`qu\u200Bick` 与 `quick` 会变成两个
+ * 词条。所以要在归一化的最前面剔掉，否则后面的折叠都看不见它。
+ */
+const LEMMA_ZERO_WIDTH_RE = /[\u200B-\u200D\uFEFF]/g;
+
+/** 全角 ASCII 区间（U+FF01–U+FF5E）：`ｃａｆｅ` → `cafe`。 */
+const LEMMA_FULL_WIDTH_RE = /[\uFF01-\uFF5E]/g;
+
+/** 弯撇号 / 撇号类（`don’t` 里的 `’`）→ ASCII `'`。 */
+const LEMMA_SMART_APOSTROPHE_RE = /[\u2018\u2019\u02BC\u2032]/g;
+
+/** 弯双引号（`“quote”`）→ ASCII `"`。 */
+const LEMMA_SMART_QUOTE_RE = /[\u201C\u201D\u2033]/g;
+
+/**
+ * 词条归一：小写、合并空白、去掉首尾引号、折叠字符层面的等价变形。
+ * **不改变拼写**（不做词形还原 —— 那是词典的事，不是身份键的事）。
+ *
+ * 这是词条身份键（`language + normalizedLemma + pos + senseKey`）的唯一来源，
+ * v2.3 的词库导入与 v2.6 的材料词汇候选**必须**共用它：各写一份归一化会造出两个
+ * 身份空间，同一个词在主库与候选里键不同，E-04「已存在词条只加来源」就失效了。
+ *
+ * 扩展历史（T12，E-05 用例矩阵驱动，逐条都只折叠「无信息量」的差异）：
+ * - NFD → NFC：`cafe\u0301`（分解形式）与 `café`（合成形式）是同一个词；
+ * - 零宽字符：PDF 抽取噪声，肉眼不可见；
+ * - 全角 → 半角：`ｃａｆｅ` 与 `cafe` 是同一个词；
+ * - 弯撇号/弯引号 → ASCII：`don’t` 与 `don't` 是同一个词。
+ *
+ * **纯 ASCII 输入的行为逐字未变**（上面四条对 ASCII 都是恒等变换），所以库里
+ * 已有词条的键不会被改写 —— 回归用例 `lemmaNormalize.test.ts` 守着这一点。
+ */
 export function normalizeLemma(raw: string): string {
   return raw
+    .replace(LEMMA_ZERO_WIDTH_RE, '')
+    .normalize('NFC')
+    .replace(LEMMA_FULL_WIDTH_RE, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(LEMMA_SMART_APOSTROPHE_RE, "'")
+    .replace(LEMMA_SMART_QUOTE_RE, '"')
     .trim()
     .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
     .replace(/\s+/g, ' ')

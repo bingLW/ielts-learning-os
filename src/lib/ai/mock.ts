@@ -269,14 +269,32 @@ function buildDiagEvaluation(
   };
 }
 
+/**
+ * 从提示词的 chunk 前缀块里解析本轮首个 chunk 的序号。
+ *
+ * 背景：材料抽取/摘要/出题都是按批（batch）调用的，一次只送 `chunksPerAiCall` 个 chunk。
+ * 若 mock 恒定返回 `source_chunk_seq: 1`，则多 chunk 材料在续跑（第 2 轮及以后）
+ * 时仍会把引文挂到 chunk 1 上 —— 那一块已经被分析过，`SourceVerifier` 会因引文与
+ * 目标块不匹配而全部 `dropped_unverifiable`，测试就变成「看似全绿、实际只覆盖单块材料」。
+ *
+ * `chunkPrefix()`（src/lib/materials/injection.ts）产出形如 `[c12 | p.3 ¶2]` 的前缀，
+ * 因此这里取第一个 `[c<seq>` 的数字；解析失败时保守回落到 1。
+ */
+function mockChunkSeq(meta: AiPromptMeta): number {
+  const matched = /\[c(\d+)\s*\|/.exec(meta.materialChunksBlock ?? '');
+  const seq = matched ? Number(matched[1]) : 1;
+  return Number.isInteger(seq) && seq >= 1 ? seq : 1;
+}
+
 /** 材料域 Mock：抽取（全部带可回验的 chunk 序号与原文引用）。 */
 function buildMaterialExtract(meta: AiPromptMeta): StructuredByKind['material_extract'] {
   const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  const chunkSeq = mockChunkSeq(meta);
   return {
     items: [
       {
         kind: 'KEYWORD',
-        source_chunk_seq: 1,
+        source_chunk_seq: chunkSeq,
         source_quote: quote,
         lemma: 'quick',
         pos: 'adj.',
@@ -285,14 +303,14 @@ function buildMaterialExtract(meta: AiPromptMeta): StructuredByKind['material_ex
       },
       {
         kind: 'KEY_SENTENCE',
-        source_chunk_seq: 1,
+        source_chunk_seq: chunkSeq,
         source_quote: quote,
         skeleton: '（模拟主干）主语 + 谓语 + 宾语',
         grammar_points: ['一般现在时', '介词短语作状语'],
       },
       {
         kind: 'PARAGRAPH_GIST',
-        source_chunk_seq: 1,
+        source_chunk_seq: chunkSeq,
         source_quote: quote,
         gist: '（模拟主旨）描述一个简单动作场景，用于练习基础句式。',
       },
@@ -304,11 +322,12 @@ function buildMaterialExtract(meta: AiPromptMeta): StructuredByKind['material_ex
 /** 材料域 Mock：摘要（要点均可定位到 chunk）。 */
 function buildMaterialSummary(meta: AiPromptMeta): StructuredByKind['material_summary'] {
   const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  const chunkSeq = mockChunkSeq(meta);
   return {
     summary_zh: `（模拟摘要）这段材料围绕「${meta.objective || '基础句式'}」展开，适合做单句精读与词汇巩固。`,
     summary_en: 'Mock summary: this material is a short passage for sentence-level reading practice.',
     key_points: [
-      { text: '（模拟要点）出现了可提取的高频形容词与固定搭配', source_chunk_seq: 1, source_quote: quote },
+      { text: '（模拟要点）出现了可提取的高频形容词与固定搭配', source_chunk_seq: chunkSeq, source_quote: quote },
     ],
     topics: ['基础句式'],
     learning_goals: ['能在语境中辨认高频形容词', '能复述段落主旨'],
@@ -318,6 +337,7 @@ function buildMaterialSummary(meta: AiPromptMeta): StructuredByKind['material_su
 /** 材料域 Mock：客观题（唯一答案 + 原文依据）。 */
 function buildMaterialExercise(meta: AiPromptMeta): StructuredByKind['material_exercise'] {
   const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  const chunkSeq = mockChunkSeq(meta);
   return {
     exercises: [
       {
@@ -334,7 +354,7 @@ function buildMaterialExercise(meta: AiPromptMeta): StructuredByKind['material_e
         correct_key: 'A',
         explanation: '（模拟解析）原文只有一句描述动作的句子，没有报告或计划信息。',
         evidence_quote: quote,
-        source_chunk_seq: 1,
+        source_chunk_seq: chunkSeq,
       },
       {
         type: 'vocab_in_context',
@@ -351,7 +371,7 @@ function buildMaterialExercise(meta: AiPromptMeta): StructuredByKind['material_e
         correct_key: 'B',
         explanation: '（模拟解析）quick 与 fast 同义，表示「快」。',
         evidence_quote: quote,
-        source_chunk_seq: 1,
+        source_chunk_seq: chunkSeq,
       },
     ],
   };

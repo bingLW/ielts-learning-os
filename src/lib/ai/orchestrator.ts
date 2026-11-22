@@ -1,10 +1,14 @@
 /**
  * Session Orchestrator：一次 AI 回合的完整流程。
  *
- * 顺序：幂等检查 → 预算检查 → 取已发布提示词 → 选择 Provider →
- * 调用（超时最多重试 1 次）→ Schema 校验 → 写轮次 + 调用日志 + 累计 Token/成本。
+ * v2.6 起拆成两层（ADR-06）：
+ * - `runAiCompletion()`：**会话无关**的核心调用 —— 预算评估 → 取已发布提示词 →
+ *   选择 Provider → 调用（超时最多重试 1 次）→ Schema 校验 → 写 `AICallLog` → 成本估算。
+ *   教学回合（v2.4）与材料分析（v2.6）共用这一层，**不新建第二套 AI 调用层**。
+ * - `runAiTurn()`：教学回合自己的两件事 —— ① 幂等 + 基线前置检查（先于核心调用）；
+ *   ② 成功后的 `AILearningTurn` 创建 + 会话 Token 累计（一个事务）。
  *
- * 失败时不写 AILearningTurn，只写 AICallLog；用户原始答案不受影响。
+ * 失败时不写 `AILearningTurn`，只写 `AICallLog`（append-only 遥测）；用户原始答案不受影响。
  */
 
 import { randomUUID } from 'node:crypto';
@@ -34,6 +38,7 @@ import {
   type AiCallStatus,
   type AiPromptKind,
   type AiPromptMeta,
+  type AiTurnFailureCode,
   type AiTurnKindRef,
   type AiTurnResult,
 } from './types';
@@ -47,6 +52,45 @@ export interface RunAiTurnInput {
   clientRequestId: string;
   aidLevel?: string | null;
 }
+
+/**
+ * 会话无关的核心调用入参（ADR-06）。
+ *
+ * `sessionId` 是 ADR-06 表格之外的**唯一追加字段**：`AICallLog.sessionId` 是既有列，
+ * 教学回合的账本与预算拦截测试都按它过滤，抽出时必须原样带过去才能做到「逐行等价、
+ * 行为不变」。材料域不传（它的归属走 `attribution`）。
+ */
+export interface RunAiCompletionInput {
+  prisma: PrismaClient;
+  promptKind: AiPromptKind;
+  meta: AiPromptMeta;
+  temperature?: number;
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  /** 材料域费用归属（`AICallLog.materialId` / `materialJobId`，ADR-06 Q5）。 */
+  attribution?: { materialId?: string; materialJobId?: string };
+  /** 教学回合归属；材料域不传。 */
+  sessionId?: string;
+}
+
+/** 核心调用结果（字段与 ADR-06 表格一致）。 */
+export type AiCompletionOutcome =
+  | {
+      ok: true;
+      structured: unknown;
+      text: string;
+      status: AiCallStatus;
+      logId: string;
+      provider: string;
+      model: string;
+      promptVersionId: string;
+      requestId: string;
+      inputTokens: number;
+      outputTokens: number;
+      latencyMs: number;
+      estimatedCostUsd: number;
+    }
+  | { ok: false; code: AiTurnFailureCode; message: string; logId?: string };
 
 const BASELINE_REQUIRED: readonly AiPromptKind[] = [
   'diagnosis',
@@ -136,6 +180,8 @@ export function renderAiText(kind: AiPromptKind, data: unknown): string {
       ].join('\n\n');
     }
     default:
+      // v2.6 材料域（material_extract / material_summary / material_exercise）：
+      // 结果以结构化对象入库，不渲染为「教学回合文本」。
       return '';
   }
 }
@@ -144,6 +190,216 @@ function failureStatus(code: string): AiCallStatus {
   if (code === 'TIMEOUT') return 'TIMEOUT';
   if (code === 'INVALID_OUTPUT') return 'INVALID_OUTPUT';
   return 'ERROR';
+}
+
+/**
+ * 会话无关的 AI 核心调用（ADR-06）。
+ *
+ * 这段逻辑**从 `runAiTurn` 逐行搬出来**，没有改任何行为：预算闸门、`BLOCKED` 日志、
+ * Provider 选择、TIMEOUT/NETWORK 重试（≤1）、Schema 校验、`AICallLog` 落账（含脱敏）、
+ * 成本估算全部保持原样。唯一的结构性变化是 `AICallLog` **不再**写在回合事务里 ——
+ * 它是 append-only 遥测，允许「有日志无 turn」（ADR-06 明确接受）。
+ *
+ * @param input 见 `RunAiCompletionInput`
+ */
+export async function runAiCompletion(
+  input: RunAiCompletionInput,
+): Promise<AiCompletionOutcome> {
+  const { prisma, promptKind, meta } = input;
+  const attribution = input.attribution;
+  /** 三条日志路径共用的归属字段（教学=sessionId；材料=materialId/materialJobId）。 */
+  const ownership = {
+    sessionId: input.sessionId ?? null,
+    materialId: attribution?.materialId ?? null,
+    materialJobId: attribution?.materialJobId ?? null,
+  };
+
+  const config = await loadEngineConfig(prisma);
+  const promptVersion = await getPublishedPromptVersion(prisma, promptKind);
+  if (!promptVersion) {
+    return {
+      ok: false,
+      code: 'PRECONDITION',
+      message: `提示词 ${AI_PROMPT_KEY_BY_KIND[promptKind]} 尚未发布，请先初始化 Prompt Registry`,
+    };
+  }
+
+  const budgetConfig = budgetConfigFrom(config.setting);
+  const { dayStart, monthStart } = budgetWindows(new Date());
+  const [daily, monthly] = await Promise.all([
+    prisma.aICallLog.aggregate({
+      where: { createdAt: { gte: dayStart }, status: { in: ['OK', 'MOCK'] } },
+      _sum: { estimatedCostUsd: true },
+    }),
+    prisma.aICallLog.aggregate({
+      where: { createdAt: { gte: monthStart }, status: { in: ['OK', 'MOCK'] } },
+      _sum: { estimatedCostUsd: true },
+    }),
+  ]);
+  const budget = evaluateBudget(
+    {
+      dailyUsd: daily._sum.estimatedCostUsd ?? 0,
+      monthlyUsd: monthly._sum.estimatedCostUsd ?? 0,
+    },
+    budgetConfig,
+  );
+
+  const requestId = randomUUID();
+  if (budget.state === 'EXCEEDED') {
+    const blocked = await prisma.aICallLog.create({
+      data: {
+        ...ownership,
+        provider: config.modelConfig.provider,
+        model: config.modelConfig.model,
+        promptVersionId: promptVersion.versionId,
+        requestId,
+        latencyMs: 0,
+        status: 'BLOCKED',
+        errorCode: 'BUDGET_EXCEEDED',
+        redactedMetadataJson: JSON.stringify(
+          redactMetadata({ kind: promptKind, dailyPercent: budget.dailyPercent }),
+        ),
+      },
+      select: { id: true },
+    });
+    return {
+      ok: false,
+      code: 'BUDGET_EXCEEDED',
+      message: `已超出 AI 预算（今日 ${budget.dailyPercent}%，本月 ${budget.monthlyPercent}%），本次调用被拦截。`,
+      logId: blocked.id,
+    };
+  }
+
+  const provider = createProvider(config);
+  const rendered = renderPrompt(promptKind, meta);
+  const request = {
+    kind: promptKind,
+    system: rendered.system,
+    user: rendered.user,
+    temperature:
+      input.temperature ?? (promptKind === 'assessment' ? 0.1 : 0.4),
+    maxOutputTokens: input.maxOutputTokens ?? AI_MAX_OUTPUT_TOKENS,
+    timeoutMs: input.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS,
+    meta,
+  };
+
+  let completion = await provider.complete(request);
+  let attempts = 1;
+  while (
+    !completion.ok &&
+    (completion.code === 'TIMEOUT' || completion.code === 'NETWORK') &&
+    attempts <= AI_MAX_RETRIES
+  ) {
+    attempts += 1;
+    completion = await provider.complete(request);
+  }
+
+  if (!completion.ok) {
+    const failed = await prisma.aICallLog.create({
+      data: {
+        ...ownership,
+        provider: provider.provider,
+        model: provider.model,
+        promptVersionId: promptVersion.versionId,
+        requestId,
+        latencyMs: completion.latencyMs,
+        inputTokens: completion.inputTokens,
+        outputTokens: completion.outputTokens,
+        estimatedCostUsd: 0,
+        status: failureStatus(completion.code),
+        errorCode: completion.code,
+        redactedMetadataJson: JSON.stringify(
+          redactMetadata({
+            kind: promptKind,
+            attempts,
+            message: completion.message,
+            objective: meta.objective,
+          }),
+        ),
+      },
+      select: { id: true },
+    });
+    return {
+      ok: false,
+      code: completion.code,
+      message: `${completion.message}（已尝试 ${attempts} 次；你的作答已保存，可稍后重试）`,
+      logId: failed.id,
+    };
+  }
+
+  const parsed = parseStructured(promptKind, completion.json);
+  const isMock = provider.mode === 'mock';
+  const cost = isMock
+    ? 0
+    : estimateCostUsd(completion.inputTokens, completion.outputTokens, {
+        inputPricePerMtok: config.modelConfig.inputPricePerMtok,
+        outputPricePerMtok: config.modelConfig.outputPricePerMtok,
+      });
+
+  if (!parsed.ok) {
+    const invalid = await prisma.aICallLog.create({
+      data: {
+        ...ownership,
+        provider: provider.provider,
+        model: provider.model,
+        promptVersionId: promptVersion.versionId,
+        requestId,
+        latencyMs: completion.latencyMs,
+        inputTokens: completion.inputTokens,
+        outputTokens: completion.outputTokens,
+        estimatedCostUsd: cost,
+        status: 'INVALID_OUTPUT',
+        errorCode: 'SCHEMA_VALIDATION',
+        redactedMetadataJson: JSON.stringify(
+          redactMetadata({ kind: promptKind, error: parsed.error }),
+        ),
+      },
+      select: { id: true },
+    });
+    return { ok: false, code: 'INVALID_OUTPUT', message: parsed.error, logId: invalid.id };
+  }
+
+  const status: AiCallStatus = isMock ? 'MOCK' : 'OK';
+  const logged = await prisma.aICallLog.create({
+    data: {
+      ...ownership,
+      provider: provider.provider,
+      model: provider.model,
+      promptVersionId: promptVersion.versionId,
+      requestId,
+      latencyMs: completion.latencyMs,
+      inputTokens: completion.inputTokens,
+      outputTokens: completion.outputTokens,
+      estimatedCostUsd: cost,
+      status,
+      errorCode: null,
+      redactedMetadataJson: JSON.stringify(
+        redactMetadata({
+          kind: promptKind,
+          mode: meta.mode,
+          skill: meta.skill,
+          attempts,
+        }),
+      ),
+    },
+    select: { id: true },
+  });
+
+  return {
+    ok: true,
+    structured: parsed.data,
+    text: renderAiText(promptKind, parsed.data),
+    status,
+    logId: logged.id,
+    provider: provider.provider,
+    model: provider.model,
+    promptVersionId: promptVersion.versionId,
+    requestId,
+    inputTokens: completion.inputTokens,
+    outputTokens: completion.outputTokens,
+    latencyMs: completion.latencyMs,
+    estimatedCostUsd: cost,
+  };
 }
 
 export async function runAiTurn(input: RunAiTurnInput): Promise<AiTurnResult> {
@@ -187,148 +443,13 @@ export async function runAiTurn(input: RunAiTurnInput): Promise<AiTurnResult> {
     };
   }
 
-  const config = await loadEngineConfig(prisma);
-  const promptVersion = await getPublishedPromptVersion(prisma, promptKind);
-  if (!promptVersion) {
-    return {
-      ok: false,
-      code: 'PRECONDITION',
-      message: `提示词 ${AI_PROMPT_KEY_BY_KIND[promptKind]} 尚未发布，请先初始化 Prompt Registry`,
-    };
+  // ── 会话无关的核心调用（预算/提示词/Provider/重试/校验/记账） ──────────
+  const outcome = await runAiCompletion({ prisma, sessionId, promptKind, meta });
+  if (!outcome.ok) {
+    return { ok: false, code: outcome.code, message: outcome.message };
   }
 
-  const budgetConfig = budgetConfigFrom(config.setting);
-  const { dayStart, monthStart } = budgetWindows(new Date());
-  const [daily, monthly] = await Promise.all([
-    prisma.aICallLog.aggregate({
-      where: { createdAt: { gte: dayStart }, status: { in: ['OK', 'MOCK'] } },
-      _sum: { estimatedCostUsd: true },
-    }),
-    prisma.aICallLog.aggregate({
-      where: { createdAt: { gte: monthStart }, status: { in: ['OK', 'MOCK'] } },
-      _sum: { estimatedCostUsd: true },
-    }),
-  ]);
-  const budget = evaluateBudget(
-    {
-      dailyUsd: daily._sum.estimatedCostUsd ?? 0,
-      monthlyUsd: monthly._sum.estimatedCostUsd ?? 0,
-    },
-    budgetConfig,
-  );
-
-  const requestId = randomUUID();
-  if (budget.state === 'EXCEEDED') {
-    await prisma.aICallLog.create({
-      data: {
-        sessionId,
-        provider: config.modelConfig.provider,
-        model: config.modelConfig.model,
-        promptVersionId: promptVersion.versionId,
-        requestId,
-        latencyMs: 0,
-        status: 'BLOCKED',
-        errorCode: 'BUDGET_EXCEEDED',
-        redactedMetadataJson: JSON.stringify(
-          redactMetadata({ kind: promptKind, dailyPercent: budget.dailyPercent }),
-        ),
-      },
-    });
-    return {
-      ok: false,
-      code: 'BUDGET_EXCEEDED',
-      message: `已超出 AI 预算（今日 ${budget.dailyPercent}%，本月 ${budget.monthlyPercent}%），本次调用被拦截。`,
-    };
-  }
-
-  const provider = createProvider(config);
-  const rendered = renderPrompt(promptKind, meta);
-  const request = {
-    kind: promptKind,
-    system: rendered.system,
-    user: rendered.user,
-    temperature: promptKind === 'assessment' ? 0.1 : 0.4,
-    maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
-    timeoutMs: AI_DEFAULT_TIMEOUT_MS,
-    meta,
-  };
-
-  let completion = await provider.complete(request);
-  let attempts = 1;
-  while (
-    !completion.ok &&
-    (completion.code === 'TIMEOUT' || completion.code === 'NETWORK') &&
-    attempts <= AI_MAX_RETRIES
-  ) {
-    attempts += 1;
-    completion = await provider.complete(request);
-  }
-
-  if (!completion.ok) {
-    await prisma.aICallLog.create({
-      data: {
-        sessionId,
-        provider: provider.provider,
-        model: provider.model,
-        promptVersionId: promptVersion.versionId,
-        requestId,
-        latencyMs: completion.latencyMs,
-        inputTokens: completion.inputTokens,
-        outputTokens: completion.outputTokens,
-        estimatedCostUsd: 0,
-        status: failureStatus(completion.code),
-        errorCode: completion.code,
-        redactedMetadataJson: JSON.stringify(
-          redactMetadata({
-            kind: promptKind,
-            attempts,
-            message: completion.message,
-            objective: meta.objective,
-          }),
-        ),
-      },
-    });
-    return {
-      ok: false,
-      code: completion.code,
-      message: `${completion.message}（已尝试 ${attempts} 次；你的作答已保存，可稍后重试）`,
-    };
-  }
-
-  const parsed = parseStructured(promptKind, completion.json);
-  const isMock = provider.mode === 'mock';
-  const cost = isMock
-    ? 0
-    : estimateCostUsd(completion.inputTokens, completion.outputTokens, {
-        inputPricePerMtok: config.modelConfig.inputPricePerMtok,
-        outputPricePerMtok: config.modelConfig.outputPricePerMtok,
-      });
-
-  if (!parsed.ok) {
-    await prisma.aICallLog.create({
-      data: {
-        sessionId,
-        provider: provider.provider,
-        model: provider.model,
-        promptVersionId: promptVersion.versionId,
-        requestId,
-        latencyMs: completion.latencyMs,
-        inputTokens: completion.inputTokens,
-        outputTokens: completion.outputTokens,
-        estimatedCostUsd: cost,
-        status: 'INVALID_OUTPUT',
-        errorCode: 'SCHEMA_VALIDATION',
-        redactedMetadataJson: JSON.stringify(
-          redactMetadata({ kind: promptKind, error: parsed.error }),
-        ),
-      },
-    });
-    return { ok: false, code: 'INVALID_OUTPUT', message: parsed.error };
-  }
-
-  const text = renderAiText(promptKind, parsed.data);
-  const status: AiCallStatus = isMock ? 'MOCK' : 'OK';
-
+  // ── 教学回合自己的落库：turn + 会话 Token/成本累计（一个事务） ──────────
   const turnId = await prisma.$transaction(async (tx) => {
     const maxSequence = await tx.aILearningTurn.aggregate({
       where: { sessionId },
@@ -340,48 +461,25 @@ export async function runAiTurn(input: RunAiTurnInput): Promise<AiTurnResult> {
         sequence: (maxSequence._max.sequence ?? 0) + 1,
         role: 'AI',
         kind: input.turnKind,
-        contentText: text,
-        structuredJson: JSON.stringify(parsed.data),
+        contentText: outcome.text,
+        structuredJson: JSON.stringify(outcome.structured),
         aidLevel: input.promptKind === 'assessment' ? input.aidLevel ?? null : null,
-        promptVersionId: promptVersion.versionId,
-        requestId,
+        promptVersionId: outcome.promptVersionId,
+        requestId: outcome.requestId,
         clientRequestId,
-        latencyMs: completion.latencyMs,
-        inputTokens: completion.inputTokens,
-        outputTokens: completion.outputTokens,
+        latencyMs: outcome.latencyMs,
+        inputTokens: outcome.inputTokens,
+        outputTokens: outcome.outputTokens,
       },
       select: { id: true },
-    });
-    await tx.aICallLog.create({
-      data: {
-        sessionId,
-        provider: provider.provider,
-        model: provider.model,
-        promptVersionId: promptVersion.versionId,
-        requestId,
-        latencyMs: completion.latencyMs,
-        inputTokens: completion.inputTokens,
-        outputTokens: completion.outputTokens,
-        estimatedCostUsd: cost,
-        status,
-        errorCode: null,
-        redactedMetadataJson: JSON.stringify(
-          redactMetadata({
-            kind: promptKind,
-            mode: meta.mode,
-            skill: meta.skill,
-            attempts,
-          }),
-        ),
-      },
     });
     await tx.aILearningSession.update({
       where: { id: sessionId },
       data: {
-        inputTokens: { increment: completion.inputTokens },
-        outputTokens: { increment: completion.outputTokens },
-        totalLatencyMs: { increment: completion.latencyMs },
-        estimatedCostUsd: { increment: cost },
+        inputTokens: { increment: outcome.inputTokens },
+        outputTokens: { increment: outcome.outputTokens },
+        totalLatencyMs: { increment: outcome.latencyMs },
+        estimatedCostUsd: { increment: outcome.estimatedCostUsd },
       },
     });
     return turn.id;
@@ -390,10 +488,10 @@ export async function runAiTurn(input: RunAiTurnInput): Promise<AiTurnResult> {
   return {
     ok: true,
     turnId,
-    structured: parsed.data,
-    text,
-    providerMode: provider.mode,
-    status,
+    structured: outcome.structured,
+    text: outcome.text,
+    providerMode: outcome.status === 'MOCK' ? 'mock' : 'external',
+    status: outcome.status,
     deduped: false,
   };
 }
