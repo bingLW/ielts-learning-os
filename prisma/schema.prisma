@@ -57,6 +57,7 @@ model UserProfile {
   // ── v2.0 三目标全局默认 ──
   /**
    * /**
+   * /**
    * 长期通用英语目标等级（展示用，非官方认证）。
    */
   cefrTarget        String @default("B2")
@@ -144,6 +145,7 @@ model PlanTask {
   // ── v2.1 自适应计划 ──
   /**
    * /**
+   * /**
    * 优先级：P0 到期/逾期复习、P1 当前阶段核心、P2 有证据的弱项/目标差距、P3 拓展。
    * 取值固定 `P0`–`P3`（字符串，SQLite 无 enum）。
    */
@@ -179,6 +181,7 @@ model PlanTask {
 
   // ── v2.0 三轨道 ──
   /**
+   * /**
    * /**
    * 主轨道。任务必须归属一个主轨道；允许加标签，但不允许一条学习时长被重复计入总时长。
    * GENERAL_ENGLISH | IELTS_PREPARATION | ENGLISH_MEDIATED_LEARNING
@@ -1093,6 +1096,10 @@ model EvidenceRecord {
   mediatedId       String?
   artifactId       String?
   /**
+   * v2.4：关联的 AI 学习会话。删除会话时置空，证据本身保留。
+   */
+  aiSessionId      String?
+  /**
    * 任务与条件快照 JSON：prompt / materialSource / timeLimitMinutes / toolsAllowed / audience / environment
    */
   conditionJson    String?
@@ -1137,10 +1144,11 @@ model EvidenceRecord {
   parent   EvidenceRecord?  @relation("EvidenceChain", fields: [parentEvidenceId], references: [id], onDelete: SetNull)
   children EvidenceRecord[] @relation("EvidenceChain")
 
-  task     PlanTask?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  session  StudySession?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  mediated EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
-  artifact EvidenceAttachment?     @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  task      PlanTask?               @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  session   StudySession?           @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  mediated  EnglishMediatedSession? @relation(fields: [mediatedId], references: [id], onDelete: SetNull)
+  artifact  EvidenceAttachment?     @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  aiSession AILearningSession?      @relation(fields: [aiSessionId], references: [id], onDelete: SetNull)
 
   diagnoses         BarrierDiagnosis[]
   interventionsPre  InterventionPlan[]       @relation("InterventionPre")
@@ -1158,6 +1166,7 @@ model EvidenceRecord {
   @@index([createdAt])
   @@index([archivedAt])
   @@index([privacyLevel])
+  @@index([aiSessionId])
 }
 
 // ── EV2 分项能力画像（每技能一行；不做四项平均，也不换算 CEFR 官方等级）
@@ -1853,4 +1862,210 @@ model IntegrationJob {
   @@index([direction, status])
   @@index([payloadHash])
   @@index([createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.4 AI Learning Engine（全部为加法；不修改既有学习数据）
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── AI1 模型配置（密钥只来自环境变量，绝不入库） ──
+model AIModelConfig {
+  id                 String   @id @default(cuid())
+  provider           String
+  model              String
+  label              String
+  capabilitiesJson   String?
+  active             Boolean  @default(true)
+  isDefault          Boolean  @default(false)
+  contextWindow      Int?
+  inputPricePerMtok  Float    @default(0)
+  outputPricePerMtok Float    @default(0)
+  parametersJson     String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  sessions AILearningSession[]
+
+  @@unique([provider, model])
+  @@index([isDefault])
+}
+
+// ── AI2 提示词模板与版本（已使用版本不可覆盖，只能追加） ──
+model PromptTemplate {
+  id        String   @id @default(cuid())
+  promptKey String   @unique
+  purpose   String
+  mode      String
+  createdAt DateTime @default(now())
+
+  versions PromptVersion[]
+}
+
+model PromptVersion {
+  id               String    @id @default(cuid())
+  templateId       String
+  version          Int
+  systemTemplate   String
+  userTemplate     String
+  inputSchemaJson  String?
+  outputSchemaJson String?
+  status           String    @default("DRAFT") // DRAFT|PUBLISHED|RETIRED
+  testSamplesJson  String?
+  checksum         String
+  createdBy        String    @default("system")
+  createdAt        DateTime  @default(now())
+  publishedAt      DateTime?
+
+  template PromptTemplate      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  sessions AILearningSession[]
+  turns    AILearningTurn[]
+  callLogs AICallLog[]
+
+  @@unique([templateId, version])
+  @@index([templateId, status])
+}
+
+// ── AI3 教学会话（状态机主表） ──
+model AILearningSession {
+  id                String    @id @default(cuid())
+  mode              String
+  skill             String
+  objective         String
+  targetLevel       String?
+  status            String    @default("CREATED")
+  promptTemplateKey String
+  promptVersionId   String?
+  modelConfigId     String?
+  provider          String
+  model             String
+  baselineText      String?
+  contextJson       String?
+  taskSpecJson      String?
+  rubricJson        String?
+  allowedAidsJson   String?
+  directTeaching    Boolean   @default(false)
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  pausedAt          DateTime?
+  failureReason     String?
+  estimatedCostUsd  Float     @default(0)
+  inputTokens       Int       @default(0)
+  outputTokens      Int       @default(0)
+  totalLatencyMs    Int       @default(0)
+  parentSessionId   String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  promptVersion PromptVersion?         @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  modelConfig   AIModelConfig?         @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
+  turns         AILearningTurn[]
+  tasks         LearningTaskInstance[]
+  callLogs      AICallLog[]
+  feedback      AISessionFeedback[]
+  evidence      EvidenceRecord[]
+  parent        AILearningSession?     @relation("AISessionChain", fields: [parentSessionId], references: [id], onDelete: SetNull)
+  children      AILearningSession[]    @relation("AISessionChain")
+
+  @@index([status, createdAt])
+  @@index([mode])
+  @@index([skill])
+}
+
+// ── AI4 会话轮次（用户原始答案与 AI 输出按 role/kind 分离） ──
+model AILearningTurn {
+  id              String   @id @default(cuid())
+  sessionId       String
+  sequence        Int
+  role            String // USER|AI|SYSTEM
+  kind            String
+  contentText     String
+  structuredJson  String?
+  aidLevel        String?
+  promptVersionId String?
+  requestId       String?
+  clientRequestId String?
+  latencyMs       Int?
+  inputTokens     Int?
+  outputTokens    Int?
+  createdAt       DateTime @default(now())
+
+  session       AILearningSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  promptVersion PromptVersion?      @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  feedback      AISessionFeedback[]
+
+  @@unique([sessionId, sequence])
+  @@unique([sessionId, clientRequestId])
+  @@index([sessionId, createdAt])
+}
+
+// ── AI5 任务实例（AI 生成的 TaskSpec 落库；建议进入正式计划需用户确认） ──
+model LearningTaskInstance {
+  id               String   @id @default(cuid())
+  sessionId        String?
+  linkedPlanTaskId String?
+  taskSpecJson     String
+  source           String   @default("AI")
+  estimatedMinutes Int      @default(10)
+  difficulty       String?
+  allowedAidsJson  String?
+  status           String   @default("ACTIVE")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  session AILearningSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([linkedPlanTaskId])
+}
+
+// ── AI6 调用日志（Token/成本/时延/错误；不存密钥与完整提示词） ──
+model AICallLog {
+  id                   String   @id @default(cuid())
+  sessionId            String?
+  provider             String
+  model                String
+  promptVersionId      String?
+  requestId            String
+  latencyMs            Int
+  inputTokens          Int      @default(0)
+  outputTokens         Int      @default(0)
+  estimatedCostUsd     Float    @default(0)
+  status               String // OK|MOCK|ERROR|TIMEOUT|INVALID_OUTPUT|BLOCKED
+  errorCode            String?
+  redactedMetadataJson String?
+  createdAt            DateTime @default(now())
+
+  session       AILearningSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  promptVersion PromptVersion?     @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([status])
+  @@index([sessionId])
+}
+
+// ── AI7 用户反馈（有帮助/无帮助/不准确） ──
+model AISessionFeedback {
+  id          String   @id @default(cuid())
+  sessionId   String
+  turnId      String?
+  helpfulness String // HELPFUL|UNHELPFUL|INACCURATE
+  note        String?
+  createdAt   DateTime @default(now())
+
+  session AILearningSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  turn    AILearningTurn?   @relation(fields: [turnId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+}
+
+// ── AI8 引擎设置（单行；外部 AI 默认关闭） ──
+model AIEngineSetting {
+  id                    String   @id @default("default")
+  externalAiEnabled     Boolean  @default(false)
+  dailyBudgetUsd        Float    @default(1)
+  monthlyBudgetUsd      Float    @default(20)
+  warnPercent           Int      @default(80)
+  directTeachingDefault Boolean  @default(false)
+  explainLanguage       String   @default("ZH_MIXED")
+  updatedAt             DateTime @updatedAt
 }

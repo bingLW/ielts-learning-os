@@ -1022,6 +1022,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/diagnosis', labelZh: '障碍诊断', shortZh: '障碍', group: 'DIAGNOSE' },
   { href: '/retest', labelZh: '复测与迁移', shortZh: '复测', group: 'DIAGNOSE' },
   { href: '/coach', labelZh: 'AI Coach 日志', shortZh: 'AI', group: 'DIAGNOSE' },
+  { href: '/ai-coach', labelZh: 'AI Learning Coach', shortZh: '教练', group: 'DIAGNOSE' },
   { href: '/general', labelZh: '通用英语', shortZh: '通用', group: 'TRACKS' },
   { href: '/ielts', labelZh: '雅思工作区', shortZh: '雅思', group: 'TRACKS' },
   { href: '/mediated', labelZh: '英语媒介学习', shortZh: '媒介', group: 'TRACKS' },
@@ -2471,3 +2472,183 @@ export const TYPEWORDS_KNOWN_LIMITS_ZH = [
 /** OS 侧「已掌握」口径提示（禁止合并三档与七维）。 */
 export const VOCAB_MASTERY_NO_MERGE_NOTE =
   '词汇掌握度按七个知识维度分别记录；TypeWords 的「已掌握」只作为外部状态参考，不写入 OS 的维度结论。';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.4 AI Learning Engine（教学模式、状态机、限额与预算）
+// ══════════════════════════════════════════════════════════════════════════════
+
+export const AI_COACH_MODES = [
+  'TUTOR',
+  'SOCRATIC',
+  'EXAMINER',
+  'ERROR_ANALYST',
+  'DRILL',
+  'REVIEWER',
+] as const;
+export type AiCoachMode = (typeof AI_COACH_MODES)[number];
+export const AI_COACH_MODE_LABEL_ZH: Record<AiCoachMode, string> = {
+  TUTOR: 'Tutor 讲解教练',
+  SOCRATIC: 'Socratic 苏格拉底教练',
+  EXAMINER: 'Examiner 模拟考官',
+  ERROR_ANALYST: 'Error Analyst 错误分析员',
+  DRILL: 'Drill Generator 练习生成器',
+  REVIEWER: 'Reviewer 复习教练',
+};
+
+/** 会话可选技能：限定证据体系已有的六项；integrated 由后续版本组合任务使用。 */
+export const AI_COACH_SKILLS = [
+  'LISTENING',
+  'READING',
+  'SPEAKING',
+  'WRITING',
+  'GRAMMAR',
+  'VOCABULARY',
+] as const;
+export type AiCoachSkill = (typeof AI_COACH_SKILLS)[number];
+
+export const AI_TASK_SKILLS = [...AI_COACH_SKILLS, 'INTEGRATED'] as const;
+export type AiTaskSkill = (typeof AI_TASK_SKILLS)[number];
+
+export const AI_CEFR_LEVELS = ['A0', 'A1', 'A2', 'B1', 'B2', 'C1'] as const;
+export type AiCefrLevel = (typeof AI_CEFR_LEVELS)[number];
+
+export const AI_ACCEPTED_AIDS = ['DICTIONARY', 'TRANSLATION', 'NOTES', 'AI_HINT'] as const;
+export type AiAcceptedAid = (typeof AI_ACCEPTED_AIDS)[number];
+export const AI_ACCEPTED_AID_LABEL_ZH: Record<AiAcceptedAid, string> = {
+  DICTIONARY: '词典',
+  TRANSLATION: '翻译',
+  NOTES: '笔记',
+  AI_HINT: 'AI 提示',
+};
+
+export const AI_SESSION_STATUSES = [
+  'CREATED',
+  'TASK_PRESENTED',
+  'BASELINE_SUBMITTED',
+  'DIAGNOSING',
+  'FEEDBACK_READY',
+  'HINTING',
+  'TEACHING',
+  'PRACTICE',
+  'IMMEDIATE_RETEST',
+  'COMPLETED',
+  'DELAYED_RETEST_SCHEDULED',
+  'PAUSED',
+  'CANCELLED',
+  'FAILED',
+] as const;
+export type AiSessionStatus = (typeof AI_SESSION_STATUSES)[number];
+export const AI_SESSION_STATUS_LABEL_ZH: Record<AiSessionStatus, string> = {
+  CREATED: '已创建',
+  TASK_PRESENTED: '任务已展示',
+  BASELINE_SUBMITTED: '基线已保存',
+  DIAGNOSING: '诊断中',
+  FEEDBACK_READY: '反馈就绪',
+  HINTING: '提示中',
+  TEACHING: '讲解中',
+  PRACTICE: '针对性练习',
+  IMMEDIATE_RETEST: '即时复测',
+  COMPLETED: '已完成',
+  DELAYED_RETEST_SCHEDULED: '已排延迟复测',
+  PAUSED: '已暂停',
+  CANCELLED: '已取消',
+  FAILED: '失败',
+};
+
+export const AI_TURN_ROLES = ['USER', 'AI', 'SYSTEM'] as const;
+export type AiTurnRole = (typeof AI_TURN_ROLES)[number];
+
+export const AI_TURN_KINDS = [
+  'TASK',
+  'BASELINE',
+  'DIAGNOSIS',
+  'HINT',
+  'TEACHING',
+  'DRILL',
+  'PRACTICE',
+  'RETEST',
+  'ASSESSMENT',
+] as const;
+export type AiTurnKind = (typeof AI_TURN_KINDS)[number];
+export const AI_TURN_KIND_LABEL_ZH: Record<AiTurnKind, string> = {
+  TASK: '任务',
+  BASELINE: '独立基线',
+  DIAGNOSIS: '诊断',
+  HINT: '提示',
+  TEACHING: '讲解',
+  DRILL: '练习',
+  PRACTICE: '练习作答',
+  RETEST: '独立复测',
+  ASSESSMENT: 'AI 评估',
+};
+
+export const AI_FEEDBACK_HELPFULNESS = ['HELPFUL', 'UNHELPFUL', 'INACCURATE'] as const;
+export type AiFeedbackHelpfulness = (typeof AI_FEEDBACK_HELPFULNESS)[number];
+export const AI_FEEDBACK_HELPFULNESS_LABEL_ZH: Record<AiFeedbackHelpfulness, string> = {
+  HELPFUL: '有帮助',
+  UNHELPFUL: '没帮助',
+  INACCURATE: '不准确',
+};
+
+export const AI_EVIDENCE_PERFORMANCE_TYPES = [
+  'baseline',
+  'assisted',
+  'immediate_retest',
+  'delayed_retest',
+  'applied_task',
+  'transfer',
+] as const;
+export const AI_EVIDENCE_AID_LEVELS = [
+  'none',
+  'dictionary',
+  'transcript',
+  'translation',
+  'AI_hint',
+  'AI_full_assistance',
+  'other',
+] as const;
+export const AI_ERROR_CATEGORIES = [
+  'KNOWLEDGE_GAP',
+  'RETRIEVAL_FAILURE',
+  'ATTENTION',
+  'TASK_MISUNDERSTANDING',
+  'STRATEGY',
+  'TECHNICAL',
+] as const;
+export type AiErrorCategory = (typeof AI_ERROR_CATEGORIES)[number];
+export const AI_ERROR_CATEGORY_LABEL_ZH: Record<AiErrorCategory, string> = {
+  KNOWLEDGE_GAP: '知识缺失',
+  RETRIEVAL_FAILURE: '提取失败',
+  ATTENTION: '注意力',
+  TASK_MISUNDERSTANDING: '任务理解',
+  STRATEGY: '策略',
+  TECHNICAL: '技术问题',
+};
+
+/** 提示最多 3 级；1–2 级不得泄露答案。 */
+export const AI_HINT_MAX_LEVEL = 3;
+/** Context Builder 限额：只取最小必要上下文。 */
+export const AI_CONTEXT_LIMITS = { recentErrors: 5, recentEvidence: 3 } as const;
+export const AI_MAX_OUTPUT_TOKENS = 1600;
+export const AI_DEFAULT_TIMEOUT_MS = 30000;
+export const AI_MAX_RETRIES = 1;
+export const AI_PROVIDER_MODES = ['mock', 'external'] as const;
+export type AiProviderMode = (typeof AI_PROVIDER_MODES)[number];
+export const AI_ENGINE_DEFAULTS = {
+  dailyBudgetUsd: 1,
+  monthlyBudgetUsd: 20,
+  warnPercent: 80,
+} as const;
+
+/** 所有 AI 评估的统一声明：不是官方成绩。 */
+export const AI_ASSESSMENT_DISCLAIMER_ZH =
+  'AI 辅助评估，仅供练习反馈，不是官方 IELTS 分数或 CEFR 认证。';
+
+export const AI_TURN_STATUS_LABELS_ZH: Record<string, string> = {
+  OK: '成功',
+  MOCK: '模拟调用（未产生真实费用）',
+  ERROR: '调用失败',
+  TIMEOUT: '超时',
+  INVALID_OUTPUT: '输出格式不合法',
+  BLOCKED: '预算/开关拦截',
+};

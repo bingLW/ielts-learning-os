@@ -1,0 +1,154 @@
+/**
+ * AI Engine 配置解析。
+ *
+ * 规则：
+ * 1. 外部模型默认关闭；只有设置页显式开启且环境变量有密钥才启用；
+ * 2. 否则一律回落 mock，并在调用日志里标记为模拟，不产生费用；
+ * 3. 密钥只从环境变量读取，绝不写入数据库或前端。
+ */
+
+import type { PrismaClient } from '@prisma/client';
+import { AI_ENGINE_DEFAULTS } from '@/lib/constants';
+import { MockProvider, OpenAICompatibleProvider } from './provider';
+import type { AiProvider } from './types';
+
+export type ProviderMode = 'mock' | 'external';
+
+export type ProviderReason =
+  | 'external_ready'
+  | 'external_disabled'
+  | 'missing_api_key'
+  | 'missing_base_url';
+
+export interface ProviderEnvInput {
+  externalAiEnabled: boolean;
+  apiKey: string | undefined;
+  baseUrl: string | undefined;
+}
+
+export function resolveProviderMode(input: ProviderEnvInput): {
+  mode: ProviderMode;
+  reason: ProviderReason;
+} {
+  if (!input.externalAiEnabled) return { mode: 'mock', reason: 'external_disabled' };
+  if (!input.apiKey || input.apiKey.trim().length < 8) {
+    return { mode: 'mock', reason: 'missing_api_key' };
+  }
+  if (!input.baseUrl || !/^https?:\/\//.test(input.baseUrl.trim())) {
+    return { mode: 'mock', reason: 'missing_base_url' };
+  }
+  return { mode: 'external', reason: 'external_ready' };
+}
+
+export function readProviderEnv(): {
+  apiKey: string | undefined;
+  baseUrl: string;
+  modelOverride: string | undefined;
+} {
+  return {
+    apiKey: process.env.AI_PROVIDER_API_KEY ?? process.env.OPENAI_API_KEY,
+    baseUrl: process.env.AI_PROVIDER_BASE_URL ?? 'https://api.openai.com/v1',
+    modelOverride: process.env.AI_PROVIDER_MODEL,
+  };
+}
+
+export interface EngineSettingLike {
+  externalAiEnabled: boolean;
+  dailyBudgetUsd: number;
+  monthlyBudgetUsd: number;
+  warnPercent: number;
+  directTeachingDefault: boolean;
+  explainLanguage: string;
+}
+
+export interface ModelConfigLike {
+  id: string;
+  provider: string;
+  model: string;
+  label: string;
+  inputPricePerMtok: number;
+  outputPricePerMtok: number;
+  active: boolean;
+}
+
+export const DEFAULT_ENGINE_SETTING: EngineSettingLike = {
+  externalAiEnabled: false,
+  dailyBudgetUsd: AI_ENGINE_DEFAULTS.dailyBudgetUsd,
+  monthlyBudgetUsd: AI_ENGINE_DEFAULTS.monthlyBudgetUsd,
+  warnPercent: AI_ENGINE_DEFAULTS.warnPercent,
+  directTeachingDefault: false,
+  explainLanguage: 'ZH_MIXED',
+};
+
+export const FALLBACK_MODEL_CONFIG: ModelConfigLike = {
+  id: 'fallback-mock',
+  provider: 'mock',
+  model: 'mock-deterministic',
+  label: '内置模拟模型',
+  inputPricePerMtok: 0,
+  outputPricePerMtok: 0,
+  active: true,
+};
+
+export interface ResolvedEngineConfig {
+  setting: EngineSettingLike;
+  modelConfig: ModelConfigLike;
+  providerMode: ProviderMode;
+  providerReason: ProviderReason;
+}
+
+export async function loadEngineConfig(prisma: PrismaClient): Promise<ResolvedEngineConfig> {
+  const [settingRow, modelRow] = await Promise.all([
+    prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
+    prisma.aIModelConfig.findFirst({
+      where: { isDefault: true, active: true },
+      orderBy: { updatedAt: 'desc' },
+    }),
+  ]);
+
+  const setting: EngineSettingLike = settingRow
+    ? {
+        externalAiEnabled: settingRow.externalAiEnabled,
+        dailyBudgetUsd: settingRow.dailyBudgetUsd,
+        monthlyBudgetUsd: settingRow.monthlyBudgetUsd,
+        warnPercent: settingRow.warnPercent,
+        directTeachingDefault: settingRow.directTeachingDefault,
+        explainLanguage: settingRow.explainLanguage,
+      }
+    : DEFAULT_ENGINE_SETTING;
+
+  const modelConfig: ModelConfigLike = modelRow
+    ? {
+        id: modelRow.id,
+        provider: modelRow.provider,
+        model: modelRow.model,
+        label: modelRow.label,
+        inputPricePerMtok: modelRow.inputPricePerMtok,
+        outputPricePerMtok: modelRow.outputPricePerMtok,
+        active: modelRow.active,
+      }
+    : FALLBACK_MODEL_CONFIG;
+
+  const env = readProviderEnv();
+  const { mode, reason } = resolveProviderMode({
+    externalAiEnabled: setting.externalAiEnabled,
+    apiKey: env.apiKey,
+    baseUrl: env.baseUrl,
+  });
+
+  return { setting, modelConfig, providerMode: mode, providerReason: reason };
+}
+
+export function createProvider(
+  config: Pick<ResolvedEngineConfig, 'providerMode' | 'modelConfig'>,
+  env = readProviderEnv(),
+): AiProvider {
+  if (config.providerMode === 'external') {
+    return new OpenAICompatibleProvider({
+      baseUrl: env.baseUrl,
+      apiKey: env.apiKey ?? '',
+      model: env.modelOverride ?? config.modelConfig.model,
+    });
+  }
+  return new MockProvider(config.modelConfig.model || 'mock-deterministic');
+}

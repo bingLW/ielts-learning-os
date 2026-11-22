@@ -7,6 +7,7 @@ next-env.d.ts
 # 环境与本地数据（个人学习记录不上传）
 .env
 .env.*
+!.env.example
 prisma/dev.db
 *.db-journal
 *.db-shm

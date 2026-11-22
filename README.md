@@ -18,7 +18,7 @@
 
 ## 1. 页面功能地图
 
-一级入口共 21 个，清单的唯一来源是 `src/lib/constants.ts` 的 `NAV_ITEMS`。v2.2 在原 11 个入口上新增 10 个证据驱动入口（下表「诊断与复盘」「复盘与配置」分组）。
+一级入口共 22 个，清单的唯一来源是 `src/lib/constants.ts` 的 `NAV_ITEMS`。v2.2 在 v2.1 的基础上新增 10 个证据驱动入口，v2.4 再新增 1 个 AI Learning Coach 入口（下表「诊断与复盘」分组）。
 
 | 分组 | 路径 | 页面 | 核心能力 |
 | --- | --- | --- | --- |
@@ -34,6 +34,7 @@
 | 诊断与复盘 | `/diagnosis` | 障碍诊断 | 每轮聚焦一个主障碍，配置定向修复、成功标准与前后测样本 |
 | 诊断与复盘 | `/retest` | 复测与迁移 | 技能型复测队列（逾期/今日/未来 7 天），D0/D7/D30/D84 阶梯，一键加入今日计划 |
 | 诊断与复盘 | `/coach` | AI Coach 日志 | 六步学习协议、AI 使用登记（工具/级别/动作/采纳），A4 依赖占比提醒 |
+| 诊断与复盘 | `/ai-coach` | AI Learning Coach | v2.4 会话说教闭环：TUTOR/SOCRATIC/EXAMINER/ERROR_ANALYST/DRILL/REVIEWER 六种模式、能力基线、三级提示、即时与延迟复测；AI 评估一律标注「辅助评估」 |
 | 三轨道 | `/general` | 通用英语 | General English 轨道：CEFR 分项评估，独立统计 |
 | 三轨道 | `/ielts` | 雅思工作区 | IELTS Preparation 轨道：正式/模考成绩，独立统计 |
 | 三轨道 | `/mediated` | 英语媒介学习 | English-mediated Learning 轨道：用英语学法语等知识，独立验收 |
@@ -44,7 +45,7 @@
 | 复盘与配置 | `/stages` | 阶段与验收 | 4 阶段、28 条验收项结果录入；H1–H5 门禁评估（**只给建议，绝不自动升级**）；升级留痕 |
 | 复盘与配置 | `/settings` | 系统设置 | 每日可用分钟（15–240/自定义）、薄弱项权重微调、五类领域数据导出（CSV/JSON）、危险操作 |
 
-除 21 个一级入口外，还有二级页面 `/review`（复习中心），以及详情页 `/records/[id]`、`/grammar/[id]`。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
+除 22 个一级入口外，还有二级页面 `/review`（复习中心），以及详情页 `/records/[id]`、`/grammar/[id]`、`/ai-coach/[id]`，AI 子页 `/ai-coach/review`、`/ai-coach/usage`、`/ai-coach/admin`。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
 
 ## 2. 技术栈
 
@@ -53,10 +54,10 @@
 | 框架 | Next.js 15 App Router + React 19 | 全站 Server Component，写操作走 Server Action，不暴露 REST 层 |
 | 语言 | TypeScript 5（strict） | 路径别名 `@/*` → `./src/*` |
 | 样式 | Tailwind CSS v3 | 三色 GREEN/YELLOW/RED 由 CSS 变量承载，`mobile:600px` / `md:768px` / `tablet:1024px` |
-| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，45 张表（v2.2 新增 11 张证据域表） |
-| 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误 |
+| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，68 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表） |
+| 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误；AI 结构化输出同样过 zod Schema |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | 只测纯函数，不连数据库；29 个文件 / 587 个用例 |
+| 测试 | Vitest 3 | 46 个文件 / 692 个用例；纯函数单测 + 1 个数据库副本上的 Server Action 集成测试（v2.4） |
 
 ## 3. 环境要求
 
@@ -119,13 +120,15 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/domain/__tests__/` 下全部纯函数测试（29 文件 / 587 用例） |
+| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（46 文件 / 692 用例） |
 | `npm run test:watch` | 监听模式 |
-| `npm run test:e2e` | v2.1 + v2.2 两段端到端验收（均使用数据库副本，不改真实库） |
+| `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4 四段端到端验收（均使用数据库副本，不改真实库） |
 | `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
 | `npm run test:e2e:v22` | 仅 v2.2 全链路（37 条断言） |
+| `npm run test:e2e:v23` | 仅 v2.3 TypeWords 词汇集成（40 条断言） |
+| `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成（3 条用例；复制 `dev.db` 到临时库后跑 Server Action 全链路） |
 | `npm run typecheck` | `tsc --noEmit`；注意 `tsconfig.json` 排除了测试目录 |
-| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 29 个测试文件** |
+| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 46 个测试文件** |
 | `npm run db:push` | 把 `schema.prisma` 同步到 SQLite（不丢数据） |
 | `npm run db:generate` | 重新生成 Prisma Client |
 | `npm run db:seed` | 重跑 seed（幂等：`upsert` + 验收项整组重建 + v2 五个回填函数；重复执行新增数恒为 0） |
@@ -133,12 +136,14 @@ node -v    # 应显示 v22.x
 | `bash scripts/backup.sh` | 生成一份 SQLite 一致性备份并自检（**不需要 Node**，详见 §11） |
 | `bash scripts/restore.sh <备份文件>` | 二次确认后从备份恢复（**不需要 Node**，详见 §11） |
 | `node scripts/migrations/v2.2.mjs --db prisma/dev.db` | v2.1 → v2.2 版本化迁移（要求先有备份；`--dry-run` 只打印 DDL） |
+| `node scripts/migrations/v2.3.mjs --db prisma/dev.db` | v2.2 → v2.3 词汇域迁移（同上） |
+| `node scripts/migrations/v2.4.mjs --db prisma/dev.db` | v2.3 → v2.4 AI 引擎迁移（同上） |
 
 ## 6. 数据文件与导出（概览）
 
 | 项目 | 说明 |
 | --- | --- |
-| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，45 张表；v2.2 新增 11 张证据域表：`EvidenceRecord`/`SkillProfile`/`BarrierDiagnosis`/`InterventionPlan`/`RetestSchedule`/`LearningCycle`/`WeeklyFocus`/`AIUsageRecord`/`ResourceReference`/`ResourceReadingLog`/`AppMigration`） |
+| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，68 张表。历史增量：v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表：`AIModelConfig`/`PromptTemplate`/`PromptVersion`/`AIEngineSetting`/`AILearningSession`/`AILearningTurn`/`LearningTaskInstance`/`AICallLog`/`AISessionFeedback`） |
 | 备份 | **不要**直接 `cp` 正在运行的 `dev.db`；用 `bash scripts/backup.sh` 生成一致性快照，详见 **§11 数据备份与恢复** |
 | 恢复 | `bash scripts/restore.sh <备份文件>`，脚本会在覆盖前自动留一份安全网，详见 §11 |
 | 定时备份 | `scripts/backup-launchd.plist.template`（macOS launchd 模板，只交付模板不自动安装），详见 §11.6 |
@@ -174,7 +179,7 @@ node -v    # 应显示 v22.x
 | L1 | 仅在**被 Agent 托管执行**时受限：宿主注入的 `node-safe-delete` 保护对 Node 的 `fs.unlink` 设了「单轮 50 次删除」阈值，`next build` / `next dev` 清理 `.next` 时会被拦 | 在你自己的终端里不存在这层保护，`npm run build` / `npm run dev` 均可正常执行。被拦时的绕过方式见 §10 |
 | L2 | 缺陷 D6：`dueDateFrom` 取 `max(d0 + n, today)` | 补录**历史**首测时，D1/D3/D7 会被一起压到同一天（当天多条待办），不产生数据错误但体验差 |
 | L3 | 「复盘与计划」独立成桶（`META`），不计入听说读写任一科 | Dashboard 四项投入的合计**含** META，与「本周净时长」恒等；分析看板「四科分布」图不含 META。两处口径差异均为有意设计，不是漏算 |
-| L4 | AI 能力仅预留 | 只有 `AiSuggestion` 表与 `/settings` 说明位，本版本永远写 `unavailable`，不调用任何模型 |
+| L4 | AI 能力已在 v2.4 接通，但默认走 Mock | 未配置 `AI_PROVIDER_API_KEY` 或未在 `/ai-coach/admin` 打开外部 AI 时，所有回复由内置 Mock Provider 生成（确定性、零外部请求）；旧 `AiSuggestion` 表仍保持 `unavailable`，不会调用模型 |
 | L5 | 阶段名称是自建学习路径标签 | 不等于 CEFR 官方评级，也不代表雅思官方分数；UI 已固定展示免责声明 |
 | L6 | `lucide-react` 依赖未使用 | 图标为 `src/components/ui/Icon.tsx` 手写内联 SVG（25 个）。该包**可移除**，移除后不影响任何功能 |
 | L7 | 未配置 ESLint | `npm run lint`（`next lint`）需先初始化 ESLint 配置才能运行 |
@@ -182,7 +187,9 @@ node -v    # 应显示 v22.x
 
 ## 9. 测试说明
 
-`npm test` 会跑 `src/lib/domain/__tests__/` 下的 **14 个文件、306 条用例**。全部针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），因此可以在任意环境稳定复现。
+`npm test` 会跑 `src/lib/**/__tests__/` 下的 **46 个文件、692 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；唯一的例外是 v2.4 的 `tutor.integration.test.ts`，它把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
+
+下表保留 v2.0 时期的领域纯函数用例分布（当时 14 文件 / 306 用例），后续版本的新增用例见 §13–§15。
 
 | 文件 | 覆盖对象 | 用例数 |
 | --- | --- | --- |
@@ -199,7 +206,7 @@ node -v    # 应显示 v22.x
 | `vocab.test.ts` | 三档加权、抽测正确率、新词量建议 | 16 |
 | `weekly.test.ts` | 13 项指标文案、手工覆盖、Top3 校验 | 26 |
 
-测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查测试文件（v2.0 验收时为 14 个，v2.2 已增至 29 个）——首次运行它就抓到了一处写错的导入路径（见 §10）。
+测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查测试文件（v2.0 验收时为 14 个，v2.4 已增至 46 个）——首次运行它就抓到了一处写错的导入路径（见 §10）。
 
 ---
 
@@ -235,7 +242,7 @@ docker run --rm -v "$PWD":/src:ro -e NEXT_TELEMETRY_DISABLED=1 node:22 \
 
 ## 11. 数据备份与恢复（SQLite 一致性快照）
 
-本节是一套**不依赖 Node/npm** 的方案：`scripts/backup.sh` 与 `scripts/restore.sh` 只调用系统自带的 `/usr/bin/sqlite3`（实测 3.54.0）与 POSIX shell 工具（date / mkdir / mv / rm / wc / tr / basename / dirname），因此**在没有 Node 的终端、`launchd`、`cron` 里都能直接跑**。已用 `env PATH=/usr/bin:/bin /bin/bash scripts/backup.sh` 实测通过（该 PATH 下 `node`、`npm` 均 NOT FOUND）。脚本兼容 macOS 自带 `/bin/bash` 3.2，不使用 bash 4+ 特性。数据库文件仍是唯一的 `prisma/dev.db`（v2.2 起 45 张表）。
+本节是一套**不依赖 Node/npm** 的方案：`scripts/backup.sh` 与 `scripts/restore.sh` 只调用系统自带的 `/usr/bin/sqlite3`（实测 3.54.0）与 POSIX shell 工具（date / mkdir / mv / rm / wc / tr / basename / dirname），因此**在没有 Node 的终端、`launchd`、`cron` 里都能直接跑**。已用 `env PATH=/usr/bin:/bin /bin/bash scripts/backup.sh` 实测通过（该 PATH 下 `node`、`npm` 均 NOT FOUND）。脚本兼容 macOS 自带 `/bin/bash` 3.2，不使用 bash 4+ 特性。数据库文件仍是唯一的 `prisma/dev.db`（v2.4 起 68 张表）。
 
 ### 11.1 为什么不能用 `cp`
 
@@ -636,3 +643,78 @@ node scripts/migrations/v2.3.mjs --db prisma/dev.db              # 正式迁移
 | L18 | 备份无逐词结果 | 导入会话固定 `SUMMARY_ONLY`，不推进七维 |
 | L19 | 备份 ZIP 仅支持 store/deflate | ZIP64、加密包需先解压再选 `data.json` |
 | L20 | 练习统计只在会话结束/切换时落库 | 中途退出的进度在 `PracticeSaveWord` 缓存里，未必形成统计 |
+
+---
+
+## 15. v2.3 → v2.4 AI Learning Engine & Personal Tutor
+
+v2.4 在 v2.3 之上做**增量升级**：不重建、不换框架/数据库/认证/部署，不动 v2.1–v2.3 的历史数据与路由。所有模型调用都由后端代理；默认使用确定性 Mock Provider，不产生任何外部请求与费用。
+
+### 15.1 新增能力
+
+| 能力 | 入口 | 关键约束 |
+| --- | --- | --- |
+| AI 教学会话 | `/ai-coach` | 六种模式：Tutor 讲解 / Socratic 苏格拉底 / Examiner 模拟考官 / Error Analyst 错误分析员 / Drill 练习生成 / Reviewer 复习教练 |
+| 基线先行 | `/ai-coach/[id]` | 必须先提交自己的答案才可诊断；AI 反馈不覆盖原始答案，原始基线同时写入 `EvidenceRecord`（A0、SELF） |
+| 三级提示 | `/ai-coach/[id]` | 提示严格按 1→2→3 递进，不能跳级；第 1–2 级禁止泄露答案，第 3 级才可给出完整示范 |
+| 即时复测 | `/ai-coach/[id]` | AI 复测生成独立证据（`assessorType='AI'`、`assistanceLevel='A0'`），并自动结清基线的即时复测待办 |
+| 延迟复测 | `/ai-coach/[id]` → `/retest` | 立即复测通过后可按 D7/D30/D84 阶梯排延迟复测；复测队列与 v2.2 技能复测共用 |
+| 复习与错误沉淀 | `/ai-coach/review` | 可把 AI 诊断结论一键提升为错题（Mistake），保留证据引用 |
+| 用量与预算 | `/ai-coach/usage` | 每次调用记录 provider/model/promptVersion/tokens/延迟/成本/状态；日预算 $1、月预算 $20、80% 预警，超限直接拦截 |
+| 模型与提示词管理 | `/ai-coach/admin` | 外部 AI 总开关、讲解语言、直接教学模式默认值、模型配置、Prompt Registry（版本 append-only + sha256 校验） |
+
+**安全与隐私边界**（实现层强制，不依赖提示词自觉）：
+
+- API Key 只从环境变量读取，不写入源码、数据库明文、前端 bundle 或日志；
+- 服务端 zod Schema 校验输入；AI 结构化输出再过一层 Schema，非法输出记为 `INVALID_OUTPUT`；
+- 结构化内容（`structuredJson`）与聊天文本分离存储；会话日志保留 prompt 版本、模型、provider 与时间戳；
+- 脱敏：邮箱、Bearer Token、API Key、长数字串、`file://` 路径在组装上下文与写日志前统一打码；
+- 上下文只带最近 5 条错误与 3 条证据摘要，不把全部个人历史发给模型；
+- AI 评估统一展示 `AI_ASSESSMENT_DISCLAIMER_ZH`（「AI 辅助评估，仅供练习反馈，不是官方 IELTS 分数或 CEFR 认证」），`is_official_score` 恒为 `false`；
+- 删除 AI 会话只删会话本身，独立证据保留并将 `aiSessionId` 置空；未完成的基线/复测证据不会被误删；
+- AI 不会自动修改正式计划、删除数据或升级阶段，所有提升动作都需用户点击。
+
+### 15.2 启用外部模型（可选）
+
+默认无需任何配置，直接使用 Mock。要接外部 OpenAI 兼容服务：
+
+```bash
+cp .env.example .env          # 若尚无 .env
+# 在 .env 填入（不要把 Key 提交到仓库）：
+AI_PROVIDER_API_KEY=sk-...
+AI_PROVIDER_BASE_URL=https://api.openai.com/v1   # 可选，默认即此值
+AI_PROVIDER_MODEL=gpt-4o-mini                    # 可选，覆盖默认模型
+```
+
+然后到 `/ai-coach/admin` 打开「外部 AI」总开关。以下任一条件不满足时自动回退 Mock，并在页面显示原因：外部 AI 未启用、缺少 Key、缺少 Base URL。
+
+### 15.3 迁移（v2.3 → v2.4）
+
+```bash
+bash scripts/backup.sh                                          # 升级前一致性备份
+node scripts/migrations/v2.4.mjs --db prisma/dev.db --dry-run    # 只看 DDL
+node scripts/migrations/v2.4.mjs --db prisma/dev.db              # 正式迁移
+```
+
+- 纯加法：新建 9 张 AI 表，并给 `EvidenceRecord` 增加可空列 `aiSessionId`；不改既有列、不删行；
+- 单事务、可重复执行；同版本 checksum 不一致时拒绝执行；
+- 完成后自动跑 `PRAGMA integrity_check` / `PRAGMA foreign_key_check` 与核心表行数漂移检查；
+- 写入 `AppMigration(version='v2.4')`，报告写入 `backups/migrations/v2.4-<timestamp>.json`。
+
+回滚：`bash scripts/restore.sh backups/<升级前备份>`，随后 `npm run db:generate`。迁移脚本不提供反向 DDL，与 v2.2/v2.3 一致。
+
+### 15.4 测试与文档
+
+测试与验收报告：`docs/22-v2.4-test-report.md`。
+使用手册：`docs/23-v2.4-user-guide.md`。
+设计与契约：`docs/16-v2.4-gap-analysis.md`、`docs/17-v2.4-architecture.md`、`docs/18-v2.4-data-model.md`、`docs/19-v2.4-api-contracts.md`、`docs/20-v2.4-implementation-plan.md`、`docs/21-v2.4-test-plan.md`。
+
+### 15.5 v2.4 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L21 | 默认 Mock Provider 输出为固定模板 | 适合验证闭环与回归，不代表真实模型的教学质量；接外部模型后才会产生真实费用 |
+| L22 | 成本是估算值 | 按模型单价 × tokens 计算并落库，账单以服务商为准 |
+| L23 | 预算超限只拦截新调用 | 当日已发生的调用不会回滚；需要人工在 `/ai-coach/admin` 调整预算 |
+| L24 | 口语仍以文本为主 | v2.4 不做语音识别/合成；口语证据继续沿用 v2.2 的录音与自评流程 |
+| L25 | Prompt 版本只增不改 | 修改提示词会生成新版本，旧版本保留以便追溯；不会覆盖历史会话的版本引用 |
