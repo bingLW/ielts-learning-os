@@ -31,6 +31,7 @@ import {
 } from '@/lib/domain/lemmaNormalize';
 import { decideSync } from '@/lib/domain/materialVocabSync';
 import { canonicalPos } from '@/lib/domain/vocabImport';
+import { PATH_REDACTED, redactMaterialPath } from '@/lib/materials/errorMessages';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
 import {
@@ -124,11 +125,8 @@ async function readStatus(materialId: string, fallback: MaterialStatus): Promise
  */
 function safeSyncError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  const stripped = raw
-    .replace(/\b(?:file:)?\/(?:Users|private|var|tmp|opt|home)\/[^\s'"，。；]*/g, '（路径已省略）')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (stripped.length === 0) return '同步失败（没有更多信息）';
+  const stripped = redactMaterialPath(raw);
+  if (stripped.length === 0 || stripped === PATH_REDACTED) return '同步失败（没有更多信息）';
   return stripped.length > SYNC_ERROR_MAX ? `${stripped.slice(0, SYNC_ERROR_MAX)}…` : stripped;
 }
 

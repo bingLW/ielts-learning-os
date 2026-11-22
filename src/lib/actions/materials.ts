@@ -25,7 +25,7 @@ import {
   materialSourceSchema,
 } from '@/lib/schema/material';
 import { nullIfEmpty } from '@/lib/schema/common';
-import { deleteMaterialDir } from '@/lib/storage';
+import { deleteMaterialWithCascade } from '@/lib/services/materialDeletion';
 import type { ActionResult } from '@/lib/types';
 import { cloneMaterialFromExisting } from '@/lib/materials/clone';
 import { createLocalId } from '@/lib/materials/id';
@@ -340,12 +340,11 @@ export async function retryMaterialJobAction(
 }
 
 /**
- * 删除材料（G-01/G-02）。
+ * 删除材料（G-01/G-02 / AC-09）。
  *
- * 本批实现「基本删除 + 计数」：同一事务内显式删除 17 张派生表的行，
- * **保留** `VocabularyItem` / `EvidenceRecord` / `PlanTask`（它们与材料没有外键），
- * 并把 `AICallLog.materialId` 置 null（账本保留，费用归属仍可查 job id）。
- * 文件目录在事务成功后删除（删文件不可回滚，放最后）。
+ * 级联逻辑在 `src/lib/services/materialDeletion.ts`（T14 收口）：17 张派生表
+ * 显式删除、`VocabularyItem` / `EvidenceRecord` / `PlanTask` 保留、`VocabularyItemSource`
+ * 归属行删除、`AICallLog.materialId` 置 null、磁盘目录最后删（失败降级 warning）。
  */
 export async function deleteMaterialAction(
   raw: unknown,
@@ -354,65 +353,23 @@ export async function deleteMaterialAction(
   keptVocabularyItems: number;
   keptPlanTasks: number;
   keptAttempts: number;
+  warning: string | null;
 }>> {
   const parsed = materialDeleteSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
   const materialId = parsed.data.materialId;
-  const material = await prisma.learningMaterial.findUnique({
-    where: { id: materialId },
-    select: { id: true },
-  });
-  if (!material) return fail('NOT_FOUND', '材料不存在或已被删除');
-
-  const keptVocabularyItems = await prisma.vocabularyCandidate.count({
-    where: { materialId, syncStatus: 'synced' },
-  });
-  const keptPlanTasks = await prisma.taskProposalItem.count({
-    where: { proposal: { materialId, status: 'confirmed' } },
-  });
-  const keptAttempts = await prisma.exerciseAttempt.count({
-    where: { materialId, evidenceId: { not: null } },
-  });
-
-  const deletedRows = await prisma.$transaction(async (tx) => {
-    let total = 0;
-    const track = (result: { count: number }): void => {
-      total += result.count;
-    };
-
-    // 依赖顺序：叶子 → 主体（不依赖级联，显式删除让 deletedRows 可解释）
-    track(await tx.taskProposalItem.deleteMany({ where: { proposal: { materialId } } }));
-    track(await tx.taskProposal.deleteMany({ where: { materialId } }));
-    track(await tx.materialPackItem.deleteMany({ where: { pack: { materialId } } }));
-    track(await tx.materialPack.deleteMany({ where: { materialId } }));
-    track(await tx.exerciseAttempt.deleteMany({ where: { materialId } }));
-    track(await tx.generatedExercise.deleteMany({ where: { materialId } }));
-    track(await tx.materialExerciseSet.deleteMany({ where: { materialId } }));
-    track(await tx.sentenceCandidate.deleteMany({ where: { materialId } }));
-    track(await tx.vocabularyCandidate.deleteMany({ where: { materialId } }));
-    track(await tx.extractionResult.deleteMany({ where: { materialId } }));
-    track(await tx.contentChunk.deleteMany({ where: { materialId } }));
-    track(await tx.parsedDocument.deleteMany({ where: { materialId } }));
-    track(await tx.processingJob.deleteMany({ where: { materialId } }));
-    track(await tx.materialAsset.deleteMany({ where: { materialId } }));
-    track(await tx.materialPermissionRecord.deleteMany({ where: { materialId } }));
-    track(await tx.materialSource.deleteMany({ where: { materialId } }));
-
-    // 账本保留：只断开归属（G-02：删材料不删账，费用仍可追溯）
-    await tx.aICallLog.updateMany({
-      where: { materialId },
-      data: { materialId: null },
-    });
-
-    track(await tx.learningMaterial.deleteMany({ where: { id: materialId } }));
-    return total;
-  });
-
-  deleteMaterialDir(materialId);
+  const result = await deleteMaterialWithCascade(materialId);
+  if (!result) return fail('NOT_FOUND', '材料不存在或已被删除');
 
   revalidateMaterialPaths(materialId);
-  return ok({ deletedRows, keptVocabularyItems, keptPlanTasks, keptAttempts });
+  return ok({
+    deletedRows: result.deletedRows,
+    keptVocabularyItems: result.keptVocabularyItems,
+    keptPlanTasks: result.keptPlanTasks,
+    keptAttempts: result.keptAttempts,
+    warning: result.warning,
+  });
 }
 
 /**
