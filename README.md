@@ -58,7 +58,7 @@
 | 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，79 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表） |
 | 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误；AI 结构化输出同样过 zod Schema |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | 48 个文件 / 714 个用例；纯函数单测 + 2 个数据库副本上的 Server Action 集成测试（v2.4 AI Coach、v2.4.1 初始诊断） |
+| 测试 | Vitest 3 | 49 个文件 / 715 个用例；纯函数单测 + 2 个数据库副本上的 Server Action 集成测试（v2.4 AI Coach、v2.4.1 初始诊断） |
 
 ## 3. 环境要求
 
@@ -121,7 +121,7 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（48 文件 / 714 用例） |
+| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（49 文件 / 715 用例） |
 | `npm run test:watch` | 监听模式 |
 | `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4 + v2.4.1 五段端到端验收（均使用数据库副本，不改真实库） |
 | `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
@@ -130,7 +130,7 @@ node -v    # 应显示 v22.x
 | `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成（3 条用例；复制 `dev.db` 到临时库后跑 Server Action 全链路） |
 | `npm run test:e2e:v241` | 仅 v2.4.1 初始诊断集成（1 条用例；复制 `dev.db` 到临时库后跑完整诊断、报告、计划激活、补测与删除） |
 | `npm run typecheck` | `tsc --noEmit`；注意 `tsconfig.json` 排除了测试目录 |
-| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 48 个测试文件** |
+| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 49 个测试文件** |
 | `npm run db:push` | 把 `schema.prisma` 同步到 SQLite（不丢数据） |
 | `npm run db:generate` | 重新生成 Prisma Client |
 | `npm run db:seed` | 重跑 seed（幂等：`upsert` + 验收项整组重建 + v2 五个回填函数；重复执行新增数恒为 0） |
@@ -190,7 +190,7 @@ node -v    # 应显示 v22.x
 
 ## 9. 测试说明
 
-`npm test` 会跑 `src/lib/**/__tests__/` 下的 **48 个文件、714 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；例外是 v2.4 的 `tutor.integration.test.ts` 与 v2.4.1 的 `diagnostics.integration.test.ts`，它们把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
+`npm test` 会跑 `src/lib/**/__tests__/` 下的 **49 个文件、715 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；例外是 v2.4 的 `tutor.integration.test.ts` 与 v2.4.1 的 `diagnostics.integration.test.ts`，它们把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
 
 下表保留 v2.0 时期的领域纯函数用例分布（当时 14 文件 / 306 用例），后续版本的新增用例见 §13–§15。
 
@@ -209,7 +209,7 @@ node -v    # 应显示 v22.x
 | `vocab.test.ts` | 三档加权、抽测正确率、新词量建议 | 16 |
 | `weekly.test.ts` | 13 项指标文案、手工覆盖、Top3 校验 | 26 |
 
-测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查测试文件（v2.0 验收时为 14 个，v2.4.1 已增至 48 个）——首次运行它就抓到了一处写错的导入路径（见 §10）。
+测试目录被 `tsconfig.json` 的 `exclude` 排除（这样 `next build` 不会去检查测试），代价是**测试里的类型错误不会在 `npm run typecheck` 中暴露**。为此另设 `tsconfig.test.json`，用 `npm run typecheck:test` 单独检查测试文件（v2.0 验收时为 14 个，v2.4.1 已增至 49 个）——首次运行它就抓到了一处写错的导入路径（见 §10）。
 
 ---
 

@@ -431,6 +431,7 @@ export async function submitDiagnosticAttempt(
     rubricSummary,
     learnerAnswer: responseText,
     learnerBackground: learnerProfile?.backgroundJson ?? undefined,
+    externalAiConsent: learnerProfile?.externalAiConsent === true,
   });
 
   if (!evaluation.ok) {

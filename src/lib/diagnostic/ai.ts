@@ -37,6 +37,7 @@ export interface EvaluateInput {
   rubricSummary: string;
   learnerAnswer: string;
   learnerBackground?: string;
+  externalAiConsent?: boolean;
 }
 
 export type EvaluateResult =
@@ -62,6 +63,14 @@ function failureStatus(code: string) {
 
 export async function evaluateOpenResponse(input: EvaluateInput): Promise<EvaluateResult> {
   const { prisma, kind } = input;
+  // 诊断作答属于第三方外发：未勾选同意时不得调用外部模型，保留待评估。
+  if (input.externalAiConsent !== true) {
+    return {
+      ok: false,
+      code: 'AI_UNAVAILABLE',
+      message: '本轮未同意外部 AI 评估，开放任务保留为待评估。',
+    };
+  }
   await ensurePromptRegistry(prisma, EVAL_KINDS);
 
   const config = await loadEngineConfig(prisma);

@@ -17,6 +17,7 @@ AI 初始诊断与智能定级（AI Diagnostic & Intelligent Placement）。
 ### 评估约束
 
 - 开放任务只接受外部 AI rubric 评估；未启用外部 AI 时保持 `NEEDS_REVIEW`，报告标记 `PROVISIONAL`，不使用 Mock 结果定级。
+- 外发须用户同意：诊断开始页未勾选「外部 AI 同意」时，即使后台已启用外部 AI，本轮口语/写作也不会外发，保持 `NEEDS_REVIEW`（`src/lib/diagnostic/ai.ts`）。
 - 技术无效的作答记录为 `INVALID`，不产生证据、不计分，并重新排队。
 - 四项技能分别给出等级/范围/置信度，不平均成「总体 CEFR」；不是官方 CEFR 认证，也不预测 IELTS 分数。
 - 计划确认只把 `PlanProposal` 标为 `ACTIVE`，不自动创建 `PlanTask`。
@@ -27,9 +28,13 @@ AI 初始诊断与智能定级（AI Diagnostic & Intelligent Placement）。
 - 真实库校验结果：`integrity_check=ok`、`foreign_key_check` 0 行、核心表行数漂移 0；报告 `backups/migrations/v2.4.1-2026-11-22T07-54-52-281Z.json`。
 - 回滚：`bash scripts/restore.sh backups/<升级前备份>` 后执行 `npm run db:generate`。
 
+### 修复
+
+- 诊断开放任务在用户未同意外部 AI 时仍可能调用外部模型；现改为在评估入口强制校验 `externalAiConsent`，未同意一律不外发（新增回归测试 `src/lib/diagnostic/__tests__/ai.test.ts`）。
+
 ### 验证
 
-- `npm test`：48 个文件 / 714 个用例全部通过。
+- `npm test`：49 个文件 / 715 个用例全部通过。
 - `npm run test:e2e`：v2.1 + v2.2 + v2.3 + v2.4 + v2.4.1 全部通过。
 - `npm run typecheck`、`npm run typecheck:test`、`npm run build`：通过。
 - 浏览器冒烟：开始诊断、自适应升档、暂停/刷新/恢复、开放任务待评估、生成暂定报告、编辑并确认计划、补测、删除会话均实际执行。
