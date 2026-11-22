@@ -1,0 +1,408 @@
+%% v2.6 Smart Learning Materials — 类图（数据模型 + 领域服务）
+%% 约定：仅列关键字段与方法；* 表示身份/状态字段；--> 关联，--|> 实现，..> 依赖
+classDiagram
+  direction LR
+
+  %% ═══════════════════ 数据模型 ═══════════════════
+  class LearningMaterial {
+    +String id
+    +String title
+    +String format
+    +String status
+    +String? statusReason
+    +String sourceType
+    +String contentHash
+    +String? duplicateOfId
+    +String? resourceId
+    +Int chunkCount
+    +Int aiCallCount
+    +Int inputTokens
+    +DateTime createdAt
+  }
+
+  class MaterialSource {
+    +String id
+    +String materialId
+    +String sourceType
+    +String? url
+    +String? author
+    +String? licenseName
+    +Boolean rightsConfirmed
+  }
+
+  class MaterialPermissionRecord {
+    +String id
+    +String materialId
+    +String action
+    +String rule
+    +DateTime createdAt
+  }
+
+  class MaterialAsset {
+    +String id
+    +String materialId
+    +String kind
+    +String relativePath
+    +Boolean isReadOnly
+    +String? audioAssetId
+    +String? sha256
+  }
+
+  class ProcessingJob {
+    +String id
+    +String materialId
+    +String stage
+    +String status
+    +Int attempt
+    +String? errorCode
+    +Boolean cancelRequested
+    +Int lockVersion
+    +String? progressJson
+  }
+
+  class ParsedDocument {
+    +String id
+    +String materialId
+    +Int version
+    +String parserName
+    +String parserVersion
+    +String status
+    +String? warningsJson
+    +Boolean isCurrent
+  }
+
+  class ContentChunk {
+    +String id
+    +String materialId
+    +String parsedDocumentId
+    +Int seq
+    +String kind
+    +String? headingPath
+    +Int? page
+    +Int? paragraphIndex
+    +Int charStart
+    +Int charEnd
+    +String text
+    +String textHash
+    +String? suspicionFlags
+    +String? prevChunkId
+    +String? nextChunkId
+  }
+
+  class ExtractionResult {
+    +String id
+    +String materialId
+    +String? chunkId
+    +String kind
+    +String payloadJson
+    +String sourceQuote
+    +Boolean sourceVerified
+    +Boolean isDerived
+    +String? aiCallLogId
+    +String reviewStatus
+  }
+
+  class VocabularyCandidate {
+    +String id
+    +String materialId
+    +String chunkId
+    +String surfaceForm
+    +String lemma
+    +String normalizedLemma
+    +String pos
+    +String senseKey
+    +String contextSentence
+    +String contextHash
+    +Boolean existsInLibrary
+    +String reviewStatus
+    +String syncStatus
+    +String? syncedItemId
+  }
+
+  class SentenceCandidate {
+    +String id
+    +String materialId
+    +String chunkId
+    +String sentenceText
+    +String? skeletonText
+    +String? complexity
+    +String reviewStatus
+  }
+
+  class MaterialExerciseSet {
+    +String id
+    +String materialId
+    +String title
+    +String targetSkill
+    +String? difficultyLevel
+    +Int estimatedMinutes
+    +Boolean hasApprovedOnly
+  }
+
+  class GeneratedExercise {
+    +String id
+    +String materialId
+    +String setId
+    +String chunkId
+    +String type
+    +String targetSkill
+    +String prompt
+    +String answerJson
+    +String explanation
+    +String evidenceQuote
+    +Boolean isAiGenerated
+    +String reviewStatus
+    +String consistencyCheck
+    +String dedupeKey
+    +String? promptVersionId
+  }
+
+  class ExerciseAttempt {
+    +String id
+    +String materialId
+    +String exerciseId
+    +String responseJson
+    +Boolean? isCorrect
+    +String reviewStatusAtAttempt
+    +String? evidenceId
+    +String evidenceType
+  }
+
+  class MaterialPack {
+    +String id
+    +String materialId
+    +String? learningGoalsJson
+    +String? targetSkillsJson
+    +Int estimatedMinutes
+    +String? summaryId
+  }
+
+  class MaterialPackItem {
+    +String id
+    +String packId
+    +String itemType
+    +String refId
+    +Int sortOrder
+    +Int? estimatedMinutes
+  }
+
+  class TaskProposal {
+    +String id
+    +String materialId
+    +String baseDate
+    +Int budgetMinutes
+    +Int totalMinutes
+    +Int overflowDays
+    +String status
+  }
+
+  class TaskProposalItem {
+    +String id
+    +String proposalId
+    +String module
+    +String targetSkill
+    +Int suggestedMinutes
+    +Int? finalMinutes
+    +String suggestedDate
+    +String? finalDate
+    +Boolean selected
+    +String? planTaskId
+  }
+
+  %% 既有表（复用，v2.2 / v2.3 / v2.1）
+  class Resource {
+    +String id
+    +String name
+    +String subject
+    +String type
+    +Boolean isPrimary
+  }
+  class VocabularyItem {
+    +String id
+    +String lemma
+    +String normalizedLemma
+    +String pos
+    +String senseKey
+    +String language
+  }
+  class VocabularyItemSource {
+    +String itemId
+    +String sourceId
+    +String sourceRef
+  }
+  class VocabularySource {
+    +String id
+    +String type
+  }
+  class EvidenceRecord {
+    +String id
+    +String skill
+    +String evidenceType
+    +Int? score
+  }
+  class PlanTask {
+    +String id
+    +String planDate
+    +String module
+    +Int plannedMinutes
+  }
+  class SkillProfile {
+    +String skill
+    +String? direction
+    +String confidence
+  }
+  class AICallLog {
+    +String id
+    +String? sessionId
+    +String? materialId
+    +String? materialJobId
+    +String status
+    +Int inputTokens
+    +Float estimatedCostUsd
+  }
+  class AudioAsset {
+    +String id
+    +String title
+    +String source
+    +String filePath
+  }
+
+  %% ═══════════════════ 关系 ═══════════════════
+  LearningMaterial "1" --> "0..1" MaterialSource : source
+  LearningMaterial "1" --> "0..*" MaterialPermissionRecord
+  LearningMaterial "1" --> "0..*" MaterialAsset
+  LearningMaterial "1" --> "0..*" ProcessingJob
+  LearningMaterial "1" --> "0..*" ParsedDocument
+  LearningMaterial "1" --> "0..*" ContentChunk
+  LearningMaterial "1" --> "0..*" ExtractionResult
+  LearningMaterial "1" --> "0..*" VocabularyCandidate
+  LearningMaterial "1" --> "0..*" SentenceCandidate
+  LearningMaterial "1" --> "0..*" MaterialExerciseSet
+  LearningMaterial "1" --> "0..*" GeneratedExercise
+  LearningMaterial "1" --> "0..*" ExerciseAttempt
+  LearningMaterial "1" --> "0..1" MaterialPack
+  LearningMaterial "1" --> "0..*" TaskProposal
+  LearningMaterial "0..*" --> "0..1" Resource : resourceId (SetNull)
+  LearningMaterial "0..1" --> "0..1" LearningMaterial : duplicateOfId (弱引用)
+
+  ParsedDocument "1" --> "1..*" ContentChunk
+  ContentChunk "1" --> "0..*" ExtractionResult
+  ContentChunk "1" --> "0..*" VocabularyCandidate
+  ContentChunk "1" --> "0..*" SentenceCandidate
+  ContentChunk "1" --> "0..*" GeneratedExercise
+
+  MaterialExerciseSet "1" --> "0..*" GeneratedExercise
+  MaterialExerciseSet "1" --> "0..*" ExerciseAttempt
+  GeneratedExercise "1" --> "0..*" ExerciseAttempt
+  ExerciseAttempt "0..*" --> "0..1" EvidenceRecord : evidenceId (弱引用)
+
+  MaterialPack "1" --> "0..*" MaterialPackItem
+  TaskProposal "1" --> "0..*" TaskProposalItem
+  TaskProposalItem "0..*" --> "0..1" PlanTask : planTaskId (弱引用)
+
+  VocabularyCandidate "0..*" --> "0..1" VocabularyItem : syncedItemId
+  VocabularyItem "1" --> "0..*" VocabularyItemSource
+  VocabularyItemSource "0..*" --> "1" VocabularySource
+  MaterialAsset "0..*" --> "0..1" AudioAsset : audioAssetId
+
+  %% ═══════════════════ 领域服务 ═══════════════════
+  class MaterialIntakeService {
+    +validateUpload(file, meta) MagicVerdict
+    +persistOriginal(materialId, bytes, ext) StoredFile
+    +detectDuplicate(contentHash) LearningMaterial?
+    +createMaterial(meta, hash) LearningMaterial
+  }
+
+  class ParserRegistry {
+    +resolve(format) MaterialParser
+  }
+
+  class MaterialParser {
+    <<interface>>
+    +name: String
+    +version: String
+    +supports(format) Boolean
+    +parse(bytes, ctx) ParsedBlock[]
+  }
+
+  class TxtParser
+  class MarkdownParser
+  class HtmlParser
+  class DocxParser
+  class PdfParser
+
+  class HtmlSanitizer {
+    +sanitize(html) SanitizeResult
+  }
+
+  class Chunker {
+    +chunk(blocks, limits) ChunkResult
+  }
+
+  class MaterialPipeline {
+    +tick(materialId) MaterialStatusDto
+    +runStage(job, stage) StageOutcome
+    +acquireLock(job) Boolean
+    +markCancelled(job) void
+  }
+
+  class MaterialAiAdapter {
+    +extractChunkBatch(chunks, level) ExtractOutcome
+    +summarizeMaterial(chunks, level) SummaryOutcome
+    +generateExercises(chunks, types, budget) ExerciseOutcome
+  }
+
+  class InjectionGuard {
+    +detect(text) String[]
+    +wrap(chunks, title) WrappedBlock
+  }
+
+  class SourceVerifier {
+    +verify(quote, chunkText) Boolean
+    +locate(quote, chunks) SourceRef?
+  }
+
+  class ExerciseConsistencyChecker {
+    +check(exercise, chunkText) CheckVerdict
+  }
+
+  class MaterialExerciseGate {
+    +canEnterPlacement(ex) Verdict
+    +canAttachEvidence(ex, evidenceType) Verdict
+  }
+
+  class VocabularySyncService {
+    +normalizeLemma(form) String
+    +syncCandidates(materialId, ids) SyncReport
+  }
+
+  class TaskProposalService {
+    +buildProposal(pack, baseDate) TaskProposal
+    +confirm(proposalId) String[]
+  }
+
+  class MaterialDeletionService {
+    +preview(materialId) DeletionPreview
+    +delete(materialId, confirmText) DeleteReport
+  }
+
+  MaterialParser <|.. TxtParser
+  MaterialParser <|.. MarkdownParser
+  MaterialParser <|.. HtmlParser
+  MaterialParser <|.. DocxParser
+  MaterialParser <|.. PdfParser
+
+  ParserRegistry ..> MaterialParser
+  HtmlParser ..> HtmlSanitizer
+  MaterialPipeline ..> ParserRegistry
+  MaterialPipeline ..> Chunker
+  MaterialPipeline ..> MaterialAiAdapter
+  MaterialPipeline ..> InjectionGuard
+  MaterialAiAdapter ..> SourceVerifier
+  MaterialAiAdapter ..> AICallLog
+  ExerciseConsistencyChecker ..> SourceVerifier
+  VocabularySyncService ..> VocabularyItem
+  VocabularySyncService ..> VocabularyItemSource
+  TaskProposalService ..> PlanTask
+  MaterialDeletionService ..> LearningMaterial
+  MaterialExerciseGate ..> GeneratedExercise

@@ -8,10 +8,13 @@
 import { z } from 'zod';
 import {
   AI_ACCEPTED_AIDS,
+  AI_CEFR_LEVELS,
   AI_EVIDENCE_AID_LEVELS,
   AI_EVIDENCE_PERFORMANCE_TYPES,
   AI_ERROR_CATEGORIES,
   AI_TASK_SKILLS,
+  MATERIAL_EXERCISE_SKILLS,
+  MATERIAL_EXERCISE_TYPES,
 } from '@/lib/constants';
 import { enumFrom } from '@/lib/schema/common';
 import type { AiPromptKind } from './types';
@@ -257,6 +260,130 @@ export const diagPlanSchema = z.object({
 });
 export type DiagnosticPlan = z.infer<typeof diagPlanSchema>;
 
+// ── v2.6 材料域结构化协议（ADR-04 L3：全部 .strict()，不含任何自由文本控制字段） ──
+
+/**
+ * 抽取项允许的 kind。
+ *
+ * `SUMMARY` / `TOPIC` 由 `material_summary` 单独产出，不在这里出现，
+ * 避免同一份内容被两种 prompt 重复写进 ExtractionResult。
+ */
+const MATERIAL_EXTRACT_ITEM_KINDS = [
+  'KEYWORD',
+  'COLLOCATION',
+  'KEY_SENTENCE',
+  'PARAGRAPH_GIST',
+  'GRAMMAR_POINT',
+] as const;
+
+const chunkSeqSchema = z.number().int().min(1).max(100_000);
+/** 原文引用：上限 400（ADR-04 L3），下限 1 —— 空引用不允许入库。 */
+const sourceQuoteSchema = z.string().min(1).max(400);
+
+const materialExtractItemSchema = z
+  .object({
+    kind: enumFrom(MATERIAL_EXTRACT_ITEM_KINDS, '抽取类型'),
+    source_chunk_seq: chunkSeqSchema,
+    source_quote: sourceQuoteSchema,
+    /** 词元（≤60）。只有 KEYWORD / COLLOCATION 需要。 */
+    lemma: z.string().min(1).max(60).optional(),
+    /** 词性（空格串 = 未知，沿用主库约定）。 */
+    pos: z.string().max(20).optional(),
+    definition_zh: z.string().max(200).optional(),
+    collocations: z.array(z.string().min(1).max(80)).max(6).optional(),
+    /** 句子主干（AI 推断，C-04 必须标注为推断）。 */
+    skeleton: z.string().max(300).optional(),
+    grammar_points: z.array(z.string().min(1).max(60)).max(6).optional(),
+    /** 段落主旨。 */
+    gist: z.string().max(300).optional(),
+  })
+  .strict();
+
+export const materialExtractSchema = z
+  .object({
+    items: z.array(materialExtractItemSchema).min(1).max(24),
+    batch_note: z.string().max(300).optional(),
+  })
+  .strict();
+export type MaterialExtractResult = z.infer<typeof materialExtractSchema>;
+export type MaterialExtractItem = z.infer<typeof materialExtractItemSchema>;
+
+const materialKeyPointSchema = z
+  .object({
+    text: z.string().min(1).max(300),
+    source_chunk_seq: chunkSeqSchema,
+    source_quote: sourceQuoteSchema,
+  })
+  .strict();
+
+export const materialSummarySchema = z
+  .object({
+    summary_zh: z.string().min(1).max(800),
+    summary_en: z.string().max(800).optional(),
+    key_points: z.array(materialKeyPointSchema).min(1).max(8),
+    topics: z.array(z.string().min(1).max(120)).max(8),
+    learning_goals: z.array(z.string().min(1).max(120)).max(8),
+  })
+  .strict();
+export type MaterialSummaryResult = z.infer<typeof materialSummarySchema>;
+export type MaterialKeyPoint = z.infer<typeof materialKeyPointSchema>;
+
+const materialExerciseOptionSchema = z
+  .object({
+    key: z.string().min(1).max(8),
+    text: z.string().min(1).max(300),
+  })
+  .strict();
+
+const materialExerciseItemSchema = z
+  .object({
+    type: enumFrom(MATERIAL_EXERCISE_TYPES, '题型'),
+    target_skill: enumFrom(MATERIAL_EXERCISE_SKILLS, '技能'),
+    subskill: z.string().max(60).optional(),
+    /** A0–C1，AI 辅助估计（界面必须标注，不得声称官方等级）。 */
+    difficulty: enumFrom(AI_CEFR_LEVELS, '难度估计').optional(),
+    prompt: z.string().min(1).max(600),
+    options: z.array(materialExerciseOptionSchema).min(3).max(4),
+    correct_key: z.string().min(1).max(8),
+    explanation: z.string().min(1).max(600),
+    evidence_quote: sourceQuoteSchema,
+    source_chunk_seq: chunkSeqSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const keys = value.options.map((option) => option.key);
+    if (!keys.includes(value.correct_key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['correct_key'],
+        message: '正确答案必须是 options 中的某个 key',
+      });
+    }
+    if (new Set(keys).size !== keys.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['options'],
+        message: '选项 key 不得重复',
+      });
+    }
+    if (value.evidence_quote.trim().length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['evidence_quote'],
+        message: '必须给出原文依据，否则该题不可核验',
+      });
+    }
+  });
+
+export const materialExerciseSchema = z
+  .object({
+    exercises: z.array(materialExerciseItemSchema).min(1).max(12),
+  })
+  .strict();
+export type MaterialExerciseResult = z.infer<typeof materialExerciseSchema>;
+export type MaterialExerciseItem = z.infer<typeof materialExerciseItemSchema>;
+export type MaterialExerciseOption = z.infer<typeof materialExerciseOptionSchema>;
+
 export const SCHEMA_BY_KIND = {
   task: taskSpecSchema,
   diagnosis: diagnosisResultSchema,
@@ -271,6 +398,9 @@ export const SCHEMA_BY_KIND = {
   diag_error: diagErrorSchema,
   diag_summary: diagSummarySchema,
   diag_plan: diagPlanSchema,
+  material_extract: materialExtractSchema,
+  material_summary: materialSummarySchema,
+  material_exercise: materialExerciseSchema,
 } as const;
 
 export type StructuredByKind = {
@@ -287,6 +417,9 @@ export type StructuredByKind = {
   diag_error: DiagnosticError;
   diag_summary: DiagnosticSummary;
   diag_plan: DiagnosticPlan;
+  material_extract: MaterialExtractResult;
+  material_summary: MaterialSummaryResult;
+  material_exercise: MaterialExerciseResult;
 };
 
 export type StructuredParseResult<K extends AiPromptKind> =

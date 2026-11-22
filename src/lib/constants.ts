@@ -2808,3 +2808,408 @@ export const UPLOAD_DIR = 'storage/uploads';
 export const SPEAKING_RUBRIC_VERSION = 'speaking.rubric.v1';
 /** 听力转写默认语言。 */
 export const ASR_DEFAULT_LANGUAGE = 'en';
+
+// ───────────────────── v2.6 Smart Learning Materials ─────────────────────
+//
+// SQLite 无原生枚举：所有 `LearningMaterial` 域的取值集合都在这里定义，
+// schema 只存 String，校验一律走 `enumFrom(MATERIAL_*, '…')`。
+// 命名口径与架构文档 docs/32-v2.6-architecture.md §2 / §5 保持一致。
+
+/** 材料格式（`LearningMaterial.format`）。 */
+export const MATERIAL_FORMATS = [
+  'TXT',
+  'MARKDOWN',
+  'HTML',
+  'PDF',
+  'DOCX',
+  'PASTED_TEXT',
+  'AUDIO',
+  'VIDEO',
+] as const;
+export type MaterialFormat = (typeof MATERIAL_FORMATS)[number];
+
+export const MATERIAL_FORMAT_LABELS_ZH: Record<MaterialFormat, string> = {
+  TXT: '纯文本',
+  MARKDOWN: 'Markdown',
+  HTML: '网页/HTML',
+  PDF: 'PDF',
+  DOCX: 'Word 文档',
+  PASTED_TEXT: '粘贴摘录',
+  AUDIO: '音频',
+  VIDEO: '视频',
+};
+
+/** 一期（P0）真正可解析的格式；AUDIO / VIDEO 为 P1 预留。 */
+export const MATERIAL_P0_FORMATS = [
+  'TXT',
+  'MARKDOWN',
+  'HTML',
+  'PDF',
+  'DOCX',
+  'PASTED_TEXT',
+] as const;
+
+/** 材料来源七分类（PRD §3.1，A-05）。`unknown` 为常驻警示来源。 */
+export const MATERIAL_SOURCE_TYPES = [
+  'user_upload',
+  'user_provided_url',
+  'public_domain',
+  'open_license',
+  'licensed_subscription',
+  'internal_library',
+  'unknown',
+] as const;
+export type MaterialSourceType = (typeof MATERIAL_SOURCE_TYPES)[number];
+
+export const MATERIAL_SOURCE_TYPE_LABELS_ZH: Record<MaterialSourceType, string> = {
+  user_upload: '我自己上传的文件',
+  user_provided_url: '我用的是网上链接',
+  public_domain: '公有领域作品',
+  open_license: '开放许可（CC 等）',
+  licensed_subscription: '我订阅的付费内容',
+  internal_library: '内部自有资料',
+  unknown: '来源不确定',
+};
+
+/** `unknown` / `licensed_subscription` 在导出与文件下载上受限（R1/R2）。 */
+export const MATERIAL_RESTRICTED_SOURCE_TYPES: readonly MaterialSourceType[] = [
+  'unknown',
+  'licensed_subscription',
+];
+
+/** 材料状态机（`LearningMaterial.status`）。 */
+export const MATERIAL_STATUSES = [
+  'created',
+  'validating',
+  'extracting',
+  'normalizing',
+  'analyzing',
+  'generating',
+  'review_required',
+  'ready',
+  'partial',
+  'failed',
+  'cancelled',
+] as const;
+export type MaterialStatus = (typeof MATERIAL_STATUSES)[number];
+
+export const MATERIAL_STATUS_LABELS_ZH: Record<MaterialStatus, string> = {
+  created: '已创建',
+  validating: '校验中',
+  extracting: '解析中',
+  normalizing: '规范化中',
+  analyzing: 'AI 分析中',
+  generating: '生成练习中',
+  review_required: '待你审核',
+  ready: '已就绪',
+  partial: '部分完成',
+  failed: '失败',
+  cancelled: '已取消',
+};
+
+/** 终态：进入后不再接受 tick（ADR-05）。 */
+export const MATERIAL_TERMINAL_STATUSES: readonly MaterialStatus[] = [
+  'ready',
+  'partial',
+  'failed',
+  'cancelled',
+];
+
+/** 处理阶段（`ProcessingJob.stage`，不含 `cancelled` / `done` 两个哨兵值）。 */
+export const MATERIAL_JOB_STAGES = [
+  'validating',
+  'extracting',
+  'normalizing',
+  'analyzing',
+  'generating',
+] as const;
+export type MaterialJobStage = (typeof MATERIAL_JOB_STAGES)[number];
+
+export const MATERIAL_JOB_STAGE_LABELS_ZH: Record<MaterialJobStage, string> = {
+  validating: '校验文件',
+  extracting: '提取正文',
+  normalizing: '规范化与分块',
+  analyzing: 'AI 分析',
+  generating: '生成练习',
+};
+
+/** 阶段权重（ADR-05 进度条：加权后才是用户看到的百分比）。 */
+export const MATERIAL_STAGE_WEIGHTS: Record<MaterialJobStage, number> = {
+  validating: 5,
+  extracting: 35,
+  normalizing: 10,
+  analyzing: 35,
+  generating: 15,
+};
+
+/** 处理任务状态（`ProcessingJob.status`）。 */
+export const MATERIAL_JOB_STATUSES = ['running', 'succeeded', 'failed', 'cancelled'] as const;
+export type MaterialJobStatus = (typeof MATERIAL_JOB_STATUSES)[number];
+
+/** 材料资产类型（`MaterialAsset.kind`）。 */
+export const MATERIAL_ASSET_KINDS = ['ORIGINAL_FILE', 'PARSED_JSON', 'PAGE_TEXT', 'AUDIO_REF'] as const;
+export type MaterialAssetKind = (typeof MATERIAL_ASSET_KINDS)[number];
+
+/** 分块类型（`ContentChunk.kind`）。 */
+export const MATERIAL_CHUNK_KINDS = ['HEADING', 'PARAGRAPH', 'TABLE', 'LIST', 'MIXED'] as const;
+export type MaterialChunkKind = (typeof MATERIAL_CHUNK_KINDS)[number];
+
+/** AI 提取项类型（`ExtractionResult.kind`）。 */
+export const MATERIAL_EXTRACTION_KINDS = [
+  'SUMMARY',
+  'TOPIC',
+  'KEYWORD',
+  'COLLOCATION',
+  'KEY_SENTENCE',
+  'PARAGRAPH_GIST',
+  'GRAMMAR_POINT',
+] as const;
+export type MaterialExtractionKind = (typeof MATERIAL_EXTRACTION_KINDS)[number];
+
+export const MATERIAL_EXTRACTION_KIND_LABELS_ZH: Record<MaterialExtractionKind, string> = {
+  SUMMARY: '全文摘要',
+  TOPIC: '主题',
+  KEYWORD: '关键词',
+  COLLOCATION: '固定搭配',
+  KEY_SENTENCE: '重点句',
+  PARAGRAPH_GIST: '段落主旨',
+  GRAMMAR_POINT: '语法现象',
+};
+
+/** 提取结果 / 词汇候选的审核状态（`reviewStatus`）。 */
+export const MATERIAL_REVIEW_STATUSES = ['draft', 'accepted', 'edited', 'rejected'] as const;
+export type MaterialReviewStatus = (typeof MATERIAL_REVIEW_STATUSES)[number];
+
+export const MATERIAL_REVIEW_STATUS_LABELS_ZH: Record<MaterialReviewStatus, string> = {
+  draft: '待审核',
+  accepted: '已采纳',
+  edited: '已修改采纳',
+  rejected: '已拒绝',
+};
+
+/** 官方四项技能（材料的 `targetSkills` 与练习的 `targetSkill` 只允许这一集合的子集）。 */
+export const MATERIAL_OFFICIAL_SKILLS = ['READING', 'WRITING', 'LISTENING', 'SPEAKING'] as const;
+export type MaterialOfficialSkill = (typeof MATERIAL_OFFICIAL_SKILLS)[number];
+
+/** 材料题可覆盖的技能（官方四项中与文本材料相关的子集 + 辅助维度词汇/语法）。 */
+export const MATERIAL_EXERCISE_SKILLS = ['READING', 'VOCABULARY', 'GRAMMAR'] as const;
+export type MaterialExerciseSkill = (typeof MATERIAL_EXERCISE_SKILLS)[number];
+
+/** 生成题类型（`GeneratedExercise.type`，D-01~D-03 三类客观题）。 */
+export const MATERIAL_EXERCISE_TYPES = [
+  'reading_gist',
+  'reading_detail',
+  'vocab_in_context',
+  'vocab_collocation',
+  'grammar_error',
+] as const;
+export type MaterialExerciseType = (typeof MATERIAL_EXERCISE_TYPES)[number];
+
+export const MATERIAL_EXERCISE_TYPE_LABELS_ZH: Record<MaterialExerciseType, string> = {
+  reading_gist: '主旨理解',
+  reading_detail: '细节理解',
+  vocab_in_context: '语境词义',
+  vocab_collocation: '搭配辨析',
+  grammar_error: '语法改错',
+};
+
+/** 生成题审核状态（`GeneratedExercise.reviewStatus`）。 */
+export const MATERIAL_EXERCISE_REVIEW_STATUSES = [
+  'draft',
+  'needs_review',
+  'approved',
+  'rejected',
+  'retired',
+] as const;
+export type MaterialExerciseReviewStatus = (typeof MATERIAL_EXERCISE_REVIEW_STATUSES)[number];
+
+export const MATERIAL_EXERCISE_REVIEW_STATUS_LABELS_ZH: Record<MaterialExerciseReviewStatus, string> = {
+  draft: '草稿',
+  needs_review: '待复核',
+  approved: '已审核通过',
+  rejected: '已拒绝',
+  retired: '已退役',
+};
+
+/** 「答案可由来源推出」一致性自检结果。 */
+export const MATERIAL_CONSISTENCY_STATUSES = ['pass', 'fail', 'unchecked'] as const;
+export type MaterialConsistencyStatus = (typeof MATERIAL_CONSISTENCY_STATUSES)[number];
+
+/** 词汇候选同步到主库的状态（ADR-07）。 */
+export const MATERIAL_SYNC_STATUSES = ['pending', 'synced', 'skipped', 'failed'] as const;
+export type MaterialSyncStatus = (typeof MATERIAL_SYNC_STATUSES)[number];
+
+export const MATERIAL_SYNC_STATUS_LABELS_ZH: Record<MaterialSyncStatus, string> = {
+  pending: '待同步',
+  synced: '已同步',
+  skipped: '已跳过',
+  failed: '同步失败',
+};
+
+/** 材料包条目类型（`MaterialPackItem.itemType`，只聚合引用不复制内容）。 */
+export const MATERIAL_PACK_ITEM_TYPES = [
+  'CHUNK',
+  'EXTRACTION',
+  'VOCAB_CANDIDATE',
+  'SENTENCE',
+  'EXERCISE_SET',
+] as const;
+export type MaterialPackItemType = (typeof MATERIAL_PACK_ITEM_TYPES)[number];
+
+/** 权限行为留痕动作（`MaterialPermissionRecord.action`）。 */
+export const MATERIAL_PERMISSION_ACTIONS = [
+  'EXPORT_BLOCKED',
+  'SHARE_BLOCKED',
+  'FETCH_BLOCKED',
+  'DELETE_WARNED',
+  'RIGHTS_CONFIRMED',
+  'LICENSE_REQUIRED',
+] as const;
+export type MaterialPermissionAction = (typeof MATERIAL_PERMISSION_ACTIONS)[number];
+
+/** 注入疑似标记（`ContentChunk.suspicionFlags`，逗号分隔）。 */
+export const MATERIAL_SUSPICION_FLAGS = [
+  'instruction_override',
+  'system_impersonation',
+  'shell_command',
+  'secret_probe',
+] as const;
+export type MaterialSuspicionFlag = (typeof MATERIAL_SUSPICION_FLAGS)[number];
+
+export const MATERIAL_SUSPICION_FLAG_LABELS_ZH: Record<MaterialSuspicionFlag, string> = {
+  instruction_override: '疑似要求忽略原有指令',
+  system_impersonation: '疑似冒充系统身份',
+  shell_command: '疑似包含命令行指令',
+  secret_probe: '疑似探测密钥或凭据',
+};
+
+/** 材料题作答可挂载的证据类型（ADR-08：BASELINE 永不出现）。 */
+export const MATERIAL_ATTEMPT_EVIDENCE_TYPES = [
+  'ASSISTED',
+  'IMMEDIATE_RETEST',
+  'PRACTICE_ONLY',
+] as const;
+export type MaterialAttemptEvidenceType = (typeof MATERIAL_ATTEMPT_EVIDENCE_TYPES)[number];
+
+/** 任务草案状态（`TaskProposal.status`）。 */
+export const MATERIAL_TASK_PROPOSAL_STATUSES = ['draft', 'confirmed', 'discarded'] as const;
+export type MaterialTaskProposalStatus = (typeof MATERIAL_TASK_PROPOSAL_STATUSES)[number];
+
+/** 部分完成原因（`LearningMaterial.statusReason` 走模板文案 + 该枚举）。 */
+export const MATERIAL_PARTIAL_REASONS = [
+  'chunk_limit',
+  'ai_call_limit',
+  'ai_token_limit',
+  'no_text_layer',
+  'parse_degraded',
+] as const;
+export type MaterialPartialReason = (typeof MATERIAL_PARTIAL_REASONS)[number];
+
+/**
+ * 材料域错误码 → 固定中文文案（架构文档 §5 / §6.4）。
+ *
+ * 硬约束：`ProcessingJob.errorMessage` **只能**来自这张表，
+ * 绝不透传 `Error.message`（可能含绝对路径或原文片段）。
+ */
+export const MATERIAL_ERROR_MESSAGES_ZH: Record<string, string> = {
+  INVALID_MAGIC: '文件内容与扩展名不一致，已拒绝导入',
+  MAGIC_MISMATCH: '文件内容与声明的格式不符，已拒绝导入',
+  UNSUPPORTED_FORMAT: '暂不支持该文件格式',
+  EMPTY_FILE: '文件是空的，没有可提取的内容',
+  FILE_TOO_LARGE: '文件超过 20MB 上限',
+  PDF_TOO_MANY_PAGES: 'PDF 超过 200 页上限，请拆分后再导入',
+  PARSE_TIMEOUT: '解析超时（超过 60 秒），可重试或改用更小的文件',
+  NO_TEXT: '没有提取到任何文字（可能是扫描件或图片版）',
+  ARCHIVE_LIMIT: '压缩包结构异常（体积、压缩比或条目数超限），已拒绝解析',
+  SCHEMA_VALIDATION: 'AI 输出格式不符合协议，本批结果未入库',
+  INVALID_OUTPUT: 'AI 输出无法解析，本批结果未入库',
+  BUDGET_EXCEEDED: '已达今日或本月的 AI 预算上限，暂停分析',
+  AI_CALL_LIMIT: '已达单材料 AI 调用次数上限（60 次）',
+  AI_TOKEN_LIMIT: '已达单材料 AI 输入 token 上限（26 万）',
+  CHUNK_LIMIT: '内容过长，仅处理前 800 个分块',
+  EXTRACTED_TOO_LARGE: '提取文本超过 8MB 上限，已停止解析剩余内容',
+  CANCELLED: '已按你的要求取消处理',
+};
+
+/** 材料域错误码集合（与 `MATERIAL_ERROR_MESSAGES_ZH` 的键保持一致）。 */
+export const MATERIAL_ERROR_CODES = [
+  'INVALID_MAGIC',
+  'MAGIC_MISMATCH',
+  'UNSUPPORTED_FORMAT',
+  'EMPTY_FILE',
+  'FILE_TOO_LARGE',
+  'PDF_TOO_MANY_PAGES',
+  'PARSE_TIMEOUT',
+  'NO_TEXT',
+  'ARCHIVE_LIMIT',
+  'SCHEMA_VALIDATION',
+  'INVALID_OUTPUT',
+  'BUDGET_EXCEEDED',
+  'AI_CALL_LIMIT',
+  'AI_TOKEN_LIMIT',
+  'CHUNK_LIMIT',
+  'EXTRACTED_TOO_LARGE',
+  'CANCELLED',
+] as const;
+export type MaterialErrorCode = (typeof MATERIAL_ERROR_CODES)[number];
+
+/**
+ * 资源限制（架构文档 §5，逐项对齐）。
+ *
+ * 为什么是常量而不是配置：这些数字决定「一份材料最坏花多少钱、占多少内存」，
+ * 属于产品承诺的一部分，改动必须走代码评审而不是运行时开关。
+ */
+export const MATERIAL_LIMITS = {
+  /** 单文件大小上限：20 MB（所有格式）。 */
+  maxFileBytes: 20 * 1024 * 1024,
+  /** PDF 页数上限。 */
+  maxPdfPages: 200,
+  /** 单材料分块上限；超出停切并落 partial(chunk_limit)。 */
+  maxChunks: 800,
+  /** 分块目标字符数（≈400 tokens）。 */
+  chunkTargetChars: 1600,
+  /** 分块硬上限字符数；超出走 hard_split 并记 warning。 */
+  chunkMaxChars: 2400,
+  /** 分块重叠字符数（≈1 句）。 */
+  chunkOverlapChars: 220,
+  /** 单次 AI 调用的 chunk 数上限。 */
+  chunksPerAiCall: 8,
+  /** 单次 AI 调用的输入字符上限。 */
+  maxInputCharsPerCall: 16000,
+  /** 单材料 AI 调用次数上限。 */
+  maxAiCalls: 60,
+  /** 单材料输入 token 累计上限。 */
+  maxTotalInputTokens: 260_000,
+  /** 解析（validating + extracting）单次超时。 */
+  parseTimeoutMs: 60_000,
+  /** 提取文本总量上限（字符）。 */
+  maxExtractedChars: 8 * 1024 * 1024,
+  /** 单个 tick 的时间预算（route 的 maxDuration 为 60s）。 */
+  tickBudgetMs: 25_000,
+  /** 单个 tick 的 AI 调用次数上限。 */
+  aiCallsPerTick: 4,
+  /** 练习生成允许的 AI 调用次数上限。 */
+  maxExerciseCalls: 6,
+  /** 单材料题目上限。 */
+  maxExercises: 60,
+  /** 前端轮询间隔。 */
+  pollIntervalMs: 3000,
+  /** DOCX 解压后总字节上限。 */
+  maxZipBytes: 40 * 1024 * 1024,
+  /** DOCX 最大压缩比（解压后 / 压缩后）。 */
+  maxZipRatio: 120,
+  /** DOCX 中央目录条目数上限（entry ≤ 512）。 */
+  maxZipEntries: 512,
+  /** 文件名展示长度上限（`sanitizeDisplayFileName`）。 */
+  maxDisplayFileNameChars: 120,
+  /** 粘贴摘录的字符上限（文本域不落盘为"文件"，单独限一个上限）。 */
+  maxPastedChars: 200_000,
+  /** 学习时长估算速度（words per minute）。 */
+  readingWpm: 180,
+} as const;
+
+/** 字符 → token 估算（ADR-03：不引入 tokenizer）。 */
+export const MATERIAL_CHARS_PER_TOKEN = {
+  en: 4,
+  zh: 1.5,
+} as const;

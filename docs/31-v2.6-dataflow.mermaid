@@ -1,0 +1,75 @@
+%% v2.6 Smart Learning Materials — 数据流图
+%% 说明：实线箭头 = 数据流；方括号 = 新建表；圆括号 = 既有表（复用）
+flowchart LR
+  subgraph IN["① 导入 (Phase A)"]
+    U1["用户选择文件"] --> RH["POST /api/upload-material<br/>Route Handler + FormData"]
+    U2["粘贴摘录"] --> SA1["importPastedExcerptAction"]
+    U1b["音频元数据 (P1)"] --> SA2["registerMaterialAudioAction"]
+    RH --> VALID["魔数 + 扩展名 + 声明 MIME<br/>三方一致校验"]
+    VALID -->|不一致 / 超限| FAILPAGE["/materials/failed"]
+    VALID --> HASH["contentHash 去重"]
+    HASH -->|命中| DUP["提示已存在：<br/>打开已有 / 另存副本"]
+    HASH -->|未命中| FS["storage/uploads/materials/{id}/original.ext<br/>chmod 0444"]
+    FS --> LM[("LearningMaterial")]
+    LM --> MS[("MaterialSource")]
+    MS --> MPR[("MaterialPermissionRecord<br/>append-only")]
+    LM --> MA[("MaterialAsset")]
+    SA2 --> AA[("AudioAsset source=MATERIAL<br/>v2.5 既有")]
+    AA --> MA
+  end
+
+  subgraph PROC["② 解析管线 (Phase B, ProcessingJob 串行 tick)"]
+    LM --> PJ[("ProcessingJob<br/>lockVersion 乐观锁")]
+    PJ --> P1["Parsers: TXT / MD / HTML / DOCX / PDF"]
+    P1 --> PD[("ParsedDocument version 1..n")]
+    PD --> CC[("ContentChunk<br/>page / paragraphIndex / charStart-charEnd")]
+    CC --> CHK["chunk.ts 句界切分 + 单句重叠"]
+    CHK --> CC
+    CC --> INJ["injection.detect<br/>+ wrapMaterialData(nonce)"]
+  end
+
+  subgraph AI["③ AI 分析 (Phase C, 复用 v2.4 AI 层)"]
+    INJ --> RAC["runAiCompletion()<br/>预算 → provider → 重试1次 → schema → AICallLog"]
+    RAC --> EX[("ExtractionResult<br/>SUMMARY/TOPIC/KEYWORD/COLLOCATION/KEY_SENTENCE/PARAGRAPH_GIST/GRAMMAR_POINT")]
+    RAC --> VC[("VocabularyCandidate")]
+    RAC --> SC[("SentenceCandidate")]
+    EX --> SV{"SourceVerifier<br/>sourceQuote 能在 chunk 定位?"}
+    VC --> SV
+    SC --> SV
+    SV -->|否| DROP["丢弃 + dropped_unverifiable++"]
+    SV -->|是| REV["status = review_required"]
+  end
+
+  subgraph GEN["④ 练习 / 材料包 (Phase D & F)"]
+    REV --> GEX["generateStage + exerciseCheck<br/>唯一答案一致性自检"]
+    GEX --> GE[("GeneratedExercise<br/>isAiGenerated + reviewStatus")]
+    GE --> MES[("MaterialExerciseSet")]
+    GE --> EA[("ExerciseAttempt")]
+    EA -->|仅 approved| EV[("EvidenceRecord<br/>ASSISTED / IMMEDIATE_RETEST<br/>v2.2 既有")]
+    EX --> MP[("MaterialPack")]
+    VC --> MP
+    GE --> MP
+    MP --> MPI[("MaterialPackItem<br/>只聚合引用")]
+    MP --> TP[("TaskProposal")]
+    TP --> TPI[("TaskProposalItem")]
+    TPI --> BUD["getEffectiveBudget(baseDate)<br/>v2.1 既有"]
+    BUD -->|用户确认| PT[("PlanTask<br/>v2.1 既有")]
+  end
+
+  subgraph VOC["⑤ 词汇同步 (Phase E)"]
+    VC --> APPR{"用户 accept / edit?"}
+    APPR -->|reject| REJ["reviewStatus = rejected<br/>不再出现在该材料新一轮提取"]
+    APPR -->|accept| NORM["lemmaNormalize()<br/>NFKD + 去重音 + 连字符 + 小写"]
+    NORM --> UPS["upsert on<br/>(language, normalizedLemma, pos, senseKey)"]
+    UPS -->|不存在| VI[("VocabularyItem<br/>v2.3 主库")]
+    UPS -->|已存在| SKIP["只追加来源归属<br/>不改释义"]
+    VI --> VIS[("VocabularyItemSource<br/>sourceRef=material:{mid}:{cid}")]
+    SKIP --> VIS
+  end
+
+  subgraph DEL["⑥ 删除 (Phase G)"]
+    LM --> DELC["getDeletionPreview<br/>N 删除 / M 保留"]
+    DELC --> CAS["Cascade 17 表派生行"]
+    DELC --> FSD["rm -rf materials/{id}/"]
+    DELC -->|保留| KEEP["VocabularyItem 词条<br/>EvidenceRecord<br/>已确认 PlanTask"]
+  end

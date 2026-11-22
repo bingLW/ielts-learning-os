@@ -684,6 +684,28 @@ async function seedGoalMilestones(): Promise<void> {
   console.log(`✓ GoalMilestone 里程碑骨架完成（新增 ${created} 个）`);
 }
 
+/**
+ * v2.6：材料导入用的固定词汇来源行。
+ *
+ * 为什么要 seed：ADR-07 规定「材料词汇入主库」时 `sourceId` 必须指向
+ * `VocabularySource(sourceType='MATERIAL')` 的固定行；缺失时 T12 会按需创建一次，
+ * 但提前 seed 可以让「来源归属」在第一次同步前就存在，避免多写一条分支。
+ * 用固定 id + upsert，因此反复执行不会产生第二行。
+ */
+async function seedMaterialVocabularySource(): Promise<void> {
+  const existing = await prisma.vocabularySource.findUnique({ where: { id: 'vsource-material' } });
+  if (existing) return;
+  await prisma.vocabularySource.create({
+    data: {
+      id: 'vsource-material',
+      sourceType: 'MATERIAL',
+      title: '材料导入',
+      notes: 'v2.6 Smart Learning Materials：从学习材料提取并确认的词汇候选统一归到此来源。',
+    },
+  });
+  console.log('✓ VocabularySource(MATERIAL) 已创建');
+}
+
 async function main(): Promise<void> {
   console.log('开始写入种子数据…');
   await seedProfile();
@@ -695,6 +717,8 @@ async function main(): Promise<void> {
   await seedStageProfileCodes();
   await seedPlanTaskAttributes();
   await seedGoalMilestones();
+  // ── v2.6 增量（幂等）──
+  await seedMaterialVocabularySource();
   console.log('完成。注意：本 seed 不写入任何学习记录/错题/词汇假数据。');
 }
 

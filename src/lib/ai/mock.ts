@@ -269,6 +269,94 @@ function buildDiagEvaluation(
   };
 }
 
+/** 材料域 Mock：抽取（全部带可回验的 chunk 序号与原文引用）。 */
+function buildMaterialExtract(meta: AiPromptMeta): StructuredByKind['material_extract'] {
+  const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  return {
+    items: [
+      {
+        kind: 'KEYWORD',
+        source_chunk_seq: 1,
+        source_quote: quote,
+        lemma: 'quick',
+        pos: 'adj.',
+        definition_zh: '（模拟释义）快的、迅速的',
+        collocations: ['a quick answer', 'quick thinking'],
+      },
+      {
+        kind: 'KEY_SENTENCE',
+        source_chunk_seq: 1,
+        source_quote: quote,
+        skeleton: '（模拟主干）主语 + 谓语 + 宾语',
+        grammar_points: ['一般现在时', '介词短语作状语'],
+      },
+      {
+        kind: 'PARAGRAPH_GIST',
+        source_chunk_seq: 1,
+        source_quote: quote,
+        gist: '（模拟主旨）描述一个简单动作场景，用于练习基础句式。',
+      },
+    ],
+    batch_note: '模拟抽取结果（未调用外部模型），仅用于验证协议与流程。',
+  };
+}
+
+/** 材料域 Mock：摘要（要点均可定位到 chunk）。 */
+function buildMaterialSummary(meta: AiPromptMeta): StructuredByKind['material_summary'] {
+  const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  return {
+    summary_zh: `（模拟摘要）这段材料围绕「${meta.objective || '基础句式'}」展开，适合做单句精读与词汇巩固。`,
+    summary_en: 'Mock summary: this material is a short passage for sentence-level reading practice.',
+    key_points: [
+      { text: '（模拟要点）出现了可提取的高频形容词与固定搭配', source_chunk_seq: 1, source_quote: quote },
+    ],
+    topics: ['基础句式'],
+    learning_goals: ['能在语境中辨认高频形容词', '能复述段落主旨'],
+  };
+}
+
+/** 材料域 Mock：客观题（唯一答案 + 原文依据）。 */
+function buildMaterialExercise(meta: AiPromptMeta): StructuredByKind['material_exercise'] {
+  const quote = meta.baseline?.trim() ? excerpt(meta.baseline, 120) : 'The quick brown fox jumps over the lazy dog.';
+  return {
+    exercises: [
+      {
+        type: 'reading_gist',
+        target_skill: 'READING',
+        subskill: 'gist_understanding',
+        difficulty: meta.targetLevel.startsWith('A') ? 'A2' : 'B1',
+        prompt: '（模拟题）这段文字主要在描述什么？',
+        options: [
+          { key: 'A', text: '一个简单的动作场景' },
+          { key: 'B', text: '一份实验报告' },
+          { key: 'C', text: '一段旅行计划' },
+        ],
+        correct_key: 'A',
+        explanation: '（模拟解析）原文只有一句描述动作的句子，没有报告或计划信息。',
+        evidence_quote: quote,
+        source_chunk_seq: 1,
+      },
+      {
+        type: 'vocab_in_context',
+        target_skill: 'VOCABULARY',
+        subskill: 'word_in_context',
+        difficulty: 'A2',
+        prompt: '（模拟题）句中 "quick" 的意思最接近哪一个？',
+        options: [
+          { key: 'A', text: 'slow' },
+          { key: 'B', text: 'fast' },
+          { key: 'C', text: 'quiet' },
+          { key: 'D', text: 'heavy' },
+        ],
+        correct_key: 'B',
+        explanation: '（模拟解析）quick 与 fast 同义，表示「快」。',
+        evidence_quote: quote,
+        source_chunk_seq: 1,
+      },
+    ],
+  };
+}
+
 export function buildMockPayload<K extends AiPromptKind>(
   kind: K,
   meta: AiPromptMeta,
@@ -323,6 +411,12 @@ export function buildMockPayload<K extends AiPromptKind>(
           { window: '90D', focus: '阶段验收', tasks: [{ title: '延迟复测', minutes: 30 }] },
         ],
       } as unknown as StructuredByKind[K];
+    case 'material_extract':
+      return buildMaterialExtract(meta) as StructuredByKind[K];
+    case 'material_summary':
+      return buildMaterialSummary(meta) as StructuredByKind[K];
+    case 'material_exercise':
+      return buildMaterialExercise(meta) as StructuredByKind[K];
     default:
       throw new Error(`未知提示词种类：${String(kind)}`);
   }

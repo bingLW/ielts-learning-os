@@ -713,6 +713,8 @@ model Resource {
   planTasks    PlanTask[]
   studyRecords StudyRecord[]
   egiuLessons  EgiuLesson[]
+  /// v2.6 虚拟反向关系（来自 LearningMaterial.resourceId，**不产生列/索引**）
+  materials    LearningMaterial[]
 
   @@index([subject])
   @@index([archivedAt])
@@ -2037,6 +2039,9 @@ model AICallLog {
   status               String // OK|MOCK|ERROR|TIMEOUT|INVALID_OUTPUT|BLOCKED
   errorCode            String?
   redactedMetadataJson String?
+  /// v2.6：材料域调用归属（教学回合调用为 null）；材料删除后置 null，账本保留
+  materialId           String?
+  materialJobId        String?
   createdAt            DateTime @default(now())
 
   session       AILearningSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
@@ -2045,6 +2050,7 @@ model AICallLog {
   @@index([createdAt])
   @@index([status])
   @@index([sessionId])
+  @@index([materialId])
 }
 
 // ── AI7 用户反馈（有帮助/无帮助/不准确） ──
@@ -2651,4 +2657,592 @@ model AudioTechnicalCheck {
   createdAt        DateTime @default(now())
 
   @@index([recordingAssetId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.6 Smart Learning Materials（17 张新表；既有表仅 AICallLog +2 可空列）
+//
+// 设计要点（docs/32-v2.6-architecture.md §2）：
+//   · 原文与 AI 衍生严格分表：ContentChunk 存原文且不可 update；AI 结果一律带
+//     isDerived=true 且有 sourceQuote / evidenceQuote 供回验。
+//   · 跨入既有表（PlanTask / EvidenceRecord / VocabularyItem）的引用一律用普通
+//     String? + index，**不建 Prisma 关系**，避免触碰既有表结构。
+//   · GeneratedExercise 与 Diagnostic* / AssessmentResult 零外键：未审核的 AI 题
+//     在物理上无法进入 placement 链路（ADR-08）。
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── M1 材料主表（原文实体；不含任何 AI 文本） ──
+model LearningMaterial {
+  id                 String   @id @default(cuid())
+  /// 用户可见标题（默认取文件名去扩展名，可编辑）
+  title              String
+  /// TXT|MARKDOWN|HTML|PDF|DOCX|PASTED_TEXT|AUDIO|VIDEO
+  format             String
+  /// created|validating|extracting|normalizing|analyzing|generating|review_required|ready|partial|failed|cancelled
+  status             String   @default("created")
+  /// 面向用户的降级/失败原因（人话，不含绝对路径）
+  statusReason       String?
+  /// user_upload|user_provided_url|public_domain|open_license|licensed_subscription|internal_library|unknown
+  sourceType         String
+  language           String   @default("en")
+
+  /// 原始文件名（仅展示；落盘文件名已重命名）
+  originFileName     String?
+  /// 原始文件字节 sha256（PASTED_TEXT 为 null）
+  fileHash           String?
+  /// 去重键：文件=字节 sha256；粘贴=清洗后文本 sha256
+  contentHash        String
+
+  charCount          Int      @default(0)
+  wordCount          Int      @default(0)
+  pageCount          Int?
+  chunkCount         Int      @default(0)
+  /// 预计学习时长（按 wordCount/180wpm + 练习时长估算，四舍五入到 5 分钟）
+  estimatedMinutes   Int?
+  /// JSON string[]，官方四项技能子集：READING|WRITING|LISTENING|SPEAKING
+  targetSkillsJson   String?
+  /// AI 辅助估计，界面必须标注「AI 辅助估计，非官方认证」
+  difficultyEstimate String?
+  /// 生成时学习者等级快照（来自 SkillProfile.direction 或 A0 兜底）
+  learnerLevelAtGen  String?
+
+  /// 命中同 hash 且用户选「另存副本」时指向原材料
+  duplicateOfId      String?
+  /// 可选关联现有 SOP 资源（不污染 Resource 语义）
+  resourceId         String?
+
+  /// 单材料 AI 用量（防费用爆炸，Q5）
+  aiCallCount        Int      @default(0)
+  inputTokens        Int      @default(0)
+  outputTokens       Int      @default(0)
+  estimatedCostUsd   Float    @default(0)
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  resource           Resource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+
+  source             MaterialSource?
+  permissionRecords  MaterialPermissionRecord[]
+  assets             MaterialAsset[]
+  jobs               ProcessingJob[]
+  parsedDocuments    ParsedDocument[]
+  chunks             ContentChunk[]
+  extractions        ExtractionResult[]
+  vocabCandidates    VocabularyCandidate[]
+  sentenceCandidates SentenceCandidate[]
+  exerciseSets       MaterialExerciseSet[]
+  exercises          GeneratedExercise[]
+  attempts           ExerciseAttempt[]
+  pack               MaterialPack?
+  taskProposals      TaskProposal[]
+
+  @@index([contentHash])
+  @@index([status])
+  @@index([format])
+  @@index([sourceType])
+  @@index([createdAt])
+  @@index([resourceId])
+  @@index([duplicateOfId])
+}
+
+// ── M2 来源与权限登记（1:1 材料；PRD §3.1 七类来源） ──
+model MaterialSource {
+  id              String   @id @default(cuid())
+  materialId      String   @unique
+  sourceType      String
+  /// P1 网页导入时保存；P0 仅保存用户贴的链接
+  url             String?
+  author          String?
+  publisher       String?
+  publishedYear   Int?
+  /// 许可名称（open_license 必填，见 zod 层）
+  licenseName     String?
+  licenseUrl      String?
+  /// 用户备注
+  userNote        String?
+  /// 用户勾选「我确认有权使用」（禁止预设勾选，A-01）
+  rightsConfirmed   Boolean  @default(false)
+  rightsConfirmedAt DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+}
+
+// ── M3 权限行为留痕（append-only；用于断言 R1/R2 与审计） ──
+model MaterialPermissionRecord {
+  id         String   @id @default(cuid())
+  materialId String
+  /// EXPORT_BLOCKED|SHARE_BLOCKED|FETCH_BLOCKED|DELETE_WARNED|RIGHTS_CONFIRMED|LICENSE_REQUIRED
+  action     String
+  /// 触发规则，如 sourceType=unknown / http_403 / robots_disallow
+  rule       String
+  note       String?
+  createdAt  DateTime @default(now())
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, action])
+}
+
+// ── M4 材料资产（原文文件 / 派生 JSON / 解析快照）──
+model MaterialAsset {
+  id           String   @id @default(cuid())
+  materialId   String
+  /// ORIGINAL_FILE|PARSED_JSON|PAGE_TEXT|AUDIO_REF
+  kind         String
+  /// 相对路径：materials/{materialId}/original.pdf（**绝不暴露给客户端**）
+  relativePath String
+  fileName     String?
+  mimeType     String?
+  sizeBytes    Int?
+  sha256       String?
+  /// 原文资产必须 true（应用层禁写 + 落盘 0444）
+  isReadOnly   Boolean  @default(false)
+  /// P1：音频资产指向 AudioAsset.id（不重复建表）
+  audioAssetId String?
+  createdAt    DateTime @default(now())
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, kind])
+  @@unique([materialId, relativePath])
+}
+
+// ── M5 处理任务（ADR-05：表 + 串行 tick，无队列中间件） ──
+model ProcessingJob {
+  id               String   @id @default(cuid())
+  materialId       String
+  /// validating|extracting|normalizing|analyzing|generating|cancelled|done
+  stage            String   @default("validating")
+  /// running|succeeded|failed|cancelled
+  status           String   @default("running")
+  /// 1 起；重试 +1（A-08）
+  attempt          Int      @default(1)
+  /// 机器码：INVALID_MAGIC|FILE_TOO_LARGE|PDF_TOO_MANY_PAGES|PARSE_TIMEOUT|NO_TEXT|SCHEMA_VALIDATION|BUDGET_EXCEEDED|AI_CALL_LIMIT|CANCELLED
+  errorCode        String?
+  /// 人话原因（不含绝对路径 / 不含全文）
+  errorMessage     String?
+  cancelRequested  Boolean  @default(false)
+  /// 乐观锁版本（ADR-05 并发控制）
+  lockVersion      Int      @default(0)
+  /// { stage, done, total, unitLabel }
+  progressJson     String?
+  aiCallCount      Int      @default(0)
+  inputTokens      Int      @default(0)
+  outputTokens     Int      @default(0)
+  estimatedCostUsd Float    @default(0)
+  startedAt        DateTime @default(now())
+  lastTickAt       DateTime?
+  finishedAt       DateTime?
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, startedAt])
+  @@index([status])
+}
+
+// ── M6 解析版本（重跑产生新 version；旧版本保留可追溯） ──
+model ParsedDocument {
+  id             String   @id @default(cuid())
+  materialId     String
+  /// 1 起单调递增；同一材料只有一个 isCurrent=true
+  version        Int
+  /// TXT|MARKDOWN|HTML|DOCX|PDF|PASTED_TEXT
+  parserName     String
+  /// 解析器实现版本，如 "pdfjs-5.4" / "ooxml-1"；用于溯源与回归
+  parserVersion  String
+  /// OK|PARTIAL
+  status         String   @default("OK")
+  pageCount      Int?
+  paragraphCount Int      @default(0)
+  charCount      Int      @default(0)
+  /// JSON: { noTextLayerPages: number[], droppedImages: n, droppedFootnotes: n, droppedComments: n, droppedTextboxes: n, removedHtmlNodes: n, markerCollisions: n, hardSplits: n }
+  warningsJson   String?
+  /// 与 ParsedDocument 一一对应的纯文本快照 sha256（用于校验未被覆写）
+  textChecksum   String?
+  isCurrent      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  chunks   ContentChunk[]
+
+  @@unique([materialId, version])
+  @@index([materialId, isCurrent])
+}
+
+// ── M7 内容分块（原文，**不可 update**；派生文本一律不写这里） ──
+model ContentChunk {
+  id               String   @id @default(cuid())
+  materialId       String
+  parsedDocumentId String
+  /// 1 起单调；chunk 内 [prevChunkId, nextChunkId] 双向链
+  seq              Int
+  /// HEADING|PARAGRAPH|TABLE|LIST|MIXED
+  kind             String   @default("MIXED")
+  /// 标题路径，如 "Chapter 2 > 2.1 Vocabulary"（Reader 目录跳转用）
+  headingPath      String?
+  /// 1 起；PASTED_TEXT/非分页格式为 null
+  page             Int?
+  /// 文档级段落序号（ADR-03 的 paragraphIndex）
+  paragraphIndex   Int?
+  /// 文档级绝对字符偏移 [charStart, charEnd)（ADR-03）
+  charStart        Int
+  charEnd          Int
+  text             String
+  textHash         String
+  charCount        Int
+  estTokens        Int      @default(0)
+  /// 注入疑似标记，逗号分隔：instruction_override|system_impersonation|shell_command|secret_probe
+  suspicionFlags   String?
+  prevChunkId      String?
+  nextChunkId      String?
+  createdAt        DateTime @default(now())
+
+  material       LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  parsedDocument ParsedDocument   @relation(fields: [parsedDocumentId], references: [id], onDelete: Cascade)
+
+  extractions        ExtractionResult[]
+  vocabCandidates    VocabularyCandidate[]
+  sentenceCandidates SentenceCandidate[]
+  exercises          GeneratedExercise[]
+
+  @@unique([parsedDocumentId, seq])
+  @@index([materialId, seq])
+  @@index([materialId, page])
+}
+
+// ── M8 AI 提取结果（材料级或 chunk 级；全部 isDerived=true 语义） ──
+model ExtractionResult {
+  id             String   @id @default(cuid())
+  materialId     String
+  /// chunk 级提取必填；SUMMARY/TOPIC 为 null（用 sourceChunkIdsJson）
+  chunkId        String?
+  /// SUMMARY|TOPIC|KEYWORD|COLLOCATION|KEY_SENTENCE|PARAGRAPH_GIST|GRAMMAR_POINT
+  kind           String
+  /// 结构化负载（snake_case，来自 zod 校验后的对象）
+  payloadJson    String
+  /// 原文引用片段（SourceVerifier 已回验通过；**为空的行不允许存在**）
+  sourceQuote    String
+  /// 多源结果（SUMMARY 依赖哪些 chunk）
+  sourceChunkIdsJson String?
+  page           Int?
+  paragraphIndex Int?
+  charStart      Int?
+  charEnd        Int?
+  /// SourceVerifier 通过=true；仅 true 可入库（G1）
+  sourceVerified Boolean  @default(false)
+  /// 恒 true（AI 衍生）
+  isDerived      Boolean  @default(true)
+  /// 生成该行的 AICallLog.id（溯源 + 费用归属）
+  aiCallLogId    String?
+  promptVersionId String?
+  /// draft|accepted|edited|rejected
+  reviewStatus   String   @default("draft")
+  /// 用户编辑后的 payload（原 payloadJson 保留，不覆盖 AI 原始输出）
+  editedPayloadJson String?
+  reviewedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  chunk    ContentChunk?    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, kind, reviewStatus])
+  @@index([materialId, page])
+  @@index([chunkId])
+}
+
+// ── M9 词汇候选（与主库 VocabularyItem 物理分离，E-01） ──
+model VocabularyCandidate {
+  id               String   @id @default(cuid())
+  materialId       String
+  chunkId          String
+  /// AI 给出的词形（保留原文大小写/连字符）
+  surfaceForm      String
+  /// AI 给出的 lemma
+  lemma            String
+  /// lemmaNormalize() 派生（ADR-07）
+  normalizedLemma  String
+  /// 空串 = 未知（沿用主库约定，不用 NULL 以保唯一约束生效）
+  pos              String   @default("")
+  senseKey         String   @default("default")
+  /// 释义候选（AI，需用户确认；不是权威释义）
+  definitionZh     String?
+  definitionEn     String?
+  collocationsJson String?
+  /// 原文上下文句（含该词的那一句）
+  contextSentence  String
+  /// sha256(normalize(contextSentence)) 前 16 位（E-02 去重键）
+  contextHash      String
+  page             Int?
+  paragraphIndex   Int?
+  charStart        Int?
+  charEnd          Int?
+  occurrenceCount  Int      @default(1)
+  /// 主库是否已存在同键词条（导入时快照，UI 显示「已在词库，将只加来源」）
+  existsInLibrary  Boolean  @default(false)
+  existingItemId   String?
+  isDerived        Boolean  @default(true)
+  aiCallLogId      String?
+  /// draft|accepted|edited|rejected
+  reviewStatus     String   @default("draft")
+  /// pending|synced|skipped|failed
+  syncStatus       String   @default("pending")
+  syncError        String?
+  syncedItemId     String?
+  lastSyncedAt     DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  chunk    ContentChunk     @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, normalizedLemma, pos, senseKey, contextHash])
+  @@index([materialId, reviewStatus])
+  @@index([materialId, syncStatus])
+}
+
+// ── M10 重点句 / 句法候选（C-04 句子主干标注为 AI 推断） ──
+model SentenceCandidate {
+  id                  String   @id @default(cuid())
+  materialId          String
+  chunkId             String
+  /// 原文句子（逐字，SourceVerifier 回验）
+  sentenceText        String
+  /// AI 推断的主干（主谓宾骨架）
+  skeletonText        String?
+  /// 复杂度：SIMPLE|COMPOUND|COMPLEX|COMPOUND_COMPLEX
+  complexity          String?
+  /// JSON string[]：语法现象标签（辅助维度，不产生官方技能等级）
+  grammarPointsJson   String?
+  /// 为什么成为重点句（AI 理由，短）
+  note                String?
+  page                Int?
+  paragraphIndex      Int?
+  charStart           Int?
+  charEnd             Int?
+  isDerived           Boolean  @default(true)
+  aiCallLogId         String?
+  /// draft|accepted|edited|rejected
+  reviewStatus        String   @default("draft")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  chunk    ContentChunk     @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, chunkId, sentenceText])
+  @@index([materialId, reviewStatus])
+}
+
+// ── M11 练习集（材料内的一组题；Player 路由 /exercises/[setId]） ──
+model MaterialExerciseSet {
+  id               String   @id @default(cuid())
+  materialId       String
+  title            String
+  /// READING|VOCABULARY|GRAMMAR（官方四项中与材料相关的子集；辅助维度另存）
+  targetSkill      String
+  /// A0|A1|A2|B1|B2|C1（AI 辅助估计）
+  difficultyLevel  String?
+  /// 建议做题顺序（exerciseId[]）
+  orderingJson     String?
+  estimatedMinutes Int      @default(10)
+  /// 只含 approved 题时才 true（UI 用它区分「仅练习」/「可作正式练习」）
+  hasApprovedOnly  Boolean  @default(false)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  material  LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  exercises GeneratedExercise[]
+  attempts  ExerciseAttempt[]
+
+  @@index([materialId, isActive])
+}
+
+// ── M12 生成题（D-04 必备字段全在此；与 Diagnostic*/AssessmentResult 零外键 → ADR-08） ──
+model GeneratedExercise {
+  id                 String   @id @default(cuid())
+  materialId         String
+  setId              String
+  chunkId            String
+  /// reading_gist|reading_detail|vocab_in_context|vocab_collocation|grammar_error
+  type               String
+  /// READING|VOCABULARY|GRAMMAR
+  targetSkill        String
+  /// 子技能，如 gist_understanding / detail_scanning / word_in_context
+  subskill           String?
+  /// JSON string[]：辅助维度（Grammar/Vocab/SentenceStructure），**不产生官方等级**
+  auxiliaryDimensionsJson String?
+  /// A0..C1（AI 辅助估计，UI 必须标注）
+  difficultyEstimate String?
+  /// 题干
+  prompt             String
+  /// JSON: { options: [{key,text}], correctKey, isSingleAnswer } —— 客观题唯一答案（D-01~D-03）
+  answerJson         String
+  /// 解析（为什么这是答案）
+  explanation        String
+  /// 答案依据片段（原文逐字，SourceVerifier 回验）
+  evidenceQuote      String
+  /// 来源定位快照（chunk 被删也能显示位置）
+  page               Int?
+  paragraphIndex     Int?
+  charStart          Int?
+  charEnd            Int?
+  isAiGenerated      Boolean  @default(true)
+  /// draft|needs_review|approved|rejected|retired
+  reviewStatus       String   @default("draft")
+  /// 「答案可由来源推出」一致性自检结果：pass|fail|unchecked
+  consistencyCheck   String   @default("unchecked")
+  consistencyNote    String?
+  /// 去重键：sha256(type|prompt|answerJson|chunkId) 前 16 位（D-10）
+  dedupeKey          String
+  /// 生成来源（模型 + prompt 版本），满足 D-04 溯源
+  model              String?
+  promptVersionId    String?
+  aiCallLogId        String?
+  retiredAt          DateTime?
+  retireReason       String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  material LearningMaterial     @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  set      MaterialExerciseSet  @relation(fields: [setId], references: [id], onDelete: Cascade)
+  chunk    ContentChunk         @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  attempts ExerciseAttempt[]
+
+  @@index([materialId, type, reviewStatus])
+  @@index([setId])
+  @@index([materialId, dedupeKey])
+}
+
+// ── M13 作答记录（用户资产：材料删除后是否保留？→ 随材料级联删，但 EvidenceRecord 独立保留） ──
+model ExerciseAttempt {
+  id             String   @id @default(cuid())
+  materialId     String
+  setId          String
+  exerciseId     String
+  /// JSON: { selectedKey, isCorrect, elapsedSec }
+  responseJson   String
+  isCorrect      Boolean?
+  /// 作答时的审核状态快照（防止「事后改审核状态」篡改历史语义）
+  reviewStatusAtAttempt String
+  /// 关联证据（普通 String?，不建 Prisma 关系，避免触碰 v2.2 Evidence 表）
+  evidenceId     String?
+  /// ASSISTED|IMMEDIATE_RETEST|PRACTICE_ONLY（BASELINE 永不出现，ADR-08）
+  evidenceType   String   @default("PRACTICE_ONLY")
+  /// 材料被删后 attempt 随材料级联删除；EvidenceRecord 独立存在（G-01）
+  createdAt      DateTime @default(now())
+
+  material LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  set      MaterialExerciseSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  exercise GeneratedExercise   @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@index([materialId, createdAt])
+  @@index([exerciseId])
+  @@index([setId])
+}
+
+// ── M14 材料包（F-01：只聚合引用，不复制内容） ──
+model MaterialPack {
+  id               String   @id @default(cuid())
+  materialId       String   @unique
+  /// AI 生成的学习目标（isDerived；UI 标 AI 徽章）
+  learningGoalsJson String?
+  /// JSON string[]：官方四项技能子集
+  targetSkillsJson String?
+  /// A0..C1（AI 辅助估计）
+  difficultyEstimate String?
+  estimatedMinutes Int      @default(30)
+  /// 建议训练顺序：MaterialPackItem.id[]
+  orderingJson     String?
+  /// 摘要引用（ExtractionResult.kind=SUMMARY 的 id；不复制正文）
+  summaryId        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  material LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  items    MaterialPackItem[]
+
+  @@index([materialId])
+}
+
+// ── M15 材料包条目（引用式聚合：块 / 提取项 / 词汇候选 / 练习集） ──
+model MaterialPackItem {
+  id               String   @id @default(cuid())
+  packId           String
+  /// CHUNK|EXTRACTION|VOCAB_CANDIDATE|SENTENCE|EXERCISE_SET
+  itemType         String
+  /// 指向对应表的 id（**弱引用**：被引用对象删除时该条目不删，UI 显示「内容已移除」）
+  refId            String
+  sortOrder        Int      @default(0)
+  /// 该条目在训练顺序中的建议分钟
+  estimatedMinutes Int?
+  note             String?
+  createdAt        DateTime @default(now())
+
+  pack MaterialPack @relation(fields: [packId], references: [id], onDelete: Cascade)
+
+  @@index([packId, sortOrder])
+  @@index([itemType, refId])
+}
+
+// ── M16 任务草案（F-02：受 v2.1 时间预算约束） ──
+model TaskProposal {
+  id               String   @id @default(cuid())
+  materialId       String
+  packId           String?
+  /// 草案基准日（业务日期）
+  baseDate         String
+  /// 当日可用预算快照（getEffectiveBudget 结果，便于事后解释为何这样拆）
+  budgetMinutes    Int
+  totalMinutes     Int
+  overflowDays     Int      @default(0)
+  /// draft|confirmed|discarded
+  status           String   @default("draft")
+  /// AI 或规则给出的拆分理由（人话）
+  rationale        String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  material LearningMaterial   @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  items    TaskProposalItem[]
+
+  @@index([materialId, status])
+  @@index([status, baseDate])
+}
+
+// ── M17 任务草案条目（F-03：逐条勾选 / 改分钟 / 改日期，确认后才写 PlanTask） ──
+model TaskProposalItem {
+  id               String   @id @default(cuid())
+  proposalId       String
+  /// 复用 PlanTask.module 取值：VOCAB_REVIEW|GRAMMAR|LISTENING|READING|SPEAKING|WRITING|SENTENCE|EXTENSIVE|MEDIATED
+  module           String
+  /// 官方四项技能子集
+  targetSkill      String
+  title            String
+  suggestedMinutes Int
+  finalMinutes     Int?
+  /// YYYY-MM-DD
+  suggestedDate    String
+  finalDate        String?
+  /// 15|30|60 粒度
+  granularity      Int      @default(30)
+  reason           String?
+  /// JSON string[]：完成该条目需要的练习集/exerciseId
+  exerciseIdsJson  String?
+  /// 用户是否勾选（F-03 只在 selected=true 时入库）
+  selected         Boolean  @default(true)
+  /// 确认后落地的 PlanTask.id（普通 String?，不建关系，避免触碰 v2.1 计划表）
+  planTaskId       String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  proposal TaskProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([proposalId, suggestedDate])
+  @@index([planTaskId])
 }

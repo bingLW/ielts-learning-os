@@ -1,0 +1,56 @@
+%% v2.6 Smart Learning Materials — 处理状态机
+%% 主表：LearningMaterial.status（单一状态驱动 UI，PRD §8）
+%% 说明：PRD 列出 10 态；额外增加 cancelled 作为 A-07「取消后状态收敛」终态。
+stateDiagram-v2
+    [*] --> created: 导入成功（文件落盘 + hash 去重通过）
+
+    created --> validating: tick ① 魔数 / 大小 / 页数 / 结构自检
+    validating --> extracting: 校验通过
+    validating --> failed: INVALID_MAGIC / FILE_TOO_LARGE / PDF_TOO_MANY_PAGES
+
+    extracting --> normalizing: 5-Parser 产出 block 序列
+    extracting --> failed: PARSE_TIMEOUT / NO_TEXT / ARCHIVE_LIMIT / 解析器异常
+    extracting --> partial: 部分页 no_text_layer（扫描件页，聚合提示）
+
+    normalizing --> analyzing: 段落合并 + 句界 chunk + 溯源赋值完成
+    normalizing --> failed: chunk 生成失败 / 有效文本为 0
+
+    analyzing --> generating: chunk 级提取完成（aiCallCount ≤ maxAiCalls）
+    analyzing --> partial: AI_CALL_LIMIT / 已分析前 N chunk（可续跑）
+    analyzing --> failed: 全部调用失败 / BUDGET_EXCEEDED
+    analyzing --> review_required: 用户 skipExerciseGeneration
+
+    generating --> review_required: 摘要 + 练习生成完成
+    generating --> partial: 部分批次失败（主体成功）
+    generating --> failed: 生成器全部失败
+
+    review_required --> ready: 全部 ExtractionResult / GeneratedExercise 已裁决
+    review_required --> partial: 存在 dropped_unverifiable 且用户选择「先这样用」
+
+    ready --> [*]
+    partial --> [*]: 终态（灰绿徽章 + 未处理项清单）
+    failed --> [*]: 终态（错误码 + 人话原因 + 重试入口）
+    cancelled --> [*]: 终态（A-07）
+
+    created --> cancelled: cancelMaterialJobAction
+    validating --> cancelled: cancelMaterialJobAction
+    extracting --> cancelled: cancelMaterialJobAction
+    normalizing --> cancelled: cancelMaterialJobAction
+    analyzing --> cancelled: cancelMaterialJobAction
+    generating --> cancelled: cancelMaterialJobAction
+
+    failed --> created: retryMaterialJobAction（attempt+1，复用已解析 chunk）
+    partial --> analyzing: 用户确认「继续分析剩余 chunk」
+
+    note right of created
+        ProcessingJob.stage 与
+        LearningMaterial.status 同步推进；
+        lockVersion 乐观锁保证单机串行
+    end note
+
+    note right of partial
+        终态但可续跑：
+        partial -> analyzing 仅当
+        aiCallCount < maxAiCalls 且
+        尚有未分析 chunk
+    end note

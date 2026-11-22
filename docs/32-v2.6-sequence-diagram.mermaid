@@ -1,0 +1,163 @@
+%% v2.6 Smart Learning Materials — 端到端主流程时序图
+%% 覆盖：上传 → 校验 → 解析 → 分块 → AI 抽取 → 审核 → 练习 → 词汇同步 → 材料包 → 任务草案
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant W as ImportWizard<br/>(Client)
+    participant API as POST /api/upload-material<br/>(Route Handler)
+    participant ACT as materials.ts<br/>(Server Action)
+    participant INTAKE as MaterialIntakeService
+    participant FS as storage/uploads/materials/{id}/
+    participant DB as SQLite (Prisma)
+    participant TICK as POST /api/materials/[id]/tick
+    participant PIPE as MaterialPipeline
+    participant PARSER as ParserRegistry<br/>(TXT/MD/HTML/DOCX/PDF)
+    participant CHUNK as Chunker
+    participant AI as MaterialAiAdapter
+    participant RAC as runAiCompletion<br/>(v2.4 AI 层)
+    participant SV as SourceVerifier
+    participant PG as Processing Status 页<br/>(3s 轮询)
+
+    %% ══════ ① 导入 ══════
+    U->>W: 选择文件 + 填来源/权限 + 勾选「我确认有权使用」
+    W->>W: 本地预校验大小 ≤ 20MB / 扩展名白名单
+    W->>API: FormData(file, meta JSON)
+    API->>ACT: finalizeMaterialUploadAction(formData)
+    ACT->>ACT: materialUploadMetaSchema.safeParse
+    ACT->>INTAKE: validateUpload(bytes, meta)
+    INTAKE->>INTAKE: sniffFormat() 魔数 + 扩展名 + 声明 MIME 三方一致
+    alt 不一致 / 超限
+        INTAKE-->>ACT: { ok:false, code:'MAGIC_MISMATCH' }
+        ACT-->>API: fail('VALIDATION', 人话原因)
+        API-->>W: 400 { ok:false }
+        W-->>U: 展示可读拒绝原因（不含路径）
+    else 校验通过
+        INTAKE->>INTAKE: sha256Hex(bytes) → contentHash
+        INTAKE->>DB: findFirst({ contentHash, duplicateOfId:null })
+        alt 命中已存在
+            INTAKE-->>ACT: { duplicateOf: existingId }
+            ACT-->>W: ok({ duplicateOf })
+            W-->>U: 「已存在同名材料：打开已有 / 仍然另存为副本」
+        end
+        INTAKE->>FS: writeOriginalMaterialFile(materialId, bytes, ext) → chmod 0444
+        INTAKE->>DB: create LearningMaterial + MaterialSource + MaterialAsset
+        ACT->>DB: create ProcessingJob(stage='validating', attempt=1)
+        ACT-->>API: ok({ materialId, contentHash })
+        API-->>W: 200 { ok:true }
+        W->>PG: 跳转 /materials/{id}/processing
+    end
+
+    %% ══════ ② 轮询驱动管线 ══════
+    loop 每 3 秒（直到终态）
+        PG->>TICK: POST /materials/{id}/tick
+        TICK->>PIPE: tick(materialId)
+        PIPE->>DB: updateMany({ lockVersion: v, status notIn 终态 }) → v+1
+        alt 拿不到锁（另一标签页推进中）
+            PIPE-->>TICK: 返回当前 status（不重复推进）
+        else 拿到锁
+            PIPE->>DB: 读 ProcessingJob + LearningMaterial.status
+            alt status='created' 或 'validating'
+                PIPE->>DB: 更新 status='validating' → 'extracting'
+            else status='extracting'
+                PIPE->>PARSER: resolve(format).parse(bytes)
+                PARSER->>PARSER: 逐页/逐段落提取（超时 60s，页数 ≤200）
+                PARSER-->>PIPE: ParsedBlock[] + warnings(noTextLayerPages, droppedCounts)
+                PIPE->>DB: create ParsedDocument(version, parserVersion, warningsJson)
+                PIPE->>CHUNK: chunk(blocks, MATERIAL_LIMITS)
+                CHUNK-->>PIPE: ChunkResult(seq, page, paragraphIndex, charStart/End, prev/next)
+                PIPE->>DB: createMany ContentChunk（不可 update）
+                PIPE->>DB: status='normalizing' → 'analyzing'
+            else status='analyzing'（每次 tick ≤4 次 AI 调用 / ≤25s）
+                PIPE->>DB: 取下一批 8 个 chunk（跳过已分析）
+                PIPE->>AI: extractChunkBatch(chunks, learnerLevel)
+                AI->>AI: injection.wrap(chunks) → nonce data 区块
+                AI->>RAC: runAiCompletion({ promptKind:'material_extract', attribution:{materialId, materialJobId} })
+                RAC->>DB: 预算评估（日/月）→ provider → 重试≤1 → parseStructured → AICallLog(materialId)
+                RAC-->>AI: { structured, logId, usage }
+                AI->>SV: verify(sourceQuote, chunk.text) 逐条回验
+                alt 某条无法回验
+                    SV-->>AI: false → dropped_unverifiable++
+                    AI->>DB: 该条不入库（G1：无 source ref 不入库）
+                else 回验通过
+                    SV-->>AI: true
+                    AI->>DB: create ExtractionResult / VocabularyCandidate / SentenceCandidate
+                end
+                AI-->>PIPE: ExtractOutcome(counts, aiCallCount, tokens)
+                PIPE->>DB: update ProcessingJob.progressJson / aiCallCount / tokens
+                alt aiCallCount ≥ maxAiCalls(60) 或 token ≥ 260k
+                    PIPE->>DB: status='partial', reason='AI_CALL_LIMIT'
+                end
+            else status='generating'
+                PIPE->>AI: summarizeMaterial(chunkGists) → ExtractionResult(kind=SUMMARY)
+                PIPE->>AI: generateExercises(chunks, types, questionBudget)
+                AI->>RAC: runAiCompletion({ promptKind:'material_exercise' })
+                AI->>SV: verify(evidenceQuote, chunk.text)
+                AI->>AI: exerciseCheck 唯一答案 / correctKey ∈ options 一致性自检
+                AI->>DB: create MaterialExerciseSet + GeneratedExercise(reviewStatus='needs_review')
+                PIPE->>DB: status='review_required'
+            end
+            PIPE-->>TICK: MaterialStatusDto(status, progress, partial, error)
+        end
+        TICK-->>PG: 200 MaterialStatusDto
+        PG-->>U: 阶段进度条 + 已完成阶段耗时
+    end
+
+    %% ══════ ③ 审核 ══════
+    U->>PG: 打开 /materials/{id}/read（原文模式）
+    PG->>DB: getReaderView(id, 'original')
+    Note over PG,DB: 原文模式**不含**任何 AI 文本（DOM 断言）
+    U->>PG: 切「词汇辅助」模式
+    PG->>DB: getReaderView(id, 'vocab_assist')
+    PG-->>U: 候选词高亮 + VocabHoverCard（AI 释义候选）
+    U->>PG: 打开 /materials/{id}/analysis
+    PG->>DB: listExtractionResults(id)
+    PG-->>U: 每条：原文引用 + 定位「p.3 ¶2」+ AI 徽章
+    U->>ACT: reviewExtractionResultAction({ id, reviewStatus:'accepted' })
+    ACT->>DB: update ExtractionResult.reviewStatus + reviewedAt
+    Note over ACT,DB: 全部裁决完成 → status='ready'
+
+    %% ══════ ④ 练习作答 ══════
+    U->>ACT: reviewGeneratedExerciseAction({ id, reviewStatus:'approved' })
+    ACT->>DB: update GeneratedExercise.reviewStatus
+    U->>PG: 打开 /exercises/{setId}（Player）
+    PG->>DB: getExerciseSet(setId)
+    U->>ACT: submitExerciseAttemptAction({ exerciseId, selectedKey, elapsedSec, attachEvidence:true })
+    ACT->>ACT: materialExerciseGate.canAttachEvidence(ex, 'IMMEDIATE_RETEST')
+    ACT->>DB: create ExerciseAttempt(reviewStatusAtAttempt)
+    ACT->>DB: create EvidenceRecord(evidenceType='IMMEDIATE_RETEST') → attempt.evidenceId
+    ACT-->>U: 对错 + 正确答案 + 解析 + 依据片段（可点回原文）
+
+    %% ══════ ⑤ 词汇同步 ══════
+    U->>ACT: syncVocabularyCandidatesAction({ materialId, ids })
+    ACT->>ACT: vocabularySyncService.normalizeLemma(form)
+    ACT->>DB: upsert VocabularyItem on (language, normalizedLemma, pos, senseKey)
+    alt 词条不存在
+        ACT->>DB: create VocabularyItem(sourceId=MATERIAL)
+    else 已存在
+        Note over ACT,DB: 只追加来源归属，不改释义（ADR-07）
+    end
+    ACT->>DB: upsert VocabularyItemSource(sourceRef='material:{mid}:{cid}')
+    ACT->>DB: update VocabularyCandidate.syncStatus='synced' + syncedItemId + lastSyncedAt
+    ACT-->>U: { synced, attributionOnly, failed }
+
+    %% ══════ ⑥ 材料包 + 任务草案 ══════
+    U->>ACT: buildMaterialPackAction({ materialId })
+    ACT->>DB: create MaterialPack + MaterialPackItem[]（只聚合 refId，不复制正文）
+    U->>ACT: proposeTasksAction({ materialId, baseDate })
+    ACT->>DB: getEffectiveBudget(baseDate) → budgetMinutes
+    ACT->>ACT: taskProposal.buildProposal(pack, budget)（15/30/60 粒度，超预算跨日）
+    ACT->>DB: create TaskProposal + TaskProposalItem[]
+    ACT-->>U: { proposalId, totalMinutes ≤ budgetMinutes, overflowDays }
+    U->>ACT: updateTaskProposalItemsAction({ proposalId, items })（勾选/改分钟/改日期）
+    U->>ACT: confirmTaskProposalAction({ proposalId })
+    ACT->>DB: create PlanTask[]（仅 selected=true）→ TaskProposalItem.planTaskId
+    ACT-->>U: { createdPlanTaskIds }
+
+    %% ══════ ⑦ 删除 ══════
+    U->>ACT: deleteMaterialAction({ materialId, confirmText:'DELETE' })
+    ACT->>DB: getDeletionPreview → N 删除 / M 保留
+    ACT->>DB: deleteMany VocabularyItemSource(startsWith 'material:{id}:')
+    ACT->>DB: updateMany TaskProposalItem.planTaskId = null（PlanTask 保留）
+    ACT->>DB: delete LearningMaterial（17 表 Cascade）
+    ACT->>FS: deleteMaterialDir(id)
+    ACT-->>U: { deletedRows, keptVocabularyItems, keptPlanTasks, keptAttempts }

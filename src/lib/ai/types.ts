@@ -26,6 +26,10 @@ export const AI_PROMPT_KINDS = [
   'diag_error',
   'diag_summary',
   'diag_plan',
+  // v2.6 材料域（ADR-06：复用同一套 provider / 重试 / 记账，不新建第二套 AI 层）
+  'material_extract',
+  'material_summary',
+  'material_exercise',
 ] as const;
 export type AiPromptKind = (typeof AI_PROMPT_KINDS)[number];
 
@@ -43,7 +47,18 @@ export const AI_PROMPT_KEY_BY_KIND: Record<AiPromptKind, string> = {
   diag_error: 'ai.diag.error.v1',
   diag_summary: 'ai.diag.summary.v1',
   diag_plan: 'ai.diag.plan.v1',
+  material_extract: 'ai.material.extract.v1',
+  material_summary: 'ai.material.summary.v1',
+  material_exercise: 'ai.material.exercise.v1',
 };
+
+/** 材料域 prompt kind（T09 的 `src/lib/ai/material.ts` 只允许这几个）。 */
+export const MATERIAL_PROMPT_KINDS = [
+  'material_extract',
+  'material_summary',
+  'material_exercise',
+] as const satisfies readonly AiPromptKind[];
+export type MaterialPromptKind = (typeof MATERIAL_PROMPT_KINDS)[number];
 
 /** 调用日志状态；与 AICallLog.status 的取值一致。 */
 export const AI_CALL_STATUSES = [
@@ -83,6 +98,19 @@ export interface AiPromptMeta {
   learnerAnswer?: string;
   learnerBackground?: string;
   profileSummary?: string;
+  /**
+   * v2.6 材料域专用变量。
+   *
+   * 注意：`materialChunksBlock` **只**允许放 `wrapMaterialData()` 的产物
+   * （已带 nonce 分隔符与来源前缀），不得放裸 chunk 文本。
+   */
+  materialTitle?: string;
+  materialChunksBlock?: string;
+  materialSkillTarget?: string;
+  exerciseTypes?: string;
+  questionBudget?: number;
+  allowedKinds?: string;
+  learnerLevel?: string;
 }
 
 export interface AiCompletionRequest {
