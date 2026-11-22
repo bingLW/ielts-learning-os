@@ -38,21 +38,37 @@ describe('Provider 选择', () => {
     ).toEqual({ mode: 'external', reason: 'external_ready' });
   });
 
+  const noCredentials = {
+    apiKey: undefined,
+    baseUrl: '',
+    modelOverride: undefined,
+    source: 'none' as const,
+    decryptionFailed: false,
+  };
+
   it('mock 模式创建确定性的内置 Provider', () => {
-    const provider = createProvider(
-      { providerMode: 'mock', modelConfig: FALLBACK_MODEL_CONFIG },
-      { apiKey: undefined, baseUrl: '', modelOverride: undefined },
-    );
+    const provider = createProvider({
+      providerMode: 'mock',
+      modelConfig: FALLBACK_MODEL_CONFIG,
+      credentials: noCredentials,
+    });
     expect(provider).toBeInstanceOf(MockProvider);
     expect(provider.mode).toBe('mock');
     expect(provider.model).toBe('mock-deterministic');
   });
 
   it('external 模式创建 OpenAI 兼容 Provider 并允许覆盖模型名', () => {
-    const provider = createProvider(
-      { providerMode: 'external', modelConfig: FALLBACK_MODEL_CONFIG },
-      { apiKey: 'sk-12345678', baseUrl: 'https://api.example.com/v1', modelOverride: 'model-y' },
-    );
+    const provider = createProvider({
+      providerMode: 'external',
+      modelConfig: FALLBACK_MODEL_CONFIG,
+      credentials: {
+        apiKey: 'sk-12345678',
+        baseUrl: 'https://api.example.com/v1',
+        modelOverride: 'model-y',
+        source: 'database',
+        decryptionFailed: false,
+      },
+    });
     expect(provider).toBeInstanceOf(OpenAICompatibleProvider);
     expect(provider.mode).toBe('external');
     expect(provider.model).toBe('model-y');

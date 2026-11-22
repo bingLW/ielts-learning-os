@@ -55,10 +55,10 @@
 | 框架 | Next.js 15 App Router + React 19 | 全站 Server Component，写操作走 Server Action，不暴露 REST 层 |
 | 语言 | TypeScript 5（strict） | 路径别名 `@/*` → `./src/*` |
 | 样式 | Tailwind CSS v3 | 三色 GREEN/YELLOW/RED 由 CSS 变量承载，`mobile:600px` / `md:768px` / `tablet:1024px` |
-| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，79 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表） |
+| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，80 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表；v2.4.2 新增 1 张 Provider 凭据表） |
 | 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误；AI 结构化输出同样过 zod Schema |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | 49 个文件 / 715 个用例；纯函数单测 + 2 个数据库副本上的 Server Action 集成测试（v2.4 AI Coach、v2.4.1 初始诊断） |
+| 测试 | Vitest 3 | 50 个文件 / 724 个用例；纯函数单测 + 2 个数据库副本上的 Server Action 集成测试（v2.4 AI Coach 含 v2.4.2 凭据、v2.4.1 初始诊断） |
 
 ## 3. 环境要求
 
@@ -121,16 +121,16 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（49 文件 / 715 用例） |
+| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（50 文件 / 724 用例） |
 | `npm run test:watch` | 监听模式 |
-| `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4 + v2.4.1 五段端到端验收（均使用数据库副本，不改真实库） |
+| `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4（含 v2.4.2 凭据）+ v2.4.1 端到端验收（均使用数据库副本，不改真实库） |
 | `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
 | `npm run test:e2e:v22` | 仅 v2.2 全链路（37 条断言） |
 | `npm run test:e2e:v23` | 仅 v2.3 TypeWords 词汇集成（40 条断言） |
-| `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成（3 条用例；复制 `dev.db` 到临时库后跑 Server Action 全链路） |
+| `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成（4 条用例，含 v2.4.2 凭据加密/清除；复制 `dev.db` 到临时库后跑 Server Action 全链路） |
 | `npm run test:e2e:v241` | 仅 v2.4.1 初始诊断集成（1 条用例；复制 `dev.db` 到临时库后跑完整诊断、报告、计划激活、补测与删除） |
 | `npm run typecheck` | `tsc --noEmit`；注意 `tsconfig.json` 排除了测试目录 |
-| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 49 个测试文件** |
+| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 50 个测试文件** |
 | `npm run db:push` | 把 `schema.prisma` 同步到 SQLite（不丢数据） |
 | `npm run db:generate` | 重新生成 Prisma Client |
 | `npm run db:seed` | 重跑 seed（幂等：`upsert` + 验收项整组重建 + v2 五个回填函数；重复执行新增数恒为 0） |
@@ -182,7 +182,7 @@ node -v    # 应显示 v22.x
 | L1 | 仅在**被 Agent 托管执行**时受限：宿主注入的 `node-safe-delete` 保护对 Node 的 `fs.unlink` 设了「单轮 50 次删除」阈值，`next build` / `next dev` 清理 `.next` 时会被拦 | 在你自己的终端里不存在这层保护，`npm run build` / `npm run dev` 均可正常执行。被拦时的绕过方式见 §10 |
 | L2 | 缺陷 D6：`dueDateFrom` 取 `max(d0 + n, today)` | 补录**历史**首测时，D1/D3/D7 会被一起压到同一天（当天多条待办），不产生数据错误但体验差 |
 | L3 | 「复盘与计划」独立成桶（`META`），不计入听说读写任一科 | Dashboard 四项投入的合计**含** META，与「本周净时长」恒等；分析看板「四科分布」图不含 META。两处口径差异均为有意设计，不是漏算 |
-| L4 | AI 能力已在 v2.4 接通，但默认走 Mock | 未配置 `AI_PROVIDER_API_KEY` 或未在 `/ai-coach/admin` 打开外部 AI 时，所有回复由内置 Mock Provider 生成（确定性、零外部请求）；旧 `AiSuggestion` 表仍保持 `unavailable`，不会调用模型 |
+| L4 | AI 能力已在 v2.4 接通，但默认走 Mock | 未在 `/ai-coach/admin` 保存 API Key（或环境变量回退）且未打开外部 AI 时，所有回复由内置 Mock Provider 生成（确定性、零外部请求）；旧 `AiSuggestion` 表仍保持 `unavailable`，不会调用模型 |
 | L5 | 阶段名称是自建学习路径标签 | 不等于 CEFR 官方评级，也不代表雅思官方分数；UI 已固定展示免责声明 |
 | L6 | `lucide-react` 依赖未使用 | 图标为 `src/components/ui/Icon.tsx` 手写内联 SVG（25 个）。该包**可移除**，移除后不影响任何功能 |
 | L7 | 未配置 ESLint | `npm run lint`（`next lint`）需先初始化 ESLint 配置才能运行 |
@@ -190,7 +190,7 @@ node -v    # 应显示 v22.x
 
 ## 9. 测试说明
 
-`npm test` 会跑 `src/lib/**/__tests__/` 下的 **49 个文件、715 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；例外是 v2.4 的 `tutor.integration.test.ts` 与 v2.4.1 的 `diagnostics.integration.test.ts`，它们把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
+`npm test` 会跑 `src/lib/**/__tests__/` 下的 **50 个文件、724 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；例外是 v2.4 的 `tutor.integration.test.ts` 与 v2.4.1 的 `diagnostics.integration.test.ts`，它们把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
 
 下表保留 v2.0 时期的领域纯函数用例分布（当时 14 文件 / 306 用例），后续版本的新增用例见 §13–§15。
 
@@ -668,7 +668,7 @@ v2.4 在 v2.3 之上做**增量升级**：不重建、不换框架/数据库/认
 
 **安全与隐私边界**（实现层强制，不依赖提示词自觉）：
 
-- API Key 只从环境变量读取，不写入源码、数据库明文、前端 bundle 或日志；
+- API Key 在 `/ai-coach/admin` 填写，AES-256-GCM 加密后存入本机 SQLite；页面与接口只回显末四位，明文不写源码、前端 bundle 或日志；环境变量 `AI_PROVIDER_API_KEY` 仅作回退；
 - 服务端 zod Schema 校验输入；AI 结构化输出再过一层 Schema，非法输出记为 `INVALID_OUTPUT`；
 - 结构化内容（`structuredJson`）与聊天文本分离存储；会话日志保留 prompt 版本、模型、provider 与时间戳；
 - 脱敏：邮箱、Bearer Token、API Key、长数字串、`file://` 路径在组装上下文与写日志前统一打码；
@@ -681,15 +681,15 @@ v2.4 在 v2.3 之上做**增量升级**：不重建、不换框架/数据库/认
 
 默认无需任何配置，直接使用 Mock。要接外部 OpenAI 兼容服务：
 
-```bash
-cp .env.example .env          # 若尚无 .env
-# 在 .env 填入（不要把 Key 提交到仓库）：
-AI_PROVIDER_API_KEY=sk-...
-AI_PROVIDER_BASE_URL=https://api.openai.com/v1   # 可选，默认即此值
-AI_PROVIDER_MODEL=gpt-4o-mini                    # 可选，覆盖默认模型
-```
+1. 打开 `/ai-coach/admin` → **Provider 凭据**，填写 API Key、Base URL、模型名并保存；
+2. 在同一页开启「允许外部 AI（需已保存凭据）」并保存。
 
-然后到 `/ai-coach/admin` 打开「外部 AI」总开关。以下任一条件不满足时自动回退 Mock，并在页面显示原因：外部 AI 未启用、缺少 Key、缺少 Base URL。
+- 凭据解析优先级：管理页配置（加密入库）> 环境变量 > 未配置；
+- 加密密钥优先取 `AI_CREDENTIALS_SECRET`，未设置时自动生成 `.local/ai-credentials.key`（权限 0600，已 gitignore）；更换加密密钥后需在页面重新填写 API Key；
+- 页面与接口只回显 Key 末四位，明文只存在于服务端内存；
+- 环境变量回退仍可用：`AI_PROVIDER_API_KEY`、`AI_PROVIDER_BASE_URL`、`AI_PROVIDER_MODEL`。
+
+以下任一条件不满足时自动回退 Mock，并在页面显示原因：外部 AI 未启用、缺少 Key、Base URL 不合法。
 
 ### 15.3 迁移（v2.3 → v2.4）
 
@@ -775,3 +775,38 @@ npx prisma generate
 | L29 | 等级是 AI 辅助 CEFR 估计 | 不是官方 CEFR 认证，也不预测 IELTS 分数；报告固定展示免责声明 |
 | L30 | 计划确认不自动排任务 | `PlanProposal` 标为 ACTIVE 后，仍需到 `/plan` 手动排入今日任务 |
 | L31 | `AIEngineSetting` 存在既有 schema drift | 该模型 `id @default("default")`，SQLite 表无 DEFAULT；v2.4.1 未改动此表，`prisma migrate diff` 会提示重建，属历史漂移，与诊断域无关 |
+
+## 17. v2.4.1 → v2.4.2 Provider 凭据入库
+
+### 17.1 变更
+
+- `/ai-coach/admin` 新增 **Provider 凭据** 表单：API Key、Base URL、模型名均可在前端页面配置，保存后立即生效；
+- 新增单行表 `AIProviderCredential`：API Key 以 AES-256-GCM 加密存储，只保留末四位用于页面回显；
+- 凭据解析优先级：管理页配置（数据库）> 环境变量 > 未配置（回落 Mock）；AI Coach 与诊断开放任务共用同一份凭据；
+- 「清除 API Key」后立即回落环境变量或 Mock，不需要修改 `.env`、不需要重启。
+
+### 17.2 迁移（v2.4.1 → v2.4.2）
+
+```bash
+bash scripts/backup.sh                              # 升级前一致性备份
+node scripts/migrations/v2.4.2.mjs --dry-run         # 只看 DDL
+node scripts/migrations/v2.4.2.mjs                   # 正式迁移
+npx prisma generate                                  # 重新生成 Prisma Client
+```
+
+纯加法单表；单事务 `BEGIN IMMEDIATE`；同版本 checksum 不一致拒绝执行；完成后跑 `integrity_check`、`foreign_key_check` 与受保护表行数零漂移，报告写入 `backups/migrations/v2.4.2-<timestamp>.json`。
+
+回滚：`bash scripts/restore.sh backups/<升级前备份>`，随后 `npm run db:generate`。
+
+### 17.3 测试
+
+- `src/lib/ai/__tests__/credentials.test.ts`：加解密往返、错误密钥、篡改密文、末四位掩码、数据库/环境变量优先级；
+- `src/lib/actions/__tests__/tutor.integration.test.ts` 新增凭据用例：保存后密文入库且不含明文、管理页数据结构不回显明文、清除后回落；
+- 全量：50 文件 / 724 用例通过；`npm run test:e2e`、`npm run typecheck`、`npm run typecheck:test`、`npm run build` 均通过。
+
+### 17.4 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L32 | 加密密钥不随数据库迁移 | 只复制 `dev.db` 到新机器时无法解密已存 Key，页面会提示重新填写；或改用 `AI_CREDENTIALS_SECRET` 统一密钥 |
+| L33 | 管理页无账号鉴权 | 本项目为单用户本机应用；能访问 `/ai-coach/admin` 的人即可修改凭据，部署到公网前必须加访问控制 |

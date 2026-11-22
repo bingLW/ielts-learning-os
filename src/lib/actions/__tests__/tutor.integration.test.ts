@@ -17,6 +17,7 @@ const workDb = join(tmpdir(), `ielts-ai-integration-${process.pid}-${Date.now()}
 if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
 copyFileSync(sourceDb, workDb);
 process.env.DATABASE_URL = `file:${workDb}`;
+process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
@@ -25,7 +26,7 @@ vi.mock('next/cache', () => ({
 
 const { prisma } = await import('@/lib/prisma');
 const actions = await import('@/lib/actions/tutor');
-const { getAiSessionDetail } = await import('@/lib/queries/tutor');
+const { getAiSessionDetail, getAiAdminData } = await import('@/lib/queries/tutor');
 const { ensurePromptRegistry } = await import('@/lib/ai/registry');
 const { runAiTurn } = await import('@/lib/ai/orchestrator');
 const { AI_ASSESSMENT_DISCLAIMER_ZH } = await import('@/lib/constants');
@@ -355,5 +356,44 @@ describe('AI Learning Coach 闭环', () => {
       explainLanguage: 'ZH_MIXED',
     });
     await actions.deleteAiSessionAction({ sessionId: session.id });
+  });
+
+  it('Provider 凭据：加密入库、只回显末四位、清除后回落', async () => {
+    const saved = await actions.saveProviderCredentialAction({
+      baseUrl: 'https://api.example.com/v1',
+      modelName: 'model-x',
+      apiKey: 'sk-integration-1234567890',
+    });
+    expect(saved.ok).toBe(true);
+    if (saved.ok) {
+      expect(saved.data.apiKeyConfigured).toBe(true);
+      expect(saved.data.apiKeyLast4).toBe('7890');
+    }
+
+    const row = await prisma.aIProviderCredential.findUnique({ where: { id: 'default' } });
+    expect(row?.apiKeyCipher).toBeTruthy();
+    expect(row?.apiKeyCipher).not.toContain('sk-integration');
+    expect(row?.apiKeyLast4).toBe('7890');
+    expect(row?.baseUrl).toBe('https://api.example.com/v1');
+    expect(row?.modelName).toBe('model-x');
+
+    const admin = await getAiAdminData();
+    expect(admin.credential.source).toBe('database');
+    expect(admin.credential.apiKeyConfigured).toBe(true);
+    expect(admin.credential.apiKeyLast4).toBe('7890');
+    expect(admin.credential.modelName).toBe('model-x');
+    expect(admin.credential.decryptionFailed).toBe(false);
+
+    const cleared = await actions.saveProviderCredentialAction({
+      baseUrl: 'https://api.example.com/v1',
+      modelName: 'model-x',
+      clearApiKey: true,
+    });
+    expect(cleared.ok).toBe(true);
+    if (cleared.ok) expect(cleared.data.apiKeyConfigured).toBe(false);
+
+    const after = await prisma.aIProviderCredential.findUnique({ where: { id: 'default' } });
+    expect(after?.apiKeyCipher).toBeNull();
+    expect(after?.apiKeyLast4).toBeNull();
   });
 });

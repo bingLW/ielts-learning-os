@@ -79,6 +79,24 @@ export const updateAiEngineSettingsSchema = z.object({
 });
 export type UpdateAiEngineSettingsInput = z.infer<typeof updateAiEngineSettingsSchema>;
 
+export const saveProviderCredentialSchema = z
+  .object({
+    baseUrl: z
+      .string()
+      .trim()
+      .min(1, '请填写 Base URL')
+      .max(300, 'Base URL 不超过 300 字符')
+      .refine((value) => /^https?:\/\//.test(value), 'Base URL 必须以 http:// 或 https:// 开头'),
+    modelName: z.string().trim().min(1, '请填写模型名').max(120, '模型名不超过 120 字符'),
+    apiKey: z.string().trim().max(400, 'API Key 不超过 400 字符').optional(),
+    clearApiKey: z.boolean().optional(),
+  })
+  .refine((input) => !input.apiKey || input.apiKey.length === 0 || input.apiKey.length >= 8, {
+    message: 'API Key 至少 8 个字符',
+    path: ['apiKey'],
+  });
+export type SaveProviderCredentialInput = z.infer<typeof saveProviderCredentialSchema>;
+
 export const updateAiModelConfigSchema = z.object({
   id: z.string().min(1),
   label: z.string().trim().min(1).max(80),

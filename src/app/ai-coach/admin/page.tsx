@@ -44,9 +44,7 @@ export default async function AiAdminPage() {
         })),
       }))}
       promptVersionCount={data.promptVersionCount}
-      apiKeyPresent={data.apiKeyPresent}
-      baseUrl={data.baseUrl}
-      modelOverride={data.modelOverride}
+      credential={data.credential}
     />
   );
 }

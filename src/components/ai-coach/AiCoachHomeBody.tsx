@@ -53,7 +53,7 @@ export interface AiCoachHomeProps {
 const PROVIDER_REASON_ZH: Record<string, string> = {
   external_ready: '外部 Provider 已就绪',
   external_disabled: '外部 AI 未开启（设置页可开启）',
-  missing_api_key: '缺少 API Key 环境变量，回落模拟模型',
+  missing_api_key: '未配置 API Key（管理页或环境变量），回落模拟模型',
   missing_base_url: '缺少 Base URL，回落模拟模型',
 };
 

@@ -2,13 +2,18 @@
  * AI Engine 配置解析。
  *
  * 规则：
- * 1. 外部模型默认关闭；只有设置页显式开启且环境变量有密钥才启用；
+ * 1. 外部模型默认关闭；只有设置页显式开启且凭据齐备才启用；
  * 2. 否则一律回落 mock，并在调用日志里标记为模拟，不产生费用；
- * 3. 密钥只从环境变量读取，绝不写入数据库或前端。
+ * 3. 凭据解析优先级：管理页配置（加密入库）> 环境变量 > 未配置；
+ *    明文密钥只存在于服务端内存，不返回前端。
  */
 
 import type { PrismaClient } from '@prisma/client';
 import { AI_ENGINE_DEFAULTS } from '@/lib/constants';
+import {
+  resolveProviderCredentials,
+  type ProviderCredentials,
+} from './credentials';
 import { MockProvider, OpenAICompatibleProvider } from './provider';
 import type { AiProvider } from './types';
 
@@ -93,17 +98,19 @@ export const FALLBACK_MODEL_CONFIG: ModelConfigLike = {
 export interface ResolvedEngineConfig {
   setting: EngineSettingLike;
   modelConfig: ModelConfigLike;
+  credentials: ProviderCredentials;
   providerMode: ProviderMode;
   providerReason: ProviderReason;
 }
 
 export async function loadEngineConfig(prisma: PrismaClient): Promise<ResolvedEngineConfig> {
-  const [settingRow, modelRow] = await Promise.all([
+  const [settingRow, modelRow, credentialRow] = await Promise.all([
     prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
     prisma.aIModelConfig.findFirst({
       where: { isDefault: true, active: true },
       orderBy: { updatedAt: 'desc' },
     }),
+    prisma.aIProviderCredential.findUnique({ where: { id: 'default' } }),
   ]);
 
   const setting: EngineSettingLike = settingRow
@@ -129,25 +136,25 @@ export async function loadEngineConfig(prisma: PrismaClient): Promise<ResolvedEn
       }
     : FALLBACK_MODEL_CONFIG;
 
-  const env = readProviderEnv();
+  const credentials = resolveProviderCredentials(credentialRow, readProviderEnv());
   const { mode, reason } = resolveProviderMode({
     externalAiEnabled: setting.externalAiEnabled,
-    apiKey: env.apiKey,
-    baseUrl: env.baseUrl,
+    apiKey: credentials.apiKey,
+    baseUrl: credentials.baseUrl,
   });
 
-  return { setting, modelConfig, providerMode: mode, providerReason: reason };
+  return { setting, modelConfig, credentials, providerMode: mode, providerReason: reason };
 }
 
 export function createProvider(
-  config: Pick<ResolvedEngineConfig, 'providerMode' | 'modelConfig'>,
-  env = readProviderEnv(),
+  config: Pick<ResolvedEngineConfig, 'providerMode' | 'modelConfig' | 'credentials'>,
 ): AiProvider {
+  const { credentials } = config;
   if (config.providerMode === 'external') {
     return new OpenAICompatibleProvider({
-      baseUrl: env.baseUrl,
-      apiKey: env.apiKey ?? '',
-      model: env.modelOverride ?? config.modelConfig.model,
+      baseUrl: credentials.baseUrl,
+      apiKey: credentials.apiKey ?? '',
+      model: credentials.modelOverride ?? config.modelConfig.model,
     });
   }
   return new MockProvider(config.modelConfig.model || 'mock-deterministic');

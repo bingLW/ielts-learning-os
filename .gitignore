@@ -13,6 +13,9 @@ prisma/dev.db
 *.db-shm
 *.db-wal
 
+# 本机凭据加密密钥（v2.4.2：管理页填写的 API Key 用它加密入库，绝不提交）
+.local/
+
 # 系统与工具杂项
 .DS_Store
 .workbuddy/

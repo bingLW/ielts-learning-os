@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * AI 管理与治理页：Provider 状态、预算、模型价格、提示词版本。
+ * AI 管理与治理页：Provider 状态、凭据、预算、模型价格、提示词版本。
  *
- * 密钥永远不在此页出现；只显示「环境变量是否已配置」。
+ * 密钥可在此页填写，加密后存入本机数据库；页面只回显末四位，永不回显明文。
  */
 
 import Link from 'next/link';
@@ -11,6 +11,7 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import {
   initPromptRegistryAction,
+  saveProviderCredentialAction,
   updateAiEngineSettingsAction,
   updateAiModelConfigAction,
 } from '@/lib/actions/tutor';
@@ -61,16 +62,27 @@ export interface AiAdminProps {
   models: ModelRow[];
   templates: PromptRow[];
   promptVersionCount: number;
-  apiKeyPresent: boolean;
-  baseUrl: string;
-  modelOverride: string | null;
+  credential: {
+    baseUrl: string;
+    modelName: string;
+    apiKeyConfigured: boolean;
+    apiKeyLast4: string | null;
+    source: 'database' | 'environment' | 'none';
+    decryptionFailed: boolean;
+  };
 }
 
 const REASON_ZH: Record<string, string> = {
-  external_ready: '外部 Provider 已开启且环境变量齐备。',
+  external_ready: '外部 Provider 已开启且凭据齐备。',
   external_disabled: '外部 AI 未开启；当前使用模拟模型。',
-  missing_api_key: '已开启外部 AI，但缺少 AI_PROVIDER_API_KEY 或 OPENAI_API_KEY；仍使用模拟模型。',
+  missing_api_key: '已开启外部 AI，但尚未配置 API Key（本页或环境变量）；仍使用模拟模型。',
   missing_base_url: '已开启外部 AI，但 Base URL 不合法；仍使用模拟模型。',
+};
+
+const SOURCE_ZH: Record<AiAdminProps['credential']['source'], string> = {
+  database: '管理页配置（已加密入库）',
+  environment: '环境变量（回退）',
+  none: '未配置',
 };
 
 function ModelEditor({ model }: { model: ModelRow }) {
@@ -162,6 +174,32 @@ export function AiAdminBody(props: AiAdminProps) {
   const { toast, show, dismiss } = useToastState();
   const [pending, startTransition] = useTransition();
   const [setting, setSetting] = useState(props.setting);
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState(props.credential.baseUrl);
+  const [modelName, setModelName] = useState(props.credential.modelName);
+
+  function saveCredential(clearApiKey = false) {
+    startTransition(async () => {
+      const result = await saveProviderCredentialAction({
+        baseUrl,
+        modelName,
+        apiKey: clearApiKey ? undefined : apiKey.trim() || undefined,
+        clearApiKey,
+      });
+      if (!result.ok) {
+        show(result.error, 'error');
+        return;
+      }
+      setApiKey('');
+      show(
+        clearApiKey
+          ? '已清除 API Key；外部调用将回落模拟模型'
+          : 'Provider 凭据已保存（密钥已加密入库）',
+        'success',
+      );
+      router.refresh();
+    });
+  }
 
   function saveSettings() {
     startTransition(async () => {
@@ -190,7 +228,7 @@ export function AiAdminBody(props: AiAdminProps) {
         <div>
           <h1 className="text-lg font-semibold text-ink">AI 模型与提示词管理</h1>
           <p className="text-xs text-inkMuted">
-            所有模型请求由后端代理；此页不显示、也不存储密钥。
+            所有模型请求由后端代理；API Key 加密后存入本机数据库，页面只回显末四位。
           </p>
         </div>
         <Link className={buttonClass('ghost', 'sm')} href="/ai-coach">
@@ -205,14 +243,75 @@ export function AiAdminBody(props: AiAdminProps) {
             （{props.engine.modelConfig.label} / {props.engine.modelConfig.model}）
           </li>
           <li>判定原因：{REASON_ZH[props.engine.providerReason] ?? props.engine.providerReason}</li>
-          <li>API Key 环境变量：{props.apiKeyPresent ? '已配置（不显示内容）' : '未配置'}</li>
-          <li>Base URL：{props.baseUrl}</li>
-          <li>模型覆盖变量：{props.modelOverride ?? '未设置'}</li>
-          <li className="text-inkMuted">
-            需要配置的环境变量：AI_PROVIDER_API_KEY（或 OPENAI_API_KEY）、AI_PROVIDER_BASE_URL、
-            可选 AI_PROVIDER_MODEL。
+          <li>凭据来源：{SOURCE_ZH[props.credential.source]}</li>
+          <li>
+            API Key：
+            {props.credential.apiKeyConfigured
+              ? `已配置（末四位 ${props.credential.apiKeyLast4 ?? '****'}）`
+              : '未配置'}
           </li>
+          <li>Base URL：{props.credential.baseUrl}</li>
+          <li>外部调用模型：{props.credential.modelName}</li>
+          {props.credential.decryptionFailed && (
+            <li className="text-egRed">
+              数据库中的密钥无法解密（本机密钥文件缺失或已更换），请在本页重新填写 API Key。
+            </li>
+          )}
         </ul>
+      </Card>
+
+      <Card
+        title="Provider 凭据"
+        description="在此页填写后立即生效；API Key 使用 AES-256-GCM 加密存入本机 SQLite，不回显明文。"
+      >
+        <div className="grid gap-2 sm:grid-cols-3">
+          <FormField label="API Key">
+            <input
+              className={inputClass}
+              type="password"
+              autoComplete="off"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              placeholder={
+                props.credential.apiKeyConfigured
+                  ? `已保存（末四位 ${props.credential.apiKeyLast4 ?? '****'}），留空保持不变`
+                  : '尚未配置；粘贴后保存'
+              }
+            />
+          </FormField>
+          <FormField label="Base URL">
+            <input
+              className={inputClass}
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder="https://api.openai.com/v1"
+            />
+          </FormField>
+          <FormField label="模型名">
+            <input
+              className={inputClass}
+              value={modelName}
+              onChange={(event) => setModelName(event.target.value)}
+              placeholder="gpt-4o-mini"
+            />
+          </FormField>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button variant="primary" size="sm" disabled={pending} onClick={() => saveCredential()}>
+            保存凭据
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={pending || !props.credential.apiKeyConfigured}
+            onClick={() => saveCredential(true)}
+          >
+            清除 API Key
+          </Button>
+          <span className="text-xs text-inkMuted">
+            加密密钥：环境变量 AI_CREDENTIALS_SECRET，或本机 .local/ai-credentials.key（自动生成）。
+          </span>
+        </div>
       </Card>
 
       <Card title="引擎设置" description="外部 AI 默认关闭；预算超限时调用会被拦截并记录 BLOCKED。">
@@ -225,7 +324,7 @@ export function AiAdminBody(props: AiAdminProps) {
                 setSetting((prev) => ({ ...prev, externalAiEnabled: event.target.checked }))
               }
             />
-            允许外部 AI（需环境变量密钥）
+            允许外部 AI（需已保存凭据）
           </label>
           <FormField label="每日预算（USD）">
             <input

@@ -21,6 +21,7 @@ import {
 } from '@/lib/constants';
 import { buildLearningContext, renderContextSummary, serializeContext } from '@/lib/ai/context';
 import { loadEngineConfig } from '@/lib/ai/config';
+import { encryptSecret } from '@/lib/ai/credentials';
 import { runAiTurn } from '@/lib/ai/orchestrator';
 import { ensurePromptRegistry } from '@/lib/ai/registry';
 import {
@@ -53,6 +54,7 @@ import {
   promoteDiagnosisSchema,
   requestHintSchema,
   requestTurnSchema,
+  saveProviderCredentialSchema,
   sessionIdSchema,
   startAiSessionSchema,
   submitBaselineSchema,
@@ -1100,6 +1102,50 @@ export async function updateAiEngineSettingsAction(
   revalidatePath('/ai-coach/admin');
   refreshAiPages();
   return ok({ updated: true });
+}
+
+/**
+ * 保存 Provider 凭据（Base URL、模型名、API Key）。
+ *
+ * - `apiKey` 留空表示保持原值；`clearApiKey=true` 表示清除；
+ * - Key 以 AES-256-GCM 加密后入库，只保留末四位用于页面回显；
+ * - 返回值永远不含明文或密文。
+ */
+export async function saveProviderCredentialAction(
+  raw: unknown,
+): Promise<ActionResult<{ apiKeyConfigured: boolean; apiKeyLast4: string | null }>> {
+  const parsed = saveProviderCredentialSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+  const input = parsed.data;
+
+  const existing = await prisma.aIProviderCredential.findUnique({ where: { id: 'default' } });
+  const next = {
+    baseUrl: input.baseUrl,
+    modelName: input.modelName,
+    apiKeyCipher: existing?.apiKeyCipher ?? null,
+    apiKeyLast4: existing?.apiKeyLast4 ?? null,
+    keyUpdatedAt: existing?.keyUpdatedAt ?? null,
+  };
+
+  if (input.clearApiKey) {
+    next.apiKeyCipher = null;
+    next.apiKeyLast4 = null;
+    next.keyUpdatedAt = null;
+  } else if (input.apiKey) {
+    next.apiKeyCipher = encryptSecret(input.apiKey);
+    next.apiKeyLast4 = input.apiKey.slice(-4);
+    next.keyUpdatedAt = new Date();
+  }
+
+  await prisma.aIProviderCredential.upsert({
+    where: { id: 'default' },
+    create: { id: 'default', ...next },
+    update: next,
+  });
+
+  revalidatePath('/ai-coach/admin');
+  revalidatePath('/ai-coach');
+  return ok({ apiKeyConfigured: Boolean(next.apiKeyCipher), apiKeyLast4: next.apiKeyLast4 });
 }
 
 export async function updateAiModelConfigAction(

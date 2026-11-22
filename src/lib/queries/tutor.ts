@@ -6,7 +6,7 @@
  */
 
 import { AI_ENGINE_DEFAULTS, AI_HINT_MAX_LEVEL } from '@/lib/constants';
-import { loadEngineConfig, readProviderEnv } from '@/lib/ai/config';
+import { loadEngineConfig } from '@/lib/ai/config';
 import { budgetConfigFrom, budgetWindows, evaluateBudget } from '@/lib/ai/meter';
 import { lastNDays, toBusinessDate, today } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
@@ -116,20 +116,18 @@ export async function getAiCoachHomeData() {
     listAiSessions(12),
     prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
   ]);
-  const env = readProviderEnv();
   return {
     engine,
     sessions,
     externalAiEnabled: engine.setting.externalAiEnabled,
-    apiKeyPresent: Boolean(env.apiKey),
-    baseUrl: env.baseUrl,
+    apiKeyPresent: Boolean(engine.credentials.apiKey),
     explainLanguage: setting?.explainLanguage ?? 'ZH_MIXED',
     directTeachingDefault: setting?.directTeachingDefault ?? false,
   };
 }
 
 export async function getAiAdminData() {
-  const [engine, setting, models, templates, promptVersions] = await Promise.all([
+  const [engine, setting, models, templates, promptVersions, credentialRow] = await Promise.all([
     loadEngineConfig(prisma),
     prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
     prisma.aIModelConfig.findMany({ orderBy: { createdAt: 'asc' } }),
@@ -138,8 +136,11 @@ export async function getAiAdminData() {
       include: { versions: { orderBy: { version: 'desc' }, take: 3 } },
     }),
     prisma.promptVersion.count(),
+    prisma.aIProviderCredential.findUnique({ where: { id: 'default' } }),
   ]);
-  const env = readProviderEnv();
+  const externalModelRow = models.find(
+    (model) => model.isDefault && model.active && model.provider !== 'mock',
+  );
   return {
     engine,
     setting:
@@ -157,9 +158,18 @@ export async function getAiAdminData() {
     models,
     templates,
     promptVersionCount: promptVersions,
-    apiKeyPresent: Boolean(env.apiKey),
-    baseUrl: env.baseUrl,
-    modelOverride: env.modelOverride ?? null,
+    credential: {
+      baseUrl: credentialRow?.baseUrl ?? engine.credentials.baseUrl,
+      modelName:
+        credentialRow?.modelName ??
+        engine.credentials.modelOverride ??
+        externalModelRow?.model ??
+        'gpt-4o-mini',
+      apiKeyConfigured: Boolean(engine.credentials.apiKey),
+      apiKeyLast4: credentialRow?.apiKeyLast4 ?? null,
+      source: engine.credentials.source,
+      decryptionFailed: engine.credentials.decryptionFailed,
+    },
   };
 }
 

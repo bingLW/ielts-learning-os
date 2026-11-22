@@ -1872,7 +1872,7 @@ model IntegrationJob {
 // v2.4 AI Learning Engine（全部为加法；不修改既有学习数据）
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── AI1 模型配置（密钥只来自环境变量，绝不入库） ──
+// ── AI1 模型配置（价格与启用状态；密钥等凭据见 AIProviderCredential） ──
 model AIModelConfig {
   id                 String   @id @default(cuid())
   provider           String
@@ -2072,6 +2072,17 @@ model AIEngineSetting {
   directTeachingDefault Boolean  @default(false)
   explainLanguage       String   @default("ZH_MIXED")
   updatedAt             DateTime @updatedAt
+}
+
+// ── AI9 Provider 凭据（单行；前端页面配置，API Key 加密入库、不回显明文） ──
+model AIProviderCredential {
+  id           String    @id @default("default")
+  baseUrl      String    @default("https://api.openai.com/v1")
+  modelName    String    @default("gpt-4o-mini")
+  apiKeyCipher String?
+  apiKeyLast4  String?
+  keyUpdatedAt DateTime?
+  updatedAt    DateTime  @updatedAt
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
