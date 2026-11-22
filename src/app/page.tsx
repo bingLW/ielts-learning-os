@@ -16,6 +16,7 @@ import { today } from '@/lib/date';
 import { getDashboard } from '@/lib/queries/dashboard';
 import { getGoalCards } from '@/lib/queries/goals';
 import { getVocabDashboardSummary } from '@/lib/queries/vocabIntegration';
+import { getDiagnosticBaselineState } from '@/lib/queries/diagnostics';
 import { buttonClass } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -37,10 +38,11 @@ export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
   const nowDate = today();
-  const [data, goals, vocab] = await Promise.all([
+  const [data, goals, vocab, diagnostic] = await Promise.all([
     getDashboard(nowDate),
     getGoalCards(nowDate),
     getVocabDashboardSummary(),
+    getDiagnosticBaselineState(),
   ]);
   const gateResult: GateResult | null = data.gate?.gate ?? null;
 
@@ -68,6 +70,47 @@ export default async function DashboardPage() {
           </Link>
         </div>
       </div>
+
+      {diagnostic.completedCount === 0 && (
+        <Card
+          title="尚未建立初始基线"
+          dense
+          actions={
+            diagnostic.activeSessionId ? (
+              <Link href={`/diagnostics/${diagnostic.activeSessionId}`} className={buttonClass('primary', 'sm')}>
+                继续诊断
+              </Link>
+            ) : (
+              <Link href="/diagnostics" className={buttonClass('primary', 'sm')}>
+                开始诊断
+              </Link>
+            )
+          }
+        >
+          <p className="text-xs text-inkMuted">
+            先做一轮 AI 辅助的初始诊断（听力 / 阅读 / 口语 / 写作，分时段可暂停），再让计划草案使用真实证据。
+            诊断结果不是官方 CEFR 认证；技术失败的任务不会被当作能力不足。
+          </p>
+        </Card>
+      )}
+
+      {diagnostic.completedCount > 0 && diagnostic.latestReportId && (
+        <Card
+          title="当前能力画像"
+          dense
+          actions={
+            <Link href={`/diagnostics/report/${diagnostic.latestReportId}`} className={buttonClass('secondary', 'sm')}>
+              查看诊断报告
+            </Link>
+          }
+        >
+          <p className="text-xs text-inkMuted">
+            已有 {diagnostic.completedCount} 轮完成诊断；最新报告状态：
+            {diagnostic.latestReportStatus === 'PROVISIONAL' ? '暂定（证据不足，需补测）' : '已出结果'}。
+            四项技能分别呈现，不合成总体 CEFR。
+          </p>
+        </Card>
+      )}
 
       {data.dataDays === 0 && (
         <EmptyState

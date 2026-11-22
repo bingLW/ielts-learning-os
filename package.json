@@ -10,7 +10,7 @@
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "tsx scripts/e2e-v21.mts && tsx scripts/e2e-v22.mts && tsx scripts/e2e-v23.mts && vitest run src/lib/actions/__tests__/tutor.integration.test.ts",
+    "test:e2e": "tsx scripts/e2e-v21.mts && tsx scripts/e2e-v22.mts && tsx scripts/e2e-v23.mts && vitest run src/lib/actions/__tests__/tutor.integration.test.ts src/lib/actions/__tests__/diagnostics.integration.test.ts",
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
@@ -20,7 +20,8 @@
     "test:e2e:v21": "tsx scripts/e2e-v21.mts",
     "test:e2e:v22": "tsx scripts/e2e-v22.mts",
     "test:e2e:v23": "tsx scripts/e2e-v23.mts",
-    "test:e2e:v24": "vitest run src/lib/actions/__tests__/tutor.integration.test.ts"
+    "test:e2e:v24": "vitest run src/lib/actions/__tests__/tutor.integration.test.ts",
+    "test:e2e:v241": "vitest run src/lib/actions/__tests__/diagnostics.integration.test.ts"
   },
   "keywords": [
     "ielts",

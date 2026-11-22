@@ -169,6 +169,94 @@ export const reviewerResultSchema = z.object({
 });
 export type ReviewerResult = z.infer<typeof reviewerResultSchema>;
 
+// ── v2.4.1 诊断域结构化协议 ──────────────────────────────────────────
+
+const diagLevelSchema = enumFrom(
+  ['Pre-A1', 'A1', 'A2', 'B1', 'B2', 'C1'] as const,
+  'CEFR 估计等级',
+);
+
+const diagDimensionSchema = z.object({
+  criterion: z.string().min(1).max(60),
+  score: z.number().int().min(0).max(2),
+  evidence: z.string().max(300),
+  comment: z.string().max(300).optional(),
+});
+
+const diagEvaluationSchema = z
+  .object({
+    estimated_level: diagLevelSchema,
+    level_range: z.tuple([diagLevelSchema, diagLevelSchema]),
+    dimensions: z.array(diagDimensionSchema).min(1).max(8),
+    strengths: stringList(5),
+    issues: stringList(5),
+    confidence: confidenceSchema,
+    limitations: z.string().min(1).max(400),
+    needs_follow_up: z.boolean(),
+  })
+  .superRefine((value, ctx) => {
+    const order = ['Pre-A1', 'A1', 'A2', 'B1', 'B2', 'C1'];
+    if (order.indexOf(value.level_range[0]) > order.indexOf(value.level_range[1])) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['level_range'],
+        message: '等级范围下限不能高于上限',
+      });
+    }
+    if (!value.estimated_level) {
+      ctx.addIssue({ code: 'custom', path: ['estimated_level'], message: '缺少等级估计' });
+    }
+  });
+export type DiagnosticEvaluation = z.infer<typeof diagEvaluationSchema>;
+
+export const diagRoutingSchema = z.object({
+  next_skill: z.string().min(1).max(40),
+  next_difficulty: z.number().int().min(1).max(4),
+  rationale: z.string().min(1).max(400),
+  stop_reason: z.string().max(200).optional(),
+});
+export type DiagnosticRouting = z.infer<typeof diagRoutingSchema>;
+
+export const diagErrorSchema = z.object({
+  categories: stringList(4, 80),
+  evidence: stringList(5, 200),
+  confidence: confidenceSchema,
+});
+export type DiagnosticError = z.infer<typeof diagErrorSchema>;
+
+export const diagSummarySchema = z.object({
+  summary: z.string().min(1).max(1200),
+  strengths: stringList(6),
+  gaps: stringList(6),
+  suggestions: stringList(6),
+  confidence: confidenceSchema,
+  limitations: z.string().max(500),
+});
+export type DiagnosticSummary = z.infer<typeof diagSummarySchema>;
+
+export const diagPlanSchema = z.object({
+  rationale: z.string().min(1).max(1000),
+  phases: z
+    .array(
+      z.object({
+        window: enumFrom(['7D', '30D', '90D'] as const, '计划窗口'),
+        focus: z.string().min(1).max(200),
+        tasks: z
+          .array(
+            z.object({
+              title: z.string().min(1).max(120),
+              minutes: z.number().int().min(5).max(240),
+              evidenceRef: z.string().max(200).optional(),
+            }),
+          )
+          .min(1)
+          .max(8),
+      }),
+    )
+    .length(3),
+});
+export type DiagnosticPlan = z.infer<typeof diagPlanSchema>;
+
 export const SCHEMA_BY_KIND = {
   task: taskSpecSchema,
   diagnosis: diagnosisResultSchema,
@@ -177,6 +265,12 @@ export const SCHEMA_BY_KIND = {
   drill: drillSetSchema,
   assessment: evidenceAssessmentSchema,
   reviewer: reviewerResultSchema,
+  diag_routing: diagRoutingSchema,
+  diag_speaking: diagEvaluationSchema,
+  diag_writing: diagEvaluationSchema,
+  diag_error: diagErrorSchema,
+  diag_summary: diagSummarySchema,
+  diag_plan: diagPlanSchema,
 } as const;
 
 export type StructuredByKind = {
@@ -187,6 +281,12 @@ export type StructuredByKind = {
   drill: DrillSet;
   assessment: EvidenceAssessment;
   reviewer: ReviewerResult;
+  diag_routing: DiagnosticRouting;
+  diag_speaking: DiagnosticEvaluation;
+  diag_writing: DiagnosticEvaluation;
+  diag_error: DiagnosticError;
+  diag_summary: DiagnosticSummary;
+  diag_plan: DiagnosticPlan;
 };
 
 export type StructuredParseResult<K extends AiPromptKind> =

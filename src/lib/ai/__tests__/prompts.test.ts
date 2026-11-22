@@ -20,11 +20,11 @@ const meta: AiPromptMeta = {
 };
 
 describe('提示词模板', () => {
-  it('七类提示词都有唯一 promptKey 与测试样例', () => {
+  it('全部提示词都有唯一 promptKey 与测试样例', () => {
     const keys = new Set<string>();
     for (const kind of AI_PROMPT_KINDS) {
       const def = PROMPT_DEFINITIONS[kind];
-      expect(def.promptKey).toMatch(/^ai\.[a-z]+\.v1$/);
+      expect(def.promptKey).toMatch(/^ai\.(?:[a-z]+\.)*v1$/);
       expect(keys.has(def.promptKey)).toBe(false);
       keys.add(def.promptKey);
       expect(JSON.parse(def.testSamplesJson).length).toBeGreaterThan(0);

@@ -58,6 +58,7 @@ model UserProfile {
   /**
    * /**
    * /**
+   * /**
    * 长期通用英语目标等级（展示用，非官方认证）。
    */
   cefrTarget        String @default("B2")
@@ -146,6 +147,7 @@ model PlanTask {
   /**
    * /**
    * /**
+   * /**
    * 优先级：P0 到期/逾期复习、P1 当前阶段核心、P2 有证据的弱项/目标差距、P3 拓展。
    * 取值固定 `P0`–`P3`（字符串，SQLite 无 enum）。
    */
@@ -181,6 +183,7 @@ model PlanTask {
 
   // ── v2.0 三轨道 ──
   /**
+   * /**
    * /**
    * /**
    * 主轨道。任务必须归属一个主轨道；允许加标签，但不允许一条学习时长被重复计入总时长。
@@ -1159,6 +1162,7 @@ model EvidenceRecord {
   aiUsageBefore     AIUsageRecord[]          @relation("AIUsageBefore")
   aiUsageAfter      AIUsageRecord[]          @relation("AIUsageAfter")
   vocabularyLinks   VocabularyEvidenceLink[]
+  diagnosticAttempt DiagnosticAttempt?       @relation("DiagnosticEvidence")
 
   @@index([skill, evidenceType])
   @@index([parentEvidenceId])
@@ -2068,4 +2072,268 @@ model AIEngineSetting {
   directTeachingDefault Boolean  @default(false)
   explainLanguage       String   @default("ZH_MIXED")
   updatedAt             DateTime @updatedAt
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// v2.4.1 AI Diagnostic & Intelligent Placement
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── D1 学习者背景（单行；只用于目标与排期，不参与能力定级） ──
+model LearnerProfile {
+  id                       String   @id @default("default")
+  goalsJson                String?
+  backgroundJson           String?
+  recordingConsent         Boolean  @default(false)
+  externalAiConsent        Boolean  @default(false)
+  selfReportedWeaknessJson String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+}
+
+// ── D2 诊断蓝图（版本化） ──
+model DiagnosticBlueprint {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  version     String
+  title       String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  items    DiagnosticItem[]
+  sessions DiagnosticSession[]
+}
+
+// ── D3 诊断题目 / 任务 ──
+model DiagnosticItem {
+  id                String   @id @default(cuid())
+  blueprintId       String
+  itemCode          String   @unique
+  /**
+   * LISTENING | READING | SPEAKING_PRODUCTION | SPEAKING_INTERACTION | WRITING | GRAMMAR | VOCABULARY_RECEPTIVE | VOCABULARY_PRODUCTIVE | SENTENCE_STRUCTURE | EMLR
+   */
+  skill             String
+  subskill          String
+  targetLevelMin    String
+  targetLevelMax    String
+  difficulty        Int      @default(2)
+  /**
+   * MCQ | MULTI | SHORT_ANSWER | OPEN_WRITING | OPEN_SPEAKING
+   */
+  taskType          String
+  /**
+   * VERIFIED | RUBRIC | AI_PRACTICE
+   */
+  sourceType        String
+  prompt            String
+  passage           String?
+  transcript        String?
+  optionsJson       String?
+  correctAnswer     String?
+  answerExplanation String?
+  rubricJson        String?
+  rubricVersion     String   @default("v1")
+  validationStatus  String   @default("VERIFIED")
+  active            Boolean  @default(true)
+  sortOrder         Int      @default(0)
+  exposureCount     Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  blueprint DiagnosticBlueprint @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
+  attempts  DiagnosticAttempt[]
+
+  @@index([skill, difficulty])
+  @@index([sourceType])
+}
+
+// ── D4 诊断会话 ──
+model DiagnosticSession {
+  id               String    @id @default(cuid())
+  blueprintId      String?
+  /**
+   * CREATED | IN_PROGRESS | PAUSED | FINALIZING | COMPLETED | FAILED
+   */
+  status           String    @default("CREATED")
+  goalSnapshotJson String?
+  planJson         String?
+  currentItemId    String?
+  startedAt        DateTime?
+  lastActivityAt   DateTime?
+  completedAt      DateTime?
+  version          Int       @default(1)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  blueprint DiagnosticBlueprint?   @relation(fields: [blueprintId], references: [id], onDelete: SetNull)
+  attempts  DiagnosticAttempt[]
+  snapshots SkillProfileSnapshot[]
+  report    PlacementReport?
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ── D5 单次尝试（原始作答只写一次） ──
+model DiagnosticAttempt {
+  id                  String   @id @default(cuid())
+  sessionId           String
+  itemId              String
+  sequence            Int
+  /**
+   * SUBMITTED | PENDING_EVAL | SCORED | INVALID | NEEDS_REVIEW
+   */
+  status              String   @default("SUBMITTED")
+  responseText        String?
+  responseJson        String?
+  timeSpentSec        Int?
+  technicalStatusJson String?
+  score               Int?
+  maxScore            Int?
+  /**
+   * DETERMINISTIC | AI | INVALID
+   */
+  evaluatorType       String   @default("DETERMINISTIC")
+  confidence          String   @default("LOW")
+  rubricVersion       String?
+  evidenceId          String?  @unique
+  submittedAt         DateTime @default(now())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  session    DiagnosticSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  item       DiagnosticItem    @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  evidence   EvidenceRecord?   @relation("DiagnosticEvidence", fields: [evidenceId], references: [id], onDelete: SetNull)
+  assessment AssessmentResult?
+  assets     DiagnosticAsset[]
+
+  @@unique([sessionId, itemId, sequence])
+  @@index([sessionId, status])
+}
+
+// ── D6 诊断资产（录音等原始材料） ──
+model DiagnosticAsset {
+  id          String   @id @default(cuid())
+  attemptId   String
+  /**
+   * AUDIO | WRITING_SNAPSHOT | MATERIAL
+   */
+  kind        String
+  /**
+   * 本机 data URL 或相对路径；不写入外部服务
+   */
+  storagePath String?
+  mimeType    String?
+  sizeBytes   Int?
+  sha256      String?
+  durationSec Int?
+  createdAt   DateTime @default(now())
+
+  attempt DiagnosticAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+}
+
+// ── D7 评分结果（与原始作答分离） ──
+model AssessmentResult {
+  id               String   @id @default(cuid())
+  attemptId        String   @unique
+  skill            String
+  subskill         String
+  dimensionJson    String?
+  estimatedLevel   String?
+  levelRangeJson   String?
+  confidence       String   @default("LOW")
+  rubricVersion    String?
+  evidenceRefsJson String?
+  limitationsJson  String?
+  needsFollowUp    Boolean  @default(false)
+  /**
+   * AI | DETERMINISTIC | HUMAN
+   */
+  assessorType     String   @default("AI")
+  createdAt        DateTime @default(now())
+
+  attempt DiagnosticAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+}
+
+// ── D8 能力画像快照（每会话每技能一行） ──
+model SkillProfileSnapshot {
+  id              String   @id @default(cuid())
+  sessionId       String
+  skill           String
+  estimatedLevel  String?
+  levelRangeJson  String?
+  confidence      String   @default("LOW")
+  coverageJson    String?
+  evidenceCount   Int      @default(0)
+  limitationsJson String?
+  needsFollowUp   Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  session DiagnosticSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, skill])
+}
+
+// ── D9 诊断报告（追加式） ──
+model PlacementReport {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique
+  version         Int      @default(1)
+  /**
+   * FINAL | PROVISIONAL | SUPERSEDED
+   */
+  status          String   @default("FINAL")
+  summary         String
+  strengthsJson   String?
+  gapsJson        String?
+  coverageJson    String?
+  suggestionsJson String?
+  confidence      String   @default("LOW")
+  limitationsJson String?
+  supersededById  String?
+  createdAt       DateTime @default(now())
+
+  session        DiagnosticSession         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  proposals      PlanProposal[]
+  reviewRequests DiagnosticReviewRequest[]
+}
+
+// ── D10 学习计划草案（用户确认后才 ACTIVE） ──
+model PlanProposal {
+  id            String    @id @default(cuid())
+  reportId      String
+  /**
+   * DRAFT | ACTIVE | ARCHIVED
+   */
+  status        String    @default("DRAFT")
+  horizonDays   Int
+  tasksJson     String
+  rationaleJson String?
+  budgetJson    String?
+  createdAt     DateTime  @default(now())
+  activatedAt   DateTime?
+
+  report PlacementReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+// ── D11 复核 / 异议请求 ──
+model DiagnosticReviewRequest {
+  id             String   @id @default(cuid())
+  reportId       String
+  reason         String
+  /**
+   * OPEN | IN_REVIEW | RESOLVED
+   */
+  status         String   @default("OPEN")
+  resolutionNote String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  report PlacementReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([status])
 }

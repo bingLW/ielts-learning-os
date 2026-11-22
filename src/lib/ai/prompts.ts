@@ -253,6 +253,162 @@ function reviewerPrompt(): PromptDefinition {
   };
 }
 
+const DIAG_EVAL_RULES = [
+  '你只基于 learner_answer 中可见的证据评分；证据不足时 needs_follow_up=true，并在 limitations 说明缺什么。',
+  '不得把结果说成官方 CEFR 认证或 IELTS 分数；estimated_level 只是 AI 辅助估计。',
+  '不得根据姓名、国籍、年龄、母语或自述经历推断能力。',
+  '评分理由引用作答片段即可，不要求、也不要输出内部思维过程。',
+  JSON_ONLY,
+  '输出字段：estimated_level, level_range, dimensions[], strengths[], issues[], confidence, limitations, needs_follow_up。',
+];
+
+function diagRoutingPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.routing.v1',
+    purpose: '记录诊断题目路由的决策依据（当前版本由确定性代码执行，模板用于审计与未来扩展）',
+    mode: 'DIAG_ROUTING',
+    systemTemplate: [
+      '你是诊断路由审计员。路由必须可解释、可测试：先做低成本基础题，答对升一档，答错降一档，并避免重复曝光。',
+      '不得自由编造题目；只能引用既有题库 itemCode。',
+      JSON_ONLY,
+      '输出字段：next_skill, next_difficulty, rationale, stop_reason。',
+    ].join('\n'),
+    userTemplate: [
+      '技能：{{skill}}；当前难度：{{targetLevel}}。',
+      '<learner_data>最近作答：{{baseline}}</learner_data>',
+      '请输出路由决策依据。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({ skill: 'string', targetLevel: 'string', baseline: 'string' }),
+    outputSchemaJson: JSON.stringify({ required: ['next_skill', 'next_difficulty', 'rationale'] }),
+    testSamplesJson: JSON.stringify([{ label: '答对基础题', expect: '难度上调一档' }]),
+  };
+}
+
+function diagSpeakingPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.speaking.v1',
+    purpose: '按版本化 rubric 评估口语基线（Spoken Production / Interaction）',
+    mode: 'DIAG_SPEAKING',
+    systemTemplate: [
+      '你是口语评估员，按给定 rubric 评估可理解度、流利度、词汇、语法、连贯与互动相关性。',
+      'ASR 转写只作辅助证据：发音相关判断不得仅凭转写给低分，若音频质量或转写不可信必须写入 limitations。',
+      ...DIAG_EVAL_RULES,
+    ].join('\n'),
+    userTemplate: [
+      '任务：{{itemPrompt}}',
+      '评分规准：{{rubricSummary}}',
+      '<learner_data>背景：{{learnerBackground}}</learner_data>',
+      '<learner_answer>作答（可能含 ASR 转写）：{{learnerAnswer}}</learner_answer>',
+      '请输出口语评估 JSON。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({
+      itemPrompt: 'string',
+      rubricSummary: 'string',
+      learnerAnswer: 'string',
+    }),
+    outputSchemaJson: JSON.stringify({
+      required: ['estimated_level', 'dimensions', 'confidence', 'limitations'],
+    }),
+    testSamplesJson: JSON.stringify([{ label: '样本不足', expect: 'needs_follow_up=true' }]),
+  };
+}
+
+function diagWritingPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.writing.v1',
+    purpose: '按版本化 rubric 评估写作基线',
+    mode: 'DIAG_WRITING',
+    systemTemplate: [
+      '你是写作评估员，按给定 rubric 评估任务完成度、语法范围与准确性、词汇、连贯衔接、拼写标点。',
+      '必须引用原文片段作为证据；不得替学习者改写后再按改写内容评分。',
+      ...DIAG_EVAL_RULES,
+    ].join('\n'),
+    userTemplate: [
+      '任务：{{itemPrompt}}',
+      '评分规准：{{rubricSummary}}',
+      '<learner_data>背景：{{learnerBackground}}</learner_data>',
+      '<learner_answer>{{learnerAnswer}}</learner_answer>',
+      '请输出写作评估 JSON。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({
+      itemPrompt: 'string',
+      rubricSummary: 'string',
+      learnerAnswer: 'string',
+    }),
+    outputSchemaJson: JSON.stringify({
+      required: ['estimated_level', 'dimensions', 'confidence', 'limitations'],
+    }),
+    testSamplesJson: JSON.stringify([{ label: '短段落', expect: '给出范围与局限' }]),
+  };
+}
+
+function diagErrorPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.error.v1',
+    purpose: '把诊断错误归类为可操作类型（当前版本由确定性规则执行）',
+    mode: 'DIAG_ERROR',
+    systemTemplate: [
+      '你是错误分类员。只根据可见作答片段归类，不得臆测未出现的错误。',
+      JSON_ONLY,
+      '输出字段：categories[], evidence[], confidence。',
+    ].join('\n'),
+    userTemplate: [
+      '技能：{{skill}}。',
+      '<learner_answer>{{learnerAnswer}}</learner_answer>',
+      '请输出错误分类 JSON。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({ skill: 'string', learnerAnswer: 'string' }),
+    outputSchemaJson: JSON.stringify({ required: ['categories', 'evidence', 'confidence'] }),
+    testSamplesJson: JSON.stringify([{ label: '无作答', expect: '证据不足' }]),
+  };
+}
+
+function diagSummaryPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.summary.v1',
+    purpose: '把四项技能画像汇总成文字报告（当前版本使用确定性汇总，模板用于审计）',
+    mode: 'DIAG_SUMMARY',
+    systemTemplate: [
+      '你是诊断报告撰写员。四项技能分别陈述，禁止把 CEFR 字母等级平均成「总体等级」。',
+      '只引用输入中的等级、范围、置信度与证据数；不得新增未测到的能力。',
+      JSON_ONLY,
+      '输出字段：summary, strengths[], gaps[], suggestions[], confidence, limitations。',
+    ].join('\n'),
+    userTemplate: [
+      '能力画像摘要：{{profileSummary}}',
+      '<learner_data>背景：{{learnerBackground}}</learner_data>',
+      '请输出报告 JSON。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({ profileSummary: 'string', learnerBackground: 'string' }),
+    outputSchemaJson: JSON.stringify({
+      required: ['summary', 'strengths', 'gaps', 'suggestions', 'confidence'],
+    }),
+    testSamplesJson: JSON.stringify([{ label: '低置信度', expect: '建议补测' }]),
+  };
+}
+
+function diagPlanPrompt(): PromptDefinition {
+  return {
+    promptKey: 'ai.diag.plan.v1',
+    purpose: '依据画像与动态时间预算生成 7/30/90 天计划草案（当前版本使用确定性生成，模板用于审计）',
+    mode: 'DIAG_PLAN',
+    systemTemplate: [
+      '你是学习计划生成器。必须使用给定每周预算与每日上限，不得假设每天 240 分钟。',
+      '每个任务必须说明关联的证据或能力缺口；计划只是草案，等待用户确认后生效。',
+      JSON_ONLY,
+      '输出字段：rationale, phases[{window:7D|30D|90D, focus, tasks[{title, minutes, evidenceRef}]}]。',
+    ].join('\n'),
+    userTemplate: [
+      '预算：{{contextSummary}}',
+      '能力画像：{{profileSummary}}',
+      '请输出计划草案 JSON。',
+    ].join('\n'),
+    inputSchemaJson: JSON.stringify({ contextSummary: 'string', profileSummary: 'string' }),
+    outputSchemaJson: JSON.stringify({ required: ['rationale', 'phases'] }),
+    testSamplesJson: JSON.stringify([{ label: '每周 300 分钟', expect: '任务总和不超过预算' }]),
+  };
+}
+
 export const PROMPT_DEFINITIONS: Record<AiPromptKind, PromptDefinition> = {
   task: taskPrompt(),
   diagnosis: diagnosisPrompt(),
@@ -261,6 +417,12 @@ export const PROMPT_DEFINITIONS: Record<AiPromptKind, PromptDefinition> = {
   drill: drillPrompt(),
   assessment: assessmentPrompt(),
   reviewer: reviewerPrompt(),
+  diag_routing: diagRoutingPrompt(),
+  diag_speaking: diagSpeakingPrompt(),
+  diag_writing: diagWritingPrompt(),
+  diag_error: diagErrorPrompt(),
+  diag_summary: diagSummaryPrompt(),
+  diag_plan: diagPlanPrompt(),
 };
 
 export function renderPrompt(
@@ -282,6 +444,11 @@ export function renderPrompt(
     performanceType: meta.performanceType ?? 'immediate_retest',
     aidLevel: meta.aidLevel ?? 'none',
     contextSummary: meta.contextSummary?.slice(0, 1200) ?? '（无）',
+    itemPrompt: meta.itemPrompt?.slice(0, 2000) ?? '（无）',
+    rubricSummary: meta.rubricSummary?.slice(0, 1200) ?? '（无）',
+    learnerAnswer: meta.learnerAnswer?.slice(0, 4000) ?? '（无）',
+    learnerBackground: meta.learnerBackground?.slice(0, 1200) ?? '（无）',
+    profileSummary: meta.profileSummary?.slice(0, 2000) ?? '（无）',
   };
   return {
     system: definition.systemTemplate,

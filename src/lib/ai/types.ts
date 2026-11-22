@@ -20,6 +20,12 @@ export const AI_PROMPT_KINDS = [
   'drill',
   'assessment',
   'reviewer',
+  'diag_routing',
+  'diag_speaking',
+  'diag_writing',
+  'diag_error',
+  'diag_summary',
+  'diag_plan',
 ] as const;
 export type AiPromptKind = (typeof AI_PROMPT_KINDS)[number];
 
@@ -31,6 +37,12 @@ export const AI_PROMPT_KEY_BY_KIND: Record<AiPromptKind, string> = {
   drill: 'ai.drill.v1',
   assessment: 'ai.assessment.v1',
   reviewer: 'ai.reviewer.v1',
+  diag_routing: 'ai.diag.routing.v1',
+  diag_speaking: 'ai.diag.speaking.v1',
+  diag_writing: 'ai.diag.writing.v1',
+  diag_error: 'ai.diag.error.v1',
+  diag_summary: 'ai.diag.summary.v1',
+  diag_plan: 'ai.diag.plan.v1',
 };
 
 /** 调用日志状态；与 AICallLog.status 的取值一致。 */
@@ -65,6 +77,12 @@ export interface AiPromptMeta {
   aidLevel?: string;
   allowedAids?: string[];
   contextSummary?: string;
+  /** v2.4.1 诊断专用：任务题干、评分规准、学习者原始作答与背景摘要。 */
+  itemPrompt?: string;
+  rubricSummary?: string;
+  learnerAnswer?: string;
+  learnerBackground?: string;
+  profileSummary?: string;
 }
 
 export interface AiCompletionRequest {

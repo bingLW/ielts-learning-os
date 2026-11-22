@@ -1020,6 +1020,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/evidence', labelZh: 'Evidence Center', shortZh: '证据', group: 'DIAGNOSE' },
   { href: '/profile', labelZh: '能力画像', shortZh: '画像', group: 'DIAGNOSE' },
   { href: '/diagnosis', labelZh: '障碍诊断', shortZh: '障碍', group: 'DIAGNOSE' },
+  { href: '/diagnostics', labelZh: 'AI 初始诊断', shortZh: '初诊', group: 'DIAGNOSE' },
   { href: '/retest', labelZh: '复测与迁移', shortZh: '复测', group: 'DIAGNOSE' },
   { href: '/coach', labelZh: 'AI Coach 日志', shortZh: 'AI', group: 'DIAGNOSE' },
   { href: '/ai-coach', labelZh: 'AI Learning Coach', shortZh: '教练', group: 'DIAGNOSE' },

@@ -231,6 +231,44 @@ function buildReviewer(meta: AiPromptMeta): StructuredByKind['reviewer'] {
   };
 }
 
+function mockLevelByLength(words: number): StructuredByKind['diag_writing']['estimated_level'] {
+  if (words < 5) return 'Pre-A1';
+  if (words < 12) return 'A1';
+  if (words < 30) return 'A2';
+  if (words < 60) return 'B1';
+  return 'B2';
+}
+
+function buildDiagEvaluation(
+  meta: AiPromptMeta,
+  kind: 'diag_speaking' | 'diag_writing',
+): StructuredByKind['diag_writing'] {
+  const answer = (meta.learnerAnswer ?? '').trim();
+  const words = answer ? answer.split(/\s+/).length : 0;
+  const level = mockLevelByLength(words);
+  const criteria =
+    kind === 'diag_speaking'
+      ? ['流利与连续性', '词汇范围', '语法范围与准确性', '可理解度', '连贯性']
+      : ['任务完成度', '语法范围与准确性', '词汇资源', '连贯与衔接', '拼写与标点'];
+  const score = words >= 40 ? 2 : words >= 12 ? 1 : 0;
+  return {
+    estimated_level: level,
+    level_range: words >= 12 ? [level, level] : ['Pre-A1', level],
+    dimensions: criteria.map((criterion) => ({
+      criterion,
+      score,
+      evidence: answer ? excerpt(answer, 60) : '（未提交作答）',
+      comment: '模拟评估：仅按样本长度给出保守评分，具体质量需人工复核',
+    })),
+    strengths: answer ? ['已提交可分析的原始作答'] : [],
+    issues: answer ? [] : ['缺少作答，暂不能判断'],
+    confidence: words >= 30 ? 'MEDIUM' : 'LOW',
+    limitations:
+      '这是内置模拟评估，未调用外部模型；不代表官方 CEFR 或 IELTS 结果，ASR 文本不能单独用于发音判断。',
+    needs_follow_up: words < 30,
+  };
+}
+
 export function buildMockPayload<K extends AiPromptKind>(
   kind: K,
   meta: AiPromptMeta,
@@ -250,6 +288,41 @@ export function buildMockPayload<K extends AiPromptKind>(
       return buildAssessment(meta) as StructuredByKind[K];
     case 'reviewer':
       return buildReviewer(meta) as StructuredByKind[K];
+    case 'diag_routing':
+      return {
+        next_skill: meta.skill,
+        next_difficulty: 2,
+        rationale: '模拟路由：使用确定性规则，答对升档、答错降档。',
+        stop_reason: '样本已达本轮上限',
+      } as StructuredByKind[K];
+    case 'diag_speaking':
+      return buildDiagEvaluation(meta, 'diag_speaking') as StructuredByKind[K];
+    case 'diag_writing':
+      return buildDiagEvaluation(meta, 'diag_writing') as StructuredByKind[K];
+    case 'diag_error':
+      return {
+        categories: meta.learnerAnswer?.trim() ? ['RETRIEVAL_FAILURE'] : [],
+        evidence: meta.learnerAnswer?.trim() ? [excerpt(meta.learnerAnswer, 60)] : [],
+        confidence: 'LOW',
+      } as StructuredByKind[K];
+    case 'diag_summary':
+      return {
+        summary: `模拟汇总：当前画像来自诊断作答，等级为 AI 辅助估计，不是官方认证。`,
+        strengths: [],
+        gaps: ['需要更多样本才能稳定判断'],
+        suggestions: ['完成补测'],
+        confidence: 'LOW',
+        limitations: '内置模拟汇总，未调用外部模型。',
+      } as unknown as StructuredByKind[K];
+    case 'diag_plan':
+      return {
+        rationale: '模拟计划：依据每周预算生成，等待用户确认。',
+        phases: [
+          { window: '7D', focus: '启动', tasks: [{ title: '基础诊断补测', minutes: 20 }] },
+          { window: '30D', focus: '建立习惯', tasks: [{ title: '四项技能轮换', minutes: 30 }] },
+          { window: '90D', focus: '阶段验收', tasks: [{ title: '延迟复测', minutes: 30 }] },
+        ],
+      } as unknown as StructuredByKind[K];
     default:
       throw new Error(`未知提示词种类：${String(kind)}`);
   }
