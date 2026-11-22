@@ -353,7 +353,7 @@ export function SettingsBody({ profile }: { profile: SettingsProfileDto }) {
                 });
               }
             }}
-            className="w-fit rounded-lg bg-alert px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+            className="w-fit rounded-lg bg-egRed px-4 py-2 text-sm font-medium text-white hover:opacity-90"
           >
             退出系统
           </button>

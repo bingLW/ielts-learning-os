@@ -95,7 +95,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
               <button
                 type="button"
                 onClick={startRecording}
-                className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:opacity-90"
+                className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90"
               >
                 开始录音
               </button>
@@ -103,7 +103,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
               <button
                 type="button"
                 onClick={stopRecording}
-                className="rounded-lg bg-alert px-4 py-2 text-sm font-medium text-white"
+                className="rounded-lg bg-egRed px-4 py-2 text-sm font-medium text-white"
               >
                 停止
               </button>
@@ -119,7 +119,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
               </button>
             )}
           </div>
-          {permissionError && <p className="mt-2 text-sm text-alert">{permissionError}</p>}
+          {permissionError && <p className="mt-2 text-sm text-egRed">{permissionError}</p>}
           {message && <p className="mt-2 text-sm text-inkMuted">{message}</p>}
           {audioUrl && (
             <div className="mt-3">

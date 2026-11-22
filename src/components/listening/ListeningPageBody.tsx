@@ -61,7 +61,7 @@ export function ListeningPageBody({ assets, exercises, transcripts }: Props) {
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
-          className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-paper hover:opacity-90 disabled:opacity-50"
+          className="rounded-lg bg-ink px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
         >
           {uploading ? '上传中…' : '上传音频'}
         </button>
@@ -249,7 +249,7 @@ function ExerciseList({ exercises }: { exercises: ListeningExerciseDto[] }) {
                     <span className="ml-2">首听：{attempt.firstListenResult.slice(0, 40)}…</span>
                   )}
                   {attempt.errors.length > 0 && (
-                    <span className="ml-2 text-alert">{attempt.errors.length} 处标记</span>
+                    <span className="ml-2 text-egRed">{attempt.errors.length} 处标记</span>
                   )}
                 </div>
               ))}
