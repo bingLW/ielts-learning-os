@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { EvidenceSkill } from '@/lib/types';
+import { parseWeekdayProfiles } from '@/lib/domain/budget';
 import {
   DIAGNOSTIC_AUX_SKILLS,
   DIAGNOSTIC_CORE_SKILLS,
@@ -677,17 +678,14 @@ export async function finalizeDiagnosticSession(
   const draft = buildReportDraft(profiles, skillLabel, pending.length);
 
   const planner = await prisma.plannerSettings.findUnique({ where: { id: 1 } });
-  let weekdayProfiles: number[] = [60, 60, 60, 60, 60, 60, 0];
-  try {
-    if (planner?.weekdayProfiles) {
-      const parsed = JSON.parse(planner.weekdayProfiles) as unknown;
-      if (Array.isArray(parsed) && parsed.length === 7) {
-        weekdayProfiles = parsed.map((value) => (typeof value === 'number' ? value : 0));
-      }
-    }
-  } catch {
-    // 配置损坏时回落初始建议值；不因此阻断诊断报告。
-  }
+  /**
+   * 星期模板的解析**统一走 `parseWeekdayProfiles`**（v2.7 收口）。
+   *
+   * 这里原先自己 `JSON.parse` + 自己的兜底与类型过滤，是项目里第三处解析预算配置的地方。
+   * 三处各写一份的必然结果就是某天只改了两处 —— 缺 `PlannerSettings` 时
+   * `getBudgetRange` 与 `getEffectiveBudget` 已经这么分叉过一次（周日 0 vs 60）。
+   */
+  const weekdayProfiles = parseWeekdayProfiles(planner?.weekdayProfiles);
 
   const planProfiles: PlanProfileInput[] = profiles.map((profile) => ({
     skill: profile.skill,

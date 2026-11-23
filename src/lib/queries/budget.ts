@@ -1,7 +1,23 @@
 /**
  * v2.1 预算与周目标的只读查询。
  *
- * 预算解析优先级（自高到低）：
+ * **本文件不再包含任何预算解析逻辑。**
+ *
+ * 解析只有一处：`domain/budget.resolveEffectiveBudget`（纯函数，五个分支的顺序即优先级）。
+ * 这里只做两件事：把 `DailyBudget` / `PlannerSettings` 读出来，交给它算；把结果返回。
+ *
+ * 为什么要这样收口（v2.7 R-2 的读侧翻版）：原先 `getEffectiveBudget`（逐日）与
+ * `getBudgetRange`（批量）是两份并行实现，在「没有 `PlannerSettings` 行」这条路径上
+ * **分叉**了 —— 逐日版给「建议 60 分钟 / 非休息日 / isSuggestion:true」，
+ * 批量版按星期模板给「周日 0 分钟 / 休息日 / isSuggestion:false」。
+ * 后果有两个，都不是显示问题：
+ * 1. H4 的分母失真：周视图认为周日 0 分钟（被 `<15` 静默跳过），计划引擎认为 60 分钟；
+ * 2. `isSuggestion` 撒谎：把「系统猜的 60」说成「用户真实可用时间」。
+ *
+ * 现在两者共用同一条判定，分叉在结构上不可能再发生
+ * （`domain/__tests__/budgetResolve.test.ts` 的等价性用例守着这一点）。
+ *
+ * 预算解析优先级（自高到低，实现见 `domain/budget.ts`）：
  * 1. `DailyBudget`（该日期已被用户显式设定）
  * 2. `PlannerSettings.weekdayProfiles[星期]`（按星期模板）
  * 3. `PlannerSettings.defaultDailyMinutes`（初始建议值，标记为建议，不是真实可用时间）
@@ -10,130 +26,47 @@
  * 那正是 v2.1 要废除的「默认 240」假设。
  */
 
-import { BUDGET_INITIAL_SUGGESTION, BUDGET_MINUTES_MAX, BUDGET_MINUTES_MIN } from '@/lib/constants';
-import { dayOfWeek, today } from '@/lib/date';
+import { BUDGET_MINUTES_MAX, BUDGET_MINUTES_MIN } from '@/lib/constants';
+import { today } from '@/lib/date';
+import { resolveEffectiveBudget, type EffectiveBudget, type WeekdayProfile } from '@/lib/domain/budget';
 import { prisma } from '@/lib/prisma';
-import type { BudgetSource, BudgetTierCode, BudgetType } from '@/lib/types';
+import type { BudgetTierCode, BudgetType } from '@/lib/types';
 
-/** 解析后的有效预算（供计划引擎与 UI 使用）。 */
-export interface EffectiveBudget {
-  date: string;
-  minutes: number;
-  isRestDay: boolean;
-  tierCode: string | null;
-  budgetType: BudgetType;
-  source: BudgetSource;
-  /** true 表示「这是系统建议的初始值」而非用户真实设定（首次安装 60 分钟场景）。 */
-  isSuggestion: boolean;
-  budgetId: string | null;
-}
-
-/** 星期模板解析结果。 */
-export interface WeekdayProfile {
-  /** 周日..周六，7 个值；0 = 休息日。 */
-  minutes: number[];
-  source: 'PLANNER_SETTINGS';
-}
+/**
+ * 类型转出（**不改既有 import 路径**）。
+ *
+ * `EffectiveBudget` / `WeekdayProfile` 的定义已经搬到 `domain/budget.ts`
+ * （纯函数的返回值），但全项目有 5 处从本模块 import 它们。用重导出而不是改 5 个
+ * import，是为了让这次"只搬实现、不搬 API"的改动足够小 —— 把一次语义修复
+ * 变成一次无关的重构，评审就看不到真正的改动了。
+ */
+export type { EffectiveBudget, WeekdayProfile };
 
 /** 读取 PlannerSettings（不存在时返回 null，由迁移或设置页创建）。 */
 export async function getPlannerSettings() {
   return prisma.plannerSettings.findUnique({ where: { id: 1 } });
 }
 
-/** 解析 `weekdayProfiles` JSON；损坏时回落到「全 60 + 周日休息」。 */
-export function parseWeekdayProfiles(raw: string | null | undefined): number[] {
-  const fallback = [60, 60, 60, 60, 60, 60, 0];
-  if (!raw) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length !== 7) return fallback;
-    return parsed.map((value) => {
-      const n = Number(value);
-      return Number.isFinite(n) && n >= 0 && n <= BUDGET_MINUTES_MAX ? Math.round(n) : 0;
-    });
-  } catch {
-    return fallback;
-  }
-}
+/** 解析星期模板（实现已搬到 `domain/budget.ts`，这里只转出）。 */
+export { parseWeekdayProfiles } from '@/lib/domain/budget';
 
-/** 该日期的有效预算。 */
+/** 该日期的有效预算（薄壳：读 → `resolveEffectiveBudget` → 返回）。 */
 export async function getEffectiveBudget(date: string = today()): Promise<EffectiveBudget> {
   const [daily, settings] = await Promise.all([
     prisma.dailyBudget.findUnique({ where: { date } }),
     getPlannerSettings(),
   ]);
 
-  if (daily) {
-    return {
-      date,
-      minutes: daily.plannedAvailableMinutes,
-      isRestDay: daily.isRestDay,
-      tierCode: daily.tierCode,
-      budgetType: daily.budgetType as BudgetType,
-      source: daily.source as BudgetSource,
-      isSuggestion: daily.isInitialSuggestion,
-      budgetId: daily.id,
-    };
-  }
-
-  const profiles = parseWeekdayProfiles(settings?.weekdayProfiles);
-  const dow = dayOfWeek(date);
-  const weekdayMinutes = profiles[dow] ?? 0;
-
-  // 用户从未确认过日程配置：星期模板与默认值都只是**初始建议**，
-  // 不能冒充「用户真实可用时间」，也不能因为模板里写了 0 就判成休息日。
-  if (settings && !settings.isUserConfirmed) {
-    return {
-      date,
-      minutes: settings.defaultDailyMinutes,
-      isRestDay: false,
-      tierCode: null,
-      budgetType: 'PRESET',
-      source: 'DEFAULT_SUGGESTION',
-      isSuggestion: true,
-      budgetId: null,
-    };
-  }
-
-  if (settings && weekdayMinutes > 0) {
-    return {
-      date,
-      minutes: weekdayMinutes,
-      isRestDay: false,
-      tierCode: null,
-      budgetType: 'PRESET',
-      source: 'WEEKDAY_TEMPLATE',
-      isSuggestion: false,
-      budgetId: null,
-    };
-  }
-  if (settings && weekdayMinutes === 0) {
-    // 星期模板明确写了 0：视为休息日，而不是「回落到默认 60」
-    return {
-      date,
-      minutes: 0,
-      isRestDay: true,
-      tierCode: 'REST',
-      budgetType: 'REST_DAY',
-      source: 'WEEKDAY_TEMPLATE',
-      isSuggestion: false,
-      budgetId: null,
-    };
-  }
-
-  return {
-    date,
-    minutes: settings?.defaultDailyMinutes ?? BUDGET_INITIAL_SUGGESTION,
-    isRestDay: false,
-    tierCode: null,
-    budgetType: 'PRESET',
-    source: 'DEFAULT_SUGGESTION',
-    isSuggestion: true,
-    budgetId: null,
-  };
+  return resolveEffectiveBudget({ date, daily, settings });
 }
 
-/** 区间内每一天的有效预算（周视图用；不产生数据库写入）。 */
+/**
+ * 区间内每一天的有效预算（周视图用；不产生数据库写入）。
+ *
+ * **与 `getEffectiveBudget` 共用同一个解析函数**，唯一的差别是批量读：
+ * `DailyBudget` 一条 `IN` 查完，`PlannerSettings` 只读一次。
+ * 这里不允许出现任何"未确认/模板为 0"的分支 —— 那些判断只在 `domain/budget.ts` 里。
+ */
 export async function getBudgetRange(
   dates: string[],
 ): Promise<Map<string, EffectiveBudget>> {
@@ -142,50 +75,10 @@ export async function getBudgetRange(
     getPlannerSettings(),
   ]);
   const byDate = new Map(dailyRows.map((row) => [row.date, row]));
-  const profiles = parseWeekdayProfiles(settings?.weekdayProfiles);
-  const out = new Map<string, EffectiveBudget>();
-  const unconfirmed = Boolean(settings && !settings.isUserConfirmed);
 
+  const out = new Map<string, EffectiveBudget>();
   for (const date of dates) {
-    const row = byDate.get(date);
-    if (row) {
-      out.set(date, {
-        date,
-        minutes: row.plannedAvailableMinutes,
-        isRestDay: row.isRestDay,
-        tierCode: row.tierCode,
-        budgetType: row.budgetType as BudgetType,
-        source: row.source as BudgetSource,
-        isSuggestion: row.isInitialSuggestion,
-        budgetId: row.id,
-      });
-      continue;
-    }
-    if (unconfirmed) {
-      // 未确认的配置只算建议值，不是用户真实可用时间
-      out.set(date, {
-        date,
-        minutes: settings?.defaultDailyMinutes ?? BUDGET_INITIAL_SUGGESTION,
-        isRestDay: false,
-        tierCode: null,
-        budgetType: 'PRESET',
-        source: 'DEFAULT_SUGGESTION',
-        isSuggestion: true,
-        budgetId: null,
-      });
-      continue;
-    }
-    const weekdayMinutes = profiles[dayOfWeek(date)] ?? 0;
-    out.set(date, {
-      date,
-      minutes: weekdayMinutes,
-      isRestDay: weekdayMinutes === 0,
-      tierCode: weekdayMinutes === 0 ? 'REST' : null,
-      budgetType: weekdayMinutes === 0 ? 'REST_DAY' : 'PRESET',
-      source: 'WEEKDAY_TEMPLATE',
-      isSuggestion: false,
-      budgetId: null,
-    });
+    out.set(date, resolveEffectiveBudget({ date, daily: byDate.get(date) ?? null, settings }));
   }
   return out;
 }

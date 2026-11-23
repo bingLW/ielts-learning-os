@@ -2,6 +2,30 @@
 
 本项目采用手工维护的版本记录；每个条目只列已实际执行并验证的内容。
 
+## v2.7（进行中）— 规划内核
+
+目标是让「为什么今天排了这些」可复现、可解释、可审计。数据层与两处「判定口径」修正已完成。
+
+### 数据模型
+
+- 新增 5 张规划域表（`PlanningSnapshot` / `SkillGap` / `TaskCandidate` / `TaskPriorityDecision` / `StageReadinessReview`），全库 110 → 115 表；迁移 `scripts/migrations/v2.7.mjs`（checksum `8563a351ba6ba475`），纯加法。
+- 既有表新增 10 个可空列：`PlanTask.candidateId/decisionJson`、`PlanVersion.snapshotId/layer/parentVersionId/staleAt/staleReason`、`LearningCycle.primaryTheme/secondaryThemesJson/phaseChangedAt`。
+
+### 判定口径修正
+
+- **H4「投入稳定性」退出阶段晋级判定**（`stageGate`）。旧口径「净时长 ≥240 分钟/天」等于用固定时间投入模型否决不用户，30 分钟预算的用户永远不可能达标。现改为相对预算口径（净时长 ≥ 当日预算 × 60%，预算 <15 分钟的日期不进分母），且只作参考指标展示；旧口径数值保留为「旧规则参考值」并列显示，不静默删除痕迹。
+- **预算解析收口为单一真值**（`domain/budget.resolveEffectiveBudget`）。原 `getEffectiveBudget` 与 `getBudgetRange` 是两份并行实现，在「没有 `PlannerSettings` 行」路径上分叉：逐日版给「建议 60 分钟/非休息日/`isSuggestion:true`」，批量版按星期模板给「周日 0 分钟/休息日/`isSuggestion:false`」。
+
+### 行为变更（修正，非回归）
+
+- `getBudgetRange()` 在「配置行不存在 + 周日」：由 `0 分钟 / 休息日 / 非建议` 变为 `60 分钟 / 非休息日 / 建议值`，与 `getEffectiveBudget()` 一致。
+- `getBudgetRange()` 在「配置行不存在 + 工作日」：`isSuggestion` 由 `false` 变为 `true` —— 那个 60 分钟本来就是 `BUDGET_INITIAL_SUGGESTION`，不是用户设定的可用时间。
+- 影响面：周视图 `budget.days[].isRestDay` / `isSuggestion`（页面已有「建议」标记，无需改文案）；H4 的分母（原先周日被静默跳过）；诊断报告里的星期模板解析（第三处自解析已并入 `parseWeekdayProfiles`）。
+
+### 测试
+
+- 新增 `domain/__tests__/budgetResolve.test.ts`：五段分支各一条 + 「批量 vs 逐日」逐字段等价性（30 天 × 3 种配置状态）——后者是防止两条实现再次分叉的唯一防线。
+
 ## v2.6 — 2026-11-23
 
 Smart Learning Materials：把用户授权材料导入为可追溯、可编辑、可训练的「智能学习材料」，接入词汇 / 阅读 / 练习 / 证据链路。
