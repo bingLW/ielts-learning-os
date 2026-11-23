@@ -1,0 +1,227 @@
+/**
+ * 候选任务的**归一与去重**（T03，8 源）。
+ *
+ * 两条贯穿本文件的原则：
+ *
+ * 1. **身份 ≠ 载荷**。`candidateKey` 只描述"要做什么"（来源 + 源行 + 模块），
+ *    不描述"要花多久"。`estMinutes` 是载荷：它随用户改时长、随默认派生表调整而变，
+ *    放身份里会让"上周那条阅读细节题"和"这周那条"变成两个 key，
+ *    跨快照比对与幂等复用全部失配。
+ * 2. **去重不能靠身份**。`REVIEW` 与 `PROBE` 指向同一维度时，`sourceRef` 天生不同，
+ *    按 `candidateKey` 分组永远合不起来 —— 所以另有一个 `dedupeGroup`（见 `dedupeGroupOf`）。
+ *
+ * 反过来，`dedupe` 也**不允许过度合并**：`QUESTION`/`LAB`/`EGIU` 各处内容不同，
+ * 合并会让用户少看到任务还以为系统就是这样安排的。
+ */
+
+import type { LearningTrack, ModuleId, PrimarySkill, SkillId, StageCode } from '../types';
+
+/** 8 个候选来源（顺序即去重保留优先级：越靠前越优先保留）。 */
+export const CANDIDATE_SOURCE_KINDS = [
+  'REVIEW',
+  'RETEST',
+  'PROBE',
+  'VOCAB',
+  'MATERIAL',
+  'QUESTION',
+  'LAB',
+  'EGIU',
+] as const;
+export type CandidateSourceKind = (typeof CANDIDATE_SOURCE_KINDS)[number];
+
+/** 组内保留优先级（数字越小越优先）。 */
+export const CANDIDATE_SOURCE_PRIORITY: Record<CandidateSourceKind, number> = {
+  REVIEW: 0,
+  RETEST: 1,
+  PROBE: 2,
+  MATERIAL: 3,
+  VOCAB: 4,
+  QUESTION: 5,
+  LAB: 6,
+  EGIU: 7,
+};
+
+/** 前置条件（判定"能不能现在排"）。 */
+export type Prerequisite =
+  | { kind: 'STAGE_AT_LEAST'; code: StageCode }
+  | { kind: 'MATERIAL_READY'; materialId: string }
+  | { kind: 'EXERCISE_APPROVED'; exerciseId: string }
+  | { kind: 'TRANSCRIPT_CONFIRMED'; audioAssetId: string }
+  | { kind: 'UNIT_ORDER'; lessonId: string; requiresLessonId: string }
+  | { kind: 'EVIDENCE_EXISTS'; evidenceId: string };
+
+/** 前置条件的判定上下文（由服务层读库后传入；本模块不碰 IO）。 */
+export interface PrerequisiteContext {
+  stageCode: StageCode;
+  stageOrder: Record<string, number>;
+  readyMaterialIds: ReadonlySet<string>;
+  approvedExerciseIds: ReadonlySet<string>;
+  confirmedTranscriptAssetIds: ReadonlySet<string>;
+  completedLessonIds: ReadonlySet<string>;
+  evidenceIds: ReadonlySet<string>;
+}
+
+/** 一条归一后的候选。 */
+export interface TaskCandidateDraft {
+  /** 身份键：`sourceKind:sourceRef|none:module`（**不含时长**）。 */
+  candidateKey: string;
+  sourceKind: CandidateSourceKind;
+  sourceRef: string | null;
+  module: ModuleId;
+  targetSkill: SkillId;
+  primarySkill: PrimarySkill;
+  track: LearningTrack;
+  /** `${dimensionKind}:${skill}:${subskill}`（关联缺口；无则 null） */
+  skillGapKey: string | null;
+  title: string;
+  estMinutes: number;
+  minMinutes: number;
+  maxBlockMinutes: number | null;
+  prerequisites: Prerequisite[];
+  validationStatus: 'VERIFIED' | 'RUBRIC' | 'AI_PRACTICE' | 'UNVERIFIED';
+  difficultyScore: number | null;
+  /** 初始恒 false；只有 AI 层可置 true（UI 必须能区分） */
+  isAiSuggested: boolean;
+  aiCallLogId: string | null;
+  expectedOutput: string | null;
+  /** 载荷来源标注：真实字段 vs 派生默认表（审计用，不参与身份） */
+  meta: { estMinutesSource: 'SOURCE' | 'DERIVED'; derivedFrom?: string };
+}
+
+/**
+ * 候选身份键。
+ *
+ * **不含 `estMinutes`**：它是载荷。改时长（用户改、默认表改）不该让"同一件事"
+ * 变成两个候选。
+ *
+ * @param c 至少含来源、源行、模块
+ */
+export function candidateKeyOf(
+  c: Pick<TaskCandidateDraft, 'sourceKind' | 'sourceRef' | 'module'>,
+): string {
+  return `${c.sourceKind}:${c.sourceRef ?? 'none'}:${c.module}`;
+}
+
+/** 缺口键（与 `SkillGap` 的 `dimensionKind|skill|subskill` 同构，用 `:` 连接）。 */
+export function gapKeyOf(dimensionKind: string, skill: string, subskill: string): string {
+  return `${dimensionKind}:${skill}:${subskill}`;
+}
+
+/**
+ * 去重分组（**不落库**，纯 DTO 计算）。
+ *
+ * 为什么不能直接用 `candidateKey` 分组：`REVIEW` 与 `PROBE` 指向同一维度时
+ * `sourceRef` 天生不同（`review:<id>` vs `probe:<skill>|<subskill>`），
+ * 按 key 分组会让"同一件工作"永远合不起来。
+ *
+ * 反之，`QUESTION`/`LAB`/`EGIU` 各处内容不同，**必须按 `candidateKey` 各自成组**。
+ *
+ * @param c 候选
+ */
+export function dedupeGroupOf(c: TaskCandidateDraft): string {
+  switch (c.sourceKind) {
+    case 'REVIEW':
+    case 'RETEST':
+    case 'PROBE':
+      // 证据类任务：同一维度视为同一件工作，与来源链路无关
+      return c.skillGapKey
+        ? `evidence:${c.skillGapKey}`
+        : `evidence:${c.targetSkill}:${c.module}`;
+    case 'MATERIAL':
+      return `material:${c.sourceRef ?? 'none'}`;
+    case 'VOCAB':
+      return `vocab:${c.sourceRef ?? 'none'}`;
+    default:
+      return c.candidateKey;
+  }
+}
+
+/** 一条被丢弃的候选及原因。 */
+export interface DroppedCandidate {
+  candidateKey: string;
+  sourceKind: CandidateSourceKind;
+  why: string;
+}
+
+export interface DedupeResult {
+  kept: TaskCandidateDraft[];
+  dropped: DroppedCandidate[];
+}
+
+/**
+ * 按 `dedupeGroup` 去重，组内保留优先级最高的来源。
+ *
+ * `why` 必须写清"被谁合并"而不是只写"重复" —— 用户看到"少了 3 条"时，
+ * 唯一能解释的就是这句话。
+ *
+ * @param list 归一后的候选（顺序不变，输出按输入首次出现顺序）
+ */
+export function dedupeCandidates(list: readonly TaskCandidateDraft[]): DedupeResult {
+  const winnerByGroup = new Map<string, TaskCandidateDraft>();
+  const dropped: DroppedCandidate[] = [];
+
+  for (const candidate of list) {
+    const group = dedupeGroupOf(candidate);
+    const current = winnerByGroup.get(group);
+    if (!current) {
+      winnerByGroup.set(group, candidate);
+      continue;
+    }
+    const currentRank = CANDIDATE_SOURCE_PRIORITY[current.sourceKind];
+    const candidateRank = CANDIDATE_SOURCE_PRIORITY[candidate.sourceKind];
+    const loser = candidateRank < currentRank ? current : candidate;
+    const winner = candidateRank < currentRank ? candidate : current;
+    winnerByGroup.set(group, winner);
+    dropped.push({
+      candidateKey: loser.candidateKey,
+      sourceKind: loser.sourceKind,
+      why: `与 ${winner.sourceKind}「${winner.title}」是同一件事（${group}），保留优先级更高的 ${winner.sourceKind}`,
+    });
+  }
+
+  // 输出顺序按输入首次出现，保证确定性
+  const kept: TaskCandidateDraft[] = [];
+  const emitted = new Set<string>();
+  for (const candidate of list) {
+    const group = dedupeGroupOf(candidate);
+    if (emitted.has(group)) continue;
+    const winner = winnerByGroup.get(group);
+    if (winner) {
+      kept.push(winner);
+      emitted.add(group);
+    }
+  }
+  return { kept, dropped };
+}
+
+/**
+ * 判定前置条件是否满足。
+ *
+ * @param prerequisites 前置条件
+ * @param ctx 判定上下文
+ */
+export function evaluatePrerequisites(
+  prerequisites: readonly Prerequisite[],
+  ctx: PrerequisiteContext,
+): { ready: boolean; unmet: Prerequisite[] } {
+  const unmet = prerequisites.filter((item) => {
+    switch (item.kind) {
+      case 'STAGE_AT_LEAST':
+        // 阶段是线性推进的：只要当前阶段的序号 ≥ 要求即可
+        return (ctx.stageOrder[ctx.stageCode] ?? 0) < (ctx.stageOrder[item.code] ?? 0);
+      case 'MATERIAL_READY':
+        return !ctx.readyMaterialIds.has(item.materialId);
+      case 'EXERCISE_APPROVED':
+        return !ctx.approvedExerciseIds.has(item.exerciseId);
+      case 'TRANSCRIPT_CONFIRMED':
+        return !ctx.confirmedTranscriptAssetIds.has(item.audioAssetId);
+      case 'UNIT_ORDER':
+        return !ctx.completedLessonIds.has(item.requiresLessonId);
+      case 'EVIDENCE_EXISTS':
+        return !ctx.evidenceIds.has(item.evidenceId);
+      default:
+        return true;
+    }
+  });
+  return { ready: unmet.length === 0, unmet };
+}

@@ -3258,3 +3258,29 @@ export const MATERIAL_CHARS_PER_TOKEN = {
   en: 4,
   zh: 1.5,
 } as const;
+
+// ───────────────────────── v2.7 候选池派生分钟 ─────────────────────────
+
+/**
+ * 各来源的**派生分钟**（审计 §3：8 源里有 5 源没有时长字段）。
+ *
+ * 为什么必须集中在这一张表里，而不是散落在各采集函数中：
+ * 1. 它进 `configJson` → 进 `inputHash`。散落意味着"同一份输入可能算出不同 hash"，
+ *    快照复用会莫名其妙地失效；
+ * 2. 它直接决定调度结果。要调"补测给多少分钟"时，只改这一处就能解释全部变化；
+ * 3. 采集函数里随手写 `?? 15` 是这类项目最常见的隐性第二套配置。
+ *
+ * 有真实时长字段的来源（`ReviewTask`/`RetestSchedule`/`VocabularyAssignment`/
+ * `MaterialPackItem`/`GeneratedExercise`）优先用**源数据**，只有这里覆盖不到的
+ * 才用本表，并在 `TaskCandidateDraft.meta.estMinutesSource='DERIVED'` 标注。
+ */
+export const CANDIDATE_DEFAULT_MINUTES = {
+  REVIEW: 10,
+  RETEST: 10,
+  PROBE: 15,
+  VOCAB: 10,
+  MATERIAL: 15,
+  QUESTION: 10,
+  LAB: 15,
+  EGIU: 20,
+} as const;
