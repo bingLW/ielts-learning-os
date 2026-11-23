@@ -20,7 +20,13 @@ import {
   gapKeyOf,
   type TaskCandidateDraft,
 } from '../taskCandidate';
-import { CANDIDATE_DEFAULT_MINUTES } from '../../constants';
+import {
+  CANDIDATE_DEFAULT_MINUTES,
+  CANDIDATE_FALLBACK_MINUTES,
+  LISTENING_MODES,
+  SPEAKING_TASK_TYPES,
+} from '../../constants';
+import { DIAG_TASK_TYPES } from '@/lib/diagnostic/constants';
 
 function draft(over: Partial<TaskCandidateDraft> = {}): TaskCandidateDraft {
   const base: TaskCandidateDraft = {
@@ -124,7 +130,7 @@ describe('dedupeCandidates：该合的合，不该合的不合', () => {
   });
 });
 
-describe('8 源全覆盖与派生分钟表', () => {
+describe('8 源全覆盖与两张分钟表', () => {
   it('CANDIDATE_SOURCE_KINDS 恰好 8 个且与优先级表一一对应', () => {
     expect(CANDIDATE_SOURCE_KINDS).toHaveLength(8);
     expect(Object.keys(CANDIDATE_SOURCE_PRIORITY).sort()).toEqual(
@@ -132,10 +138,67 @@ describe('8 源全覆盖与派生分钟表', () => {
     );
   });
 
-  it('每个来源都有派生分钟（缺一个就会在采集时静默变 0）', () => {
-    for (const kind of CANDIDATE_SOURCE_KINDS) {
-      expect(CANDIDATE_DEFAULT_MINUTES[kind], kind).toBeGreaterThan(0);
+  it('「本来就没有时长」的三个来源在 DEFAULT 表里，其余五个在 FALLBACK 表里', () => {
+    expect(Object.keys(CANDIDATE_DEFAULT_MINUTES).sort()).toEqual(['LAB', 'PROBE', 'QUESTION']);
+    expect(Object.keys(CANDIDATE_FALLBACK_MINUTES).sort()).toEqual([
+      'EGIU',
+      'MATERIAL',
+      'RETEST',
+      'REVIEW',
+      'VOCAB',
+    ]);
+    // 两张表不许有交集：一个来源只能属于"本来没有"或"本该有却没有"
+    const overlap = Object.keys(CANDIDATE_DEFAULT_MINUTES).filter((key) =>
+      Object.keys(CANDIDATE_FALLBACK_MINUTES).includes(key),
+    );
+    expect(overlap).toEqual([]);
+  });
+
+  it('PROBE 是 10 分钟（不是 15）', () => {
+    expect(CANDIDATE_DEFAULT_MINUTES.PROBE).toBe(10);
+  });
+
+  it('QUESTION 不可拍平：写作 20 / 口语 10 / 单选 3 各不相同', () => {
+    const table = CANDIDATE_DEFAULT_MINUTES.QUESTION;
+    expect(table.OPEN_WRITING).toBe(20);
+    expect(table.OPEN_SPEAKING).toBe(10);
+    expect(table.MCQ).toBe(3);
+    // 拍平成一个数会同时毁掉两端：写作少算 10 分钟、单选多算 7 分钟
+    expect(new Set(Object.values(table)).size).toBeGreaterThan(1);
+  });
+});
+
+describe('映射表的键集合必须由枚举钉死（NaN 防线）', () => {
+  it('QUESTION 表覆盖 DiagnosticItem.taskType 的**每一个**枚举值', () => {
+    for (const taskType of DIAG_TASK_TYPES) {
+      // 缺键 → 采集时 undefined → estMinutes NaN → 装箱 Σ 变 NaN → 任务全被挤出
+      // 且**不报错**，所以只能靠这条断言在测试期拦住
+      expect(
+        CANDIDATE_DEFAULT_MINUTES.QUESTION[taskType as 'MCQ'],
+        `taskType=${taskType} 在派生表里缺键`,
+      ).toBeGreaterThan(0);
     }
+  });
+
+  it('LAB 表覆盖 LISTENING_MODES 与 SPEAKING_TASK_TYPES 的每一个枚举值', () => {
+    for (const mode of LISTENING_MODES) {
+      expect(
+        CANDIDATE_DEFAULT_MINUTES.LAB[mode as 'BLIND'],
+        `听力 mode=${mode} 在派生表里缺键`,
+      ).toBeGreaterThan(0);
+    }
+    for (const taskType of SPEAKING_TASK_TYPES) {
+      expect(
+        CANDIDATE_DEFAULT_MINUTES.LAB[taskType as 'READ_ALOUD'],
+        `口语 taskType=${taskType} 在派生表里缺键`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('LAB 表里没有枚举外的死配置（表里有、枚举没有 → 永远用不上）', () => {
+    const known = new Set<string>([...LISTENING_MODES, ...SPEAKING_TASK_TYPES]);
+    const extra = Object.keys(CANDIDATE_DEFAULT_MINUTES.LAB).filter((key) => !known.has(key));
+    expect(extra, `派生表里有枚举外的键：${extra.join(', ')}`).toEqual([]);
   });
 });
 

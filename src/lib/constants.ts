@@ -3262,25 +3262,73 @@ export const MATERIAL_CHARS_PER_TOKEN = {
 // ───────────────────────── v2.7 候选池派生分钟 ─────────────────────────
 
 /**
- * 各来源的**派生分钟**（审计 §3：8 源里有 5 源没有时长字段）。
+ * 派生分钟：**仅用于源表本来就没有时长字段的来源**（审计 §3）。
  *
- * 为什么必须集中在这一张表里，而不是散落在各采集函数中：
- * 1. 它进 `configJson` → 进 `inputHash`。散落意味着"同一份输入可能算出不同 hash"，
- *    快照复用会莫名其妙地失效；
- * 2. 它直接决定调度结果。要调"补测给多少分钟"时，只改这一处就能解释全部变化；
- * 3. 采集函数里随手写 `?? 15` 是这类项目最常见的隐性第二套配置。
+ * 进 `configJson` → 进 `inputHash`。集中在常量里而不是散落在 8 个采集函数中，
+ * 是因为三件事：改一处才能解释全部变化、同一份输入必须算出同一个 hash、
+ * 采集函数里随手写的 `?? 15` 就是第二套事实上的配置。
  *
- * 有真实时长字段的来源（`ReviewTask`/`RetestSchedule`/`VocabularyAssignment`/
- * `MaterialPackItem`/`GeneratedExercise`）优先用**源数据**，只有这里覆盖不到的
- * 才用本表，并在 `TaskCandidateDraft.meta.estMinutesSource='DERIVED'` 标注。
+ * `QUESTION` / `LAB` 必须是按 `taskType` / `mode` 键控的子表 —— **不能拍平成一个数**：
+ * 拍平会让 `OPEN_WRITING(20)` 被算成 10，60 分钟预算排 6 个写作任务时，
+ * 计划写「60 分钟」而实际要 120 分钟。因为这类任务不可拆（`minMinutes = estMinutes`），
+ * 它还会以一个错误的尺寸进入装箱，而 `Σ ≤ budget` 照样满足 —— 那个 budget 是假的。
  */
 export const CANDIDATE_DEFAULT_MINUTES = {
+  PROBE: 10,
+  QUESTION: {
+    MCQ: 3,
+    MULTI: 4,
+    SHORT_ANSWER: 5,
+    OPEN_WRITING: 20,
+    OPEN_SPEAKING: 10,
+    /**
+     * `DiagnosticItem.taskType` 的真实枚举值是 `OPEN_TASK`（`DIAG_TASK_TYPES`），
+     * 而 `41 §2.3` 写的是 `OPEN_WRITING` / `OPEN_SPEAKING` —— **文档与代码的键集合不一致**。
+     * 这里两者都保留：漏掉 `OPEN_TASK` 会让诊断题拿到 `undefined` → `estMinutes NaN`
+     * → 装箱 `Σ` 变 NaN → 任务被静默挤出（不报错）。已提请架构师在 `41` 里对齐。
+     */
+    OPEN_TASK: 15,
+  },
+  LAB: {
+    // 听力（LISTENING_MODES）
+    BLIND: 15,
+    GIST: 10,
+    DETAIL: 12,
+    DICTATION: 15,
+    TRANSCRIPT_COMPARISON: 12,
+    CHUNKING: 10,
+    SHADOWING: 10,
+    RETELLING: 12,
+    TRANSFER: 15,
+    // 口语（SPEAKING_TASK_TYPES）
+    READ_ALOUD: 8,
+    SHORT_ANSWER: 6,
+    TOPIC_MONOLOGUE: 15,
+    PICTURE_DESCRIPTION: 12,
+    ROLE_PLAY: 12,
+    FOLLOW_UP: 8,
+    CLARIFICATION: 6,
+    IELTS_PART: 15,
+  },
+} as const;
+
+/**
+ * 兜底分钟：源表**有**时长字段、但该行恰好为空时才用。
+ *
+ * 与 `CANDIDATE_DEFAULT_MINUTES` 分成两张表，因为语义完全不同：
+ * 上表是「本来就没有」，本表是「本该有却没有」——**后者是数据问题**，
+ * 采集时必须标 `estMinutesSource:'DERIVED'` 且 `derivedFrom` 写成
+ * `fallback:REVIEW(null estMinutes)` 这种形状，让它在一堆候选里看得见。
+ *
+ * 这五个来源在源表里都有真时长字段：
+ * `ReviewTask.estMinutes` / `RetestSchedule.estMinutes` /
+ * `VocabularyAssignment.estimatedMinutes` / `MaterialPackItem.suggestedMinutes` /
+ * `EGIU` 用既有的 `EST_MINUTES_BY_INTERVAL`（不要另造一个数把它盖掉）。
+ */
+export const CANDIDATE_FALLBACK_MINUTES = {
   REVIEW: 10,
   RETEST: 10,
-  PROBE: 15,
   VOCAB: 10,
   MATERIAL: 15,
-  QUESTION: 10,
-  LAB: 15,
   EGIU: 20,
 } as const;
