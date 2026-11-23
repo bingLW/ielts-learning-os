@@ -374,12 +374,27 @@ model PlanVersion {
   /// 这次变更是基于哪一份输入快照算出来的（`PlanningSnapshot.id`，普通 String?，不建外键）
   snapshotId            String?
   /**
-   * 计划层级：DAY | WEEK | CYCLE。null 读作 `DAILY`（v2.7 之前的数据全是日计划）。
-   * 用可空 + 读取时回落，而不是加默认值 'DAILY' —— 默认值会让历史行"看起来"是
-   * 新语义写出来的，而它们其实只是日计划。
+   * 计划层级（4 值）：DAY | WEEK | MONTH | CYCLE。null 读作 `DAY`
+   * （v2.7 之前的数据全是日计划版本）。
+   *
+   * 用可空 + 读取时回落，而不是加 `@default("DAY")` —— 有了默认值，v2.7 之前的
+   * 日计划历史行就会被伪装成「v2.7 新语义写出来的日计划版本」，而它们只是日计划。
+   *
+   * `MONTH` 是 30 天阶段计划层：`PlanVersion(layer='MONTH', planDate=阶段首日)`，
+   * 那 8 项结构（阶段目标 / 4 个周里程碑 / 技能配比 / 每周测试 / 材料建议 /
+   * 词汇语法范围 / 验收指标 / 调整条件）存在 `afterSnapshot` 里。
+   * **`WeeklyFocus` 是周度反思记录（focusQuestion / inputText / outputText /
+   * feedbackText），与计划层级无关，不得混用** —— 它装不下那 8 项，也没有区间语义。
+   * 区间不落列：由纯函数 `periodOf()` 按 layer 派生（DAY→当天、WEEK→+6、
+   * MONTH→+29、CYCLE→+89）。
    */
   layer                 String?
-  /// 上层版本的来源（周 → 日、周期 → 周的父子关系；普通 String?，自引用不建外键）
+  /**
+   * 上层版本的来源（自引用，普通 String?，不建外键）。
+   *
+   * 只允许指**上一层**：`DAY→WEEK` / `WEEK→MONTH` / `MONTH→CYCLE`。
+   * 禁止父级指向自己的子级（那会让"这份版本基于什么算出来"失去方向）。
+   */
   parentVersionId       String?
   /// 上游变化导致这份版本不再可直接执行的时间点（null = 仍然有效）
   staleAt               DateTime?
