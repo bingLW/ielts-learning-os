@@ -3422,7 +3422,12 @@ model TaskCandidate {
   sourceKind         String
   /// 源表弱引用（普通 String?，不建跨域外键，避免触碰既有 110 表）
   sourceRef          String?
-  /// 稳定去重键：sourceKind:sourceRef:module:dateKey（幂等复用同一候选）
+  /// 稳定去重键：`sourceKind:sourceRef|none:module`（幂等复用同一候选）。
+  ///
+  /// **刻意不含 `dateKey`**：本表已挂 `snapshotId`，一个快照对应一个 `asOfDate`，
+  /// dateKey 在快照内是常量；放进键里会让"上周同一条"与"这周同一条"永远对不上，
+  /// 跨快照比对与幂等复用全部失效。**也不含 `estMinutes`** —— 那是载荷不是身份。
+  
   candidateKey       String
   /// PlanTask.module 取值（14 值）
   module             String

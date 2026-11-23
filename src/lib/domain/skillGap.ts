@@ -95,6 +95,21 @@ export interface SkillGapDraft {
   evidenceIds: string[];
   /** 来自 `suggestProfileConfidence().gaps` 原文 */
   missingEvidence: string[];
+  /**
+   * 参与「样本是否足够」判定的题目数（原样搬自 `SkillGapSignal`）。
+   *
+   * **纯派生字段，不落库**（`SkillGap` 表没有这一列）：它与 `stale` 同处理。
+   * 落库的是判定**结论**（`severity`），而这是判定时用到的**输入事实** ——
+   * 输入事实的归宿是 `PlanningSnapshot`（快照存在的理由就是"这些输入当时是这样"）。
+   */
+  evidenceQuestions: number;
+  /**
+   * 重复错误频次（原样搬自 `SkillGapSignal`，`null` = 没统计过）。
+   *
+   * **搬运时不许 `?? 0`**：`0` 与 `null` 在 `errorRecurrence` 因子里是两种语义
+   * （数过是零 / 不知道），抹平后那个因子会整条失效，而测试若只断言 `0.00` 会全绿。
+   */
+  repeatedErrorCount: number | null;
   /** 派生字段，**不落库** */
   stale: boolean;
 }
@@ -200,6 +215,8 @@ export function splitGapsAndUncertainty(
     coverageRatio: signal.coverageRatio,
     evidenceIds: [...signal.evidenceIds],
     missingEvidence: [...(signal.missingEvidence ?? [])],
+    evidenceQuestions: signal.evidenceQuestions,
+    repeatedErrorCount: signal.repeatedErrorCount,
     stale: isStale(signal),
   });
 

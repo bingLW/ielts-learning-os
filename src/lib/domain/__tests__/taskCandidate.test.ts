@@ -115,6 +115,30 @@ describe('dedupeCandidates：该合的合，不该合的不合', () => {
     expect(result.dropped[0].why).toContain('保留优先级更高');
   });
 
+  it('5 条 REVIEW、skillGapKey 全为 null → 全部保留（不许回落成粗组）', () => {
+    const reviews = Array.from({ length: 5 }, (_, index) =>
+      draft({
+        sourceKind: 'REVIEW',
+        sourceRef: `review-${index}`,
+        skillGapKey: null,
+        title: `复习 ${index}`,
+      }),
+    );
+    const result = dedupeCandidates(reviews);
+    expect(result.kept, '粗组会把 5 条合成 1 条，用户少看到 4 条').toHaveLength(5);
+    expect(result.dropped).toHaveLength(0);
+  });
+
+  it('2 条 RETEST 同缺口不同父证据 → 两件活，两条都保留（平级不互吞）', () => {
+    const retests = [
+      draft({ sourceKind: 'RETEST', sourceRef: 'retest-a', title: '复测 A' }),
+      draft({ sourceKind: 'RETEST', sourceRef: 'retest-b', title: '复测 B' }),
+    ];
+    const result = dedupeCandidates(retests);
+    expect(result.kept, '并列时保留先到的 = 静默丢数据').toHaveLength(2);
+    expect(result.dropped).toHaveLength(0);
+  });
+
   it('两条 QUESTION 同 module 不同 sourceRef → 不合并', () => {
     const a = draft({ sourceKind: 'QUESTION', sourceRef: 'q1', title: '题 1' });
     const b = draft({ sourceKind: 'QUESTION', sourceRef: 'q2', title: '题 2' });

@@ -22,6 +22,11 @@
 - `getBudgetRange()` 在「配置行不存在 + 工作日」：`isSuggestion` 由 `false` 变为 `true` —— 那个 60 分钟本来就是 `BUDGET_INITIAL_SUGGESTION`，不是用户设定的可用时间。
 - 影响面：周视图 `budget.days[].isRestDay` / `isSuggestion`（页面已有「建议」标记，无需改文案）；H4 的分母（原先周日被静默跳过）；诊断报告里的星期模板解析（第三处自解析已并入 `parseWeekdayProfiles`）。
 
+### 内部 DTO 扩展（非行为变更）
+
+- `SkillGapDraft` 追加 `evidenceQuestions` / `repeatedErrorCount` 两个**派生字段**（与 `stale` 同样不落库）。此前二者缺失会让 T04 的 `errorRecurrence` 因子与 `noObservation` 标注整条失效，而只断言 `0.00` 的测试仍会全绿。`repeatedErrorCount` 的 `null`（未统计）必须原样保留，不得 `?? 0`。
+- `candidateKey` 定为 `sourceKind:sourceRef|none:module`：**不含 `dateKey`**（一个快照一个 `asOfDate`，放进来会让跨快照比对永远失配），**也不含 `estMinutes`**（载荷不是身份）。
+
 ### 测试
 
 - 新增 `domain/__tests__/budgetResolve.test.ts`：五段分支各一条 + 「批量 vs 逐日」逐字段等价性（30 天 × 3 种配置状态）——后者是防止两条实现再次分叉的唯一防线。

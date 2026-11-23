@@ -250,3 +250,30 @@ describe('「不知道」不得当成「确认为无」（本轮修复的 bug �
     expect(result.gaps[0].severity).toBeGreaterThan(GAP_MIN_SEVERITY);
   });
 });
+
+describe('C-H：DTO 必须携带判定输入（不落库，但不许抹平）', () => {
+  it('evidenceQuestions / repeatedErrorCount 原样搬进 DTO', () => {
+    const result = splitGapsAndUncertainty([
+      signal({ evidenceCount: 20, evidenceQuestions: 20, repeatedErrorCount: 8 }),
+    ]);
+    expect(result.gaps[0].evidenceQuestions).toBe(20);
+    expect(result.gaps[0].repeatedErrorCount).toBe(8);
+  });
+
+  it('repeatedErrorCount 的 null 必须原样保留，不许 ?? 0', () => {
+    const result = splitGapsAndUncertainty([signal({ repeatedErrorCount: null })]);
+    // 抹平成 0 会让 errorRecurrence 因子与 noObservation 标注同时失真
+    expect(result.gaps[0].repeatedErrorCount).toBeNull();
+    expect(result.gaps[0].repeatedErrorCount).not.toBe(0);
+  });
+
+  it('UNCERTAINTY / UNKNOWN 也带这两个输入（下游标注要用）', () => {
+    const uncertain = splitGapsAndUncertainty([
+      signal({ profileConfidence: 'LOW', evidenceQuestions: 20 }),
+    ]);
+    expect(uncertain.uncertainties[0].evidenceQuestions).toBe(20);
+
+    const unknown = splitGapsAndUncertainty([signal({ independentCount: 0, evidenceQuestions: 0 })]);
+    expect(unknown.unknowns[0].evidenceQuestions).toBe(0);
+  });
+});

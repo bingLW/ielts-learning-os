@@ -124,9 +124,14 @@ export function dedupeGroupOf(c: TaskCandidateDraft): string {
     case 'RETEST':
     case 'PROBE':
       // 证据类任务：同一维度视为同一件工作，与来源链路无关
-      return c.skillGapKey
-        ? `evidence:${c.skillGapKey}`
-        : `evidence:${c.targetSkill}:${c.module}`;
+      // 有缺口维度时才按维度合并（同一维度 = 同一件工作）。
+      //
+      // 没有缺口时回落 `candidateKey`（各走各的），**不能**用
+      // `evidence:<targetSkill>:<module>` 这种粗组：`ReviewTask` 表没有 skill/subskill
+      // 列（只有 targetType/targetId/knowledgePoint/intervalCode），所以绝大多数复习项
+      // 的 `skillGapKey` 天生为 null —— 粗组会把"今天到期的 5 条词汇复习"合成 1 条，
+      // 用户少看到 4 条任务，还以为系统本来就这么安排。
+      return c.skillGapKey ? `evidence:${c.skillGapKey}` : c.candidateKey;
     case 'MATERIAL':
       return `material:${c.sourceRef ?? 'none'}`;
     case 'VOCAB':
@@ -157,40 +162,55 @@ export interface DedupeResult {
  * @param list 归一后的候选（顺序不变，输出按输入首次出现顺序）
  */
 export function dedupeCandidates(list: readonly TaskCandidateDraft[]): DedupeResult {
-  const winnerByGroup = new Map<string, TaskCandidateDraft>();
-  const dropped: DroppedCandidate[] = [];
-
+  const byGroup = new Map<string, TaskCandidateDraft[]>();
   for (const candidate of list) {
     const group = dedupeGroupOf(candidate);
-    const current = winnerByGroup.get(group);
-    if (!current) {
-      winnerByGroup.set(group, candidate);
+    const bucket = byGroup.get(group) ?? [];
+    bucket.push(candidate);
+    byGroup.set(group, bucket);
+  }
+
+  const dropped: DroppedCandidate[] = [];
+  const winners = new Set<TaskCandidateDraft>();
+
+  for (const [group, bucket] of byGroup) {
+    const kinds = new Set(bucket.map((row) => row.sourceKind));
+    if (kinds.size === 1) {
+      /**
+       * 同组内来源相同 → **全部保留**。
+       *
+       * 优先级表只能裁决「不同来源指向同一件工作」（`REVIEW` vs `PROBE`），
+       * 裁决不了「同一来源的两件工作」。例：两条 `RETEST` 指向同一 `skill/subskill`、
+       * 但父证据不同 —— 那是两件活。按优先级并列处理会丢掉后到的那条，
+       * 而"并列时保留先到的"就是静默丢数据。
+       */
+      for (const row of bucket) winners.add(row);
       continue;
     }
-    const currentRank = CANDIDATE_SOURCE_PRIORITY[current.sourceKind];
-    const candidateRank = CANDIDATE_SOURCE_PRIORITY[candidate.sourceKind];
-    const loser = candidateRank < currentRank ? current : candidate;
-    const winner = candidateRank < currentRank ? candidate : current;
-    winnerByGroup.set(group, winner);
-    dropped.push({
-      candidateKey: loser.candidateKey,
-      sourceKind: loser.sourceKind,
-      why: `与 ${winner.sourceKind}「${winner.title}」是同一件事（${group}），保留优先级更高的 ${winner.sourceKind}`,
-    });
-  }
 
-  // 输出顺序按输入首次出现，保证确定性
-  const kept: TaskCandidateDraft[] = [];
-  const emitted = new Set<string>();
-  for (const candidate of list) {
-    const group = dedupeGroupOf(candidate);
-    if (emitted.has(group)) continue;
-    const winner = winnerByGroup.get(group);
-    if (winner) {
-      kept.push(winner);
-      emitted.add(group);
+    const bestKind = bucket.reduce((best, row) =>
+      CANDIDATE_SOURCE_PRIORITY[row.sourceKind] < CANDIDATE_SOURCE_PRIORITY[best.sourceKind]
+        ? row
+        : best,
+    ).sourceKind;
+    const keeper = bucket.find((row) => row.sourceKind === bestKind);
+    for (const row of bucket) {
+      if (row.sourceKind === bestKind) {
+        winners.add(row);
+        continue;
+      }
+      dropped.push({
+        candidateKey: row.candidateKey,
+        sourceKind: row.sourceKind,
+        why: keeper
+          ? `与 ${keeper.sourceKind}「${keeper.title}」是同一件事（${group}），保留优先级更高的 ${bestKind}`
+          : `与同组的 ${bestKind} 是同一件事（${group}），保留优先级更高的 ${bestKind}`,
+      });
     }
   }
+
+  // 输出顺序按输入顺序（先到先出），保证确定性
+  const kept = list.filter((row) => winners.has(row));
   return { kept, dropped };
 }
 
