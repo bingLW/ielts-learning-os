@@ -142,3 +142,45 @@ describe('落库内容与 hash 同源（约束⑦）', () => {
     expect(new Set(keys).size, '同一维度只允许一个裁决').toBe(keys.length);
   });
 });
+
+describe('端到端：真实装配路径下的缺口不能被 S6 静默抑制', () => {
+  it('20 条 A0 证据、5 天前、HIGH 置信度 → 出现在 gaps 里（不是"暂无缺口"）', async () => {
+    await ensureStage();
+    await prisma.skillGap.deleteMany({});
+    await prisma.planningSnapshot.deleteMany({});
+    await prisma.evidenceRecord.deleteMany({});
+    await prisma.skillProfile.deleteMany({});
+
+    await prisma.skillProfile.create({
+      data: { skill: 'READING', confidence: 'HIGH', direction: 'WEAK' },
+    });
+    const recent = new Date(`${AS_OF}T00:00:00.000Z`);
+    for (let index = 0; index < 20; index += 1) {
+      await prisma.evidenceRecord.create({
+        data: {
+          skill: 'READING',
+          evidenceType: 'PRACTICE',
+          assistanceLevel: 'A0',
+          score: 6,
+          createdAt: recent,
+        },
+      });
+    }
+
+    const result = await buildPlanningSnapshot({
+      purpose: 'GENERATE',
+      asOfDate: AS_OF,
+      horizonDays: 7,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const rows = await prisma.skillGap.findMany({
+      where: { snapshotId: result.data.snapshotId, skill: 'READING' },
+      select: { kind: true, severity: true },
+    });
+    expect(rows, '真实缺口不能被当成"没有缺口"').toHaveLength(1);
+    expect(rows[0].kind).toBe('GAP');
+    expect(rows[0].severity).toBeGreaterThan(0.15);
+  });
+});

@@ -60,8 +60,13 @@ export interface SkillGapSignal {
   coverageRatio: number | null;
   /** 该维度正确率与合并正确率之差（正数 = 更差），null = 无数据 */
   accuracyDelta: number | null;
-  /** 重复错误频次（近 28 天该维度 errorCategory 众数计数） */
-  repeatedErrorCount: number;
+  /**
+   * 重复错误频次（近 28 天该维度 errorCategory 众数计数）。
+   *
+   * **三态**：`0` = 真的数过、确实是零；`null` = 还没统计（T04 之前服务层就传 null）。
+   * 把"没算过"编码成 `0` 会让严重度永远偏低，缺口池静默变空。
+   */
+  repeatedErrorCount: number | null;
   /** 支撑证据 id（可追溯，AC-8） */
   evidenceIds: string[];
   /**
@@ -118,15 +123,23 @@ function clamp01(value: number): number {
  * @param signal 输入信号
  */
 export function computeGapSeverity(signal: SkillGapSignal): number {
+  // 三项输入都按「缺失 = 不知道 ≠ 确认无」处理：
+  // - accuracyDelta > 0   → 已知更差，按差值折算
+  // - accuracyDelta <= 0  → 已知不差（真信号），记 0
+  // - accuracyDelta null  → **不是零，是"没测过"**，记 0.5（中性未知）
   const accuracyDeficit =
-    signal.accuracyDelta === null || signal.accuracyDelta <= 0
-      ? 0
-      : clamp01(signal.accuracyDelta / 0.25);
+    signal.accuracyDelta === null
+      ? 0.5
+      : signal.accuracyDelta <= 0
+        ? 0
+        : clamp01(signal.accuracyDelta / 0.25);
   const coverageDeficit =
     signal.coverageRatio === null ? 0.5 : clamp01(1 - signal.coverageRatio);
-  const recurrenceDeficit = clamp01(
-    signal.repeatedErrorCount / (WEAKNESS_MIN_QUESTIONS * 2),
-  );
+  // `0` 与 `null` 必须可区分：0 = 数过没有重复错误（真信号）；null = 没统计过（0.5）
+  const recurrenceDeficit =
+    signal.repeatedErrorCount === null
+      ? 0.5
+      : clamp01(signal.repeatedErrorCount / (WEAKNESS_MIN_QUESTIONS * 2));
   const freshnessDeficit =
     signal.freshnessDays === null ? 0 : clamp01(signal.freshnessDays / 180);
 
@@ -262,7 +275,7 @@ export function splitGapsAndUncertainty(
       reason:
         `「${dimensionLabel(signal)}」证据 ${signal.evidenceCount} 条（其中无辅助 ${signal.independentCount} 条）、`
         + `覆盖 ${signal.coverageRatio === null ? '未知' : `${Math.round(signal.coverageRatio * 100)}%`}、`
-        + `重复错误 ${signal.repeatedErrorCount} 次`
+        + `重复错误 ${signal.repeatedErrorCount === null ? '未统计' : `${signal.repeatedErrorCount} 次`}`
         + (signal.freshnessDays === null ? '' : `、最近证据 ${signal.freshnessDays} 天前`)
         + (stale ? '（画像已过期，结论仍成立但建议重新评估）' : ''),
     });

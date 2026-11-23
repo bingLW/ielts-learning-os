@@ -251,8 +251,10 @@ export async function buildPlanningSnapshot(
       evidenceQuestions: scored.length,
       freshnessDays: latest ? diffDays(latest.toISOString().slice(0, 10), input.asOfDate) : null,
       coverageRatio: null,
+      // 这两项由 T04 的 weakness 聚合提供；在此之前传 null（= 不知道），
+      // 不能传 0 —— 那等于告诉严重度公式"已确认该维度没有任何问题"
       accuracyDelta: null,
-      repeatedErrorCount: 0,
+      repeatedErrorCount: null,
       evidenceIds: rows.slice(0, 20).map((row) => row.id),
       missingEvidence: suggestion.gaps,
     };

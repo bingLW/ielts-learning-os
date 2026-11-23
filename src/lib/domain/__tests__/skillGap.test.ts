@@ -208,3 +208,45 @@ describe('missingEvidence：来自 suggestProfileConfidence，不在这里重判
     expect(result.gaps[0].missingEvidence).toEqual([]);
   });
 });
+
+describe('「不知道」不得当成「确认为无」（本轮修复的 bug 本体）', () => {
+  it('accuracyDelta === null → 按 0.5 记，不是 0', () => {
+    const unknown = computeGapSeverity(signal({ accuracyDelta: null, coverageRatio: null, repeatedErrorCount: null }));
+    const knownGood = computeGapSeverity(signal({ accuracyDelta: 0, coverageRatio: null, repeatedErrorCount: null }));
+    expect(unknown).toBeGreaterThan(knownGood);
+    // 0.45×0.5 + 0.25×0.5 + 0.20×0.5 + 0.10×(5/180)
+    expect(unknown).toBeCloseTo(0.45 * 0.5 + 0.25 * 0.5 + 0.2 * 0.5 + 0.1 * (5 / 180), 5);
+  });
+
+  it('accuracyDelta <= 0 仍是 0（已知不差是真信号，不能一并改成 0.5）', () => {
+    expect(computeGapSeverity(signal({ accuracyDelta: -0.1 }))).toBe(
+      computeGapSeverity(signal({ accuracyDelta: 0 })),
+    );
+  });
+
+  it('repeatedErrorCount：null → 0.5，0 → 0（两者必须可区分）', () => {
+    const notCounted = computeGapSeverity(signal({ repeatedErrorCount: null }));
+    const countedZero = computeGapSeverity(signal({ repeatedErrorCount: 0 }));
+    expect(notCounted).toBeGreaterThan(countedZero);
+    expect(notCounted - countedZero).toBeCloseTo(0.2 * 0.5, 5);
+  });
+
+  it('20 条证据、5 天前、HIGH 置信度的真实缺口不会被 S6 静默抑制', () => {
+    const result = splitGapsAndUncertainty([
+      signal({
+        profileConfidence: 'HIGH',
+        evidenceCount: 20,
+        evidenceQuestions: 20,
+        independentCount: 12,
+        freshnessDays: 5,
+        // 服务层在 T02 阶段就是这两个值
+        accuracyDelta: null,
+        coverageRatio: null,
+        repeatedErrorCount: null,
+      }),
+    ]);
+    expect(result.gaps, '缺口池不能因为"没统计过"就变空').toHaveLength(1);
+    expect(result.suppressed).toHaveLength(0);
+    expect(result.gaps[0].severity).toBeGreaterThan(GAP_MIN_SEVERITY);
+  });
+});
