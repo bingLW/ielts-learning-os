@@ -64,6 +64,13 @@ export interface SkillGapSignal {
   repeatedErrorCount: number;
   /** 支撑证据 id（可追溯，AC-8） */
   evidenceIds: string[];
+  /**
+   * 「还缺哪类证据」的人话清单，来自 `suggestProfileConfidence().gaps`。
+   *
+   * 由调用方传进来而不是在这里再判一次：置信度判定是 `domain/profile.ts` 的职责，
+   * 这里只负责「该维度的裁决」。重复实现会让两处对"缺什么证据"给出不同答案。
+   */
+  missingEvidence?: string[];
 }
 
 /** 一条缺口裁决结果。 */
@@ -170,7 +177,7 @@ export function splitGapsAndUncertainty(
     freshnessDays: signal.freshnessDays,
     coverageRatio: signal.coverageRatio,
     evidenceIds: [...signal.evidenceIds],
-    missingEvidence: [],
+    missingEvidence: [...(signal.missingEvidence ?? [])],
     stale: isStale(signal),
   });
 

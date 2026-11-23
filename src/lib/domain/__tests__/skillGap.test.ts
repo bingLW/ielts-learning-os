@@ -191,3 +191,20 @@ describe('dimensionKind 分流', () => {
     expect(result.uncertainties.filter((row) => row.dimensionKind === 'AUXILIARY')).toHaveLength(1);
   });
 });
+
+describe('missingEvidence：来自 suggestProfileConfidence，不在这里重判', () => {
+  it('信号带了 missingEvidence → 原样进 DTO（供 SkillGap.missingEvidenceJson 落库）', () => {
+    const result = splitGapsAndUncertainty([
+      signal({ profileConfidence: 'LOW', missingEvidence: ['缺 1 次限时阅读', '缺无辅助口语样本'] }),
+    ]);
+    expect(result.uncertainties[0].missingEvidence).toEqual([
+      '缺 1 次限时阅读',
+      '缺无辅助口语样本',
+    ]);
+  });
+
+  it('没传时是空数组而不是 undefined（落库端不用再判空）', () => {
+    const result = splitGapsAndUncertainty([signal()]);
+    expect(result.gaps[0].missingEvidence).toEqual([]);
+  });
+});
