@@ -3395,7 +3395,15 @@ model SkillGap {
 model TaskCandidate {
   id                 String   @id @default(cuid())
   snapshotId         String
-  /// REVIEW | RETEST | VOCAB | MATERIAL | EGUI | QUESTION | LISTENING | SPEAKING | PROBE | EXTENSIVE
+  /// 候选来源（8 值）：REVIEW | RETEST | PROBE | VOCAB | MATERIAL | QUESTION | LAB | EGIU
+  ///
+  /// - `LAB` 合并了听力与口语两类实验性任务，用 `sourceRef = 'listening:<id>' | 'speaking:<id>'`
+  ///   区分：两者的前置条件不同，但"能不能排"的归一是同一套规则，拆成两个枚举值只会让
+  ///   调度器多两个必须同步维护的分支。
+  /// - `EGIU` 拼写与源表 `EgiuLesson` 一致（旧设计写成 EGUI 是错的，且它有唯一约束意义）。
+  /// - **`EXTENSIVE` 不是候选来源**：泛听泛读由 `generateAdaptivePlan` 第 ⑧ 步直接产出
+  ///   （预算 ≥120 且剩余 ≥2 个粒度时给 P3）。若它同时是一个候选来源，同一块时间会被
+  ///   生成两次 —— 这是本表最容易误加的一个值。
   sourceKind         String
   /// 源表弱引用（普通 String?，不建跨域外键，避免触碰既有 110 表）
   sourceRef          String?
@@ -3454,7 +3462,14 @@ model TaskPriorityDecision {
   rationale            String
   /// 若不做的影响（可判则填；null = 无法判断，UI 不得编造）
   consequenceIfSkipped String?
-  /// ELIGIBLE | BLOCKED_PREREQUISITE | OVER_BUDGET | DUPLICATE
+  /// 资格判定（6 值）：ELIGIBLE | BLOCKED_PREREQUISITE | OVER_BUDGET | DUPLICATE
+  ///                 | REJECTED_NOT_IN_POOL | REJECTED_AI_OVER_BUDGET
+  ///
+  /// 后两个是「整条拒绝」而不是「降级保留」，理由（Q2 / F-3）：
+  /// - `REJECTED_NOT_IN_POOL`：AI 返回的 `candidateKey` 不在候选池里 —— AI 不得新增池外任务，
+  ///   凭空接受一条 AI 造的任务等于绕过"候选池"这个唯一入口；
+  /// - `REJECTED_AI_OVER_BUDGET`：AI 建议的分钟数超当日预算 —— **整条拒绝，不按比例裁剪**。
+  ///   裁剪会造出一条"任务名说 90 分钟、实际只做 30 分钟"的假记录，比拒绝更糟。
   eligibility          String   @default("ELIGIBLE")
   blockedReason        String?
   createdAt            DateTime @default(now())
