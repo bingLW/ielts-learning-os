@@ -145,33 +145,54 @@ export interface HashablePlanningInput extends Record<string, unknown> {
   config: unknown;
 }
 
+/** 规范化结果：`canonical` 既是 hash 的输入，**也是落库的内容**。 */
+export interface CanonicalPlanningResult {
+  /** 归一化后的对象（已排序/已收敛浮点/已剔时间戳）。 */
+  canonical: Record<string, unknown>;
+  hash: string;
+}
+
 /**
- * 计划输入 hash。
+ * 一次性产出「归一化对象 + hash」。
  *
- * 结构上把 `v`（`RULE_VERSION`）嵌进去，并且**强制要求** `weightsVersion` 与 `config`
- * 存在 —— 少了任何一个就抛错，而不是"静默算一个会误复用旧快照的 hash"。
- * 这是 H-5 唯一可靠的落地方式：靠调用方自觉，迟早有人漏传。
+ * **为什么返回 canonical 而不是只返回 hash**：如果只对 hash 归一化、落库仍写未归一的
+ * 原值，就会「hash 相同、内容不同」—— 两次相差 0.0001 的运行会复用同一份旧快照，
+ * 而旧快照里存的还是上一轮的值。调用方必须拿 `canonical` 里的各段去
+ * `JSON.stringify` 落库，不要序列化原值再单独哈希。
  *
- * @param canonical 规范化之前的输入（内部会再规范化一次，调用方不必自己排序）
- * @throws 缺少 `weightsVersion` / `config` 时抛出（这是编程错误，不是数据错误）
+ * @param input 规范化之前的输入（内部会再规范化一次，调用方不必自己排序）
+ * @throws 缺少 `weightsVersion` / `config` 时抛出（编程错误，不是数据错误）
  */
-export function hashPlanningInput(canonical: HashablePlanningInput): string {
-  if (typeof canonical.weightsVersion !== 'string' || canonical.weightsVersion.length === 0) {
+export function buildCanonicalPlanningInput(
+  input: HashablePlanningInput,
+): CanonicalPlanningResult {
+  if (typeof input.weightsVersion !== 'string' || input.weightsVersion.length === 0) {
     throw new Error('hashPlanningInput 缺少 weightsVersion：权重变更必须换 hash（H-5）');
   }
-  if (canonical.config === undefined) {
+  if (input.config === undefined) {
     throw new Error('hashPlanningInput 缺少 config：配置变更必须换 hash（H-5）');
   }
 
-  const body = canonicalizePlanningValue({
-    ...canonical,
+  const canonical = canonicalizePlanningValue({
+    ...input,
     v: RULE_VERSION,
-  });
+  }) as Record<string, unknown>;
 
-  return createHash('sha256')
-    .update(JSON.stringify(body), 'utf8')
+  const hash = createHash('sha256')
+    .update(JSON.stringify(canonical), 'utf8')
     .digest('hex')
     .slice(0, PLANNING_HASH_LENGTH);
+
+  return { canonical, hash };
+}
+
+/**
+ * 计划输入 hash（H-1 ~ H-5）。
+ *
+ * @param canonical 规范化之前的输入
+ */
+export function hashPlanningInput(canonical: HashablePlanningInput): string {
+  return buildCanonicalPlanningInput(canonical).hash;
 }
 
 /** 层级区间的输入（只取需要的两个字段，便于从 `PlanVersion` 行直接传入）。 */
