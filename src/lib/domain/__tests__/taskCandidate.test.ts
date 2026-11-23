@@ -155,6 +155,12 @@ describe('8 源全覆盖与两张分钟表', () => {
     expect(overlap).toEqual([]);
   });
 
+  it('两张表的键集合必须**互补**：并集 = 8 个来源、交集为空', () => {
+    const derivedOnly = Object.keys(CANDIDATE_DEFAULT_MINUTES).sort();
+    const withField = Object.keys(CANDIDATE_FALLBACK_MINUTES).sort();
+    expect([...derivedOnly, ...withField].sort()).toEqual([...CANDIDATE_SOURCE_KINDS].sort());
+  });
+
   it('PROBE 是 10 分钟（不是 15）', () => {
     expect(CANDIDATE_DEFAULT_MINUTES.PROBE).toBe(10);
   });

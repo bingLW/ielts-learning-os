@@ -1,3 +1,4 @@
+import type { CandidateSourceKind } from './domain/taskCandidate';
 import type { DiagTaskType } from './diagnostic/constants';
 /**
  * 全站唯一常量与阈值来源。
@@ -564,7 +565,17 @@ export const TASK_SOURCE_KINDS = [
   'RETEST',
 ] as const;
 
-export const TASK_SOURCE_LABEL_ZH: Record<string, string> = {
+/**
+ * 任务来源中文标签。
+ *
+ * **键集合由 `TASK_SOURCE_KINDS` 在编译期钉死**：`Record<string, string>` 时代，
+ * 新增一个来源却忘了补标签，运行期只会渲染出空白（曾经真的发生过）。
+ * 改成 `Record<(typeof TASK_SOURCE_KINDS)[number], string>` 之后，漏标签编译不过。
+ *
+ * 注意与 `CANDIDATE_SOURCE_KINDS`（v2.7 候选池 8 源）的区别：这张表是
+ * `PlanTask.sourceKind` 的取值，两者不是同一个枚举。
+ */
+export const TASK_SOURCE_LABEL_ZH: Record<(typeof TASK_SOURCE_KINDS)[number], string> = {
   REVIEW: '复习',
   CORE: '阶段核心',
   WEAKNESS: '弱项',
@@ -3320,6 +3331,18 @@ export const CANDIDATE_DEFAULT_MINUTES: {
 };
 
 /**
+ * 源表**有**时长字段的来源（其余三个是"本来就没有"，走 `CANDIDATE_DEFAULT_MINUTES`）。
+ *
+ * 用 `Exclude` 而不是另立一个 `FALLBACK_SOURCE_KINDS` 常量数组：只有一份真相。
+ * 将来往 `CANDIDATE_SOURCE_KINDS` 加第 9 个来源时，`Exclude` 会自动把它算进来，
+ * 编译器**强制**作者回答"这个来源有没有真时长字段"——有就填这张表，
+ * 没有就把它加进 `Exclude` 列表。两个动作都是显式决定，不会漏。
+ *
+ * （另立数组会把同一组来源描述两遍，而两遍描述迟早不一致 —— 就是 R-2 那个形状。）
+ */
+export type MinuteBearingSourceKind = Exclude<CandidateSourceKind, 'PROBE' | 'QUESTION' | 'LAB'>;
+
+/**
  * 兜底分钟：源表**有**时长字段、但该行恰好为空时才用。
  *
  * 与 `CANDIDATE_DEFAULT_MINUTES` 分成两张表，因为语义完全不同：
@@ -3330,11 +3353,11 @@ export const CANDIDATE_DEFAULT_MINUTES: {
  * `EGIU` 的优先级：先用既有的 `EST_MINUTES_BY_INTERVAL[intervalCode]`（那是按
  * `IntervalCode` 键控的既有常量，比这里的 20 更准），**只有 interval 未知时**才落到本表。
  */
-export const CANDIDATE_FALLBACK_MINUTES = {
+export const CANDIDATE_FALLBACK_MINUTES: Record<MinuteBearingSourceKind, number> = {
   REVIEW: 10,
   RETEST: 10,
   VOCAB: 10,
   MATERIAL: 15,
   /** 仅当 `EST_MINUTES_BY_INTERVAL` 也取不到（interval 未知）时使用。 */
   EGIU: 20,
-} as const;
+};
