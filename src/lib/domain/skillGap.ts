@@ -117,8 +117,17 @@ function clamp01(value: number): number {
  * 严重度（§2.2.1）：四项加权。
  *
  * 权重之和为 1，各项都先单独收敛到 0..1 —— 这样任意一项异常都不会把总分顶出范围。
- * `coverageRatio === null` 按 0.5 记（"未知"既不奖励也不惩罚），而不是按 0
- * （按 0 会把"没测过覆盖"当成"完全没覆盖"，凭空造出一个高严重度）。
+ *
+ * **三项输入（`accuracyDelta` / `coverageRatio` / `repeatedErrorCount`）都按
+ * 「缺失 = 不知道 ≠ 确认为无」处理**：`null` 记 0.5 中性值；只有已知的
+ * `<= 0` / 已测得的比例 / 真实的计数才按实际折算。
+ *
+ * 反例（曾经真的这么写过）：把 `accuracyDelta: null` 当 0、把
+ * `repeatedErrorCount: null` 当 0，severity 会稳定落在 0.128 左右，
+ * 于是**所有真实缺口都被 S6 静默抑制**，缺口池看起来是"正常的空态"。
+ *
+ * `freshnessDays === null` 是唯一例外：这种维度在 S1/S4 就被判成 `UNKNOWN`，
+ * 根本走不到本函数，所以它记 0 不会造成上面那个问题。
  *
  * @param signal 输入信号
  */
