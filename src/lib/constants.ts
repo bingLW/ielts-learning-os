@@ -732,7 +732,40 @@ export const WEAKNESS_TOP_N = 3;
 export const GATE_H3_WINDOW_DAYS = 14;
 export const GATE_H3_MIN_RATE = 0.8;
 export const GATE_H4_WINDOW_DAYS = 30;
-export const GATE_H4_MIN_MINUTES = 240;
+/**
+ * H4 参考口径：某日净时长 ≥ 当日有效预算 × 该比例，记为「达标日」。
+ *
+ * **不参与晋级判定**（v2.7 Q5）。它是"投入是否稳定"的参考指标，
+ * 用来解释"为什么系统觉得你还差一点"，而不是"答不答应你升级"。
+ */
+export const GATE_H4_MIN_RATIO = 0.6;
+/**
+ * H4 分母下限：当日有效预算 < 该值的日期不计入分母。
+ *
+ * 为什么要这条：休息日/应急日（预算 5 或 10 分钟）不该被算成"没达标的一天"。
+ * 一个只有 10 分钟的日子，净学 10 分钟其实是 100% 完成，但它既不该抬高也不该拉低
+ * 「投入稳定性」—— 它压根不是一个可比的样本。
+ *
+ * 注意区分：这类日期**既不计入分母，也不计入 `missingBudgetDays`**。
+ * `missingBudgetDays` 只统计"根本没有预算信息"的日子（没有可比基准），
+ * 与"有预算但太低"是两件事 —— 前者是数据缺口，后者是设计取舍。
+ */
+export const GATE_H4_MIN_BUDGET_MINUTES = 15;
+/**
+ * 旧 240 分钟绝对门槛，**v2.7 起不参与任何判定**。
+ *
+ * 保留数值是为了让用户看到「按旧规则我是不达标的」—— 静默删掉痕迹等于
+ * 假装旧规则从来没存在过，而那条规则确实曾经拦过人。
+ *
+ * @deprecated v2.7 起只用于 Readiness 页「旧规则参考值」的历史对比展示。
+ */
+export const GATE_H4_LEGACY_MIN_MINUTES = 240;
+/**
+ * @deprecated v2.7 起代码中**不得再引用**（用 `GATE_H4_MIN_RATIO`）。
+ * 保留别名只为让旧调用点在 typecheck 处逐个暴露，而不是静默失效。
+ */
+export const GATE_H4_MIN_MINUTES = GATE_H4_LEGACY_MIN_MINUTES;
+/** 达标日**占比**的参考线（同样不进判定）。 */
 export const GATE_H4_MIN_RATE = 0.8;
 /** H3 只统计 D7 / D14 两个间隔档。 */
 export const GATE_H3_INTERVALS: IntervalCode[] = ['D7', 'D14'];

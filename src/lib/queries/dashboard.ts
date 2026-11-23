@@ -37,6 +37,7 @@ import { accumulatePrimaryMinutes, defaultAllocationFor } from '@/lib/domain/all
 import { skillMinutes } from '@/lib/domain/duration';
 import { colorDistribution, overdueDays } from '@/lib/domain/review';
 import { evaluateStageGate } from '@/lib/domain/stageGate';
+import { getBudgetRange } from '@/lib/queries/budget';
 import { rankWeaknesses, type WeaknessCandidate } from '@/lib/domain/weakness';
 import { parseObject } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
@@ -482,10 +483,19 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
   let gate: GatePanelDto | null = null;
   if (stage) {
     const plannedDates = new Set(plannedDatesRaw.map((row) => row.planDate));
-    const days = lastNDays(30, nowDate).map((date) => ({
+    /**
+     * H4 的每日预算必须取**真实有效预算**（`getBudgetRange` 与
+     * `getEffectiveBudget` 共用同一套解析优先级），不许在这里估一个近似值：
+     * H4 是"相对预算"的达标率，分母本身错了整条指标就没有意义。
+     */
+    const gateDates = lastNDays(30, nowDate);
+    const budgetByDate = await getBudgetRange(gateDates);
+    const days = gateDates.map((date) => ({
       date,
       hasPlan: plannedDates.has(date),
       netMinutes: minutesByDate.get(date) ?? 0,
+      // 拿不到预算 → NaN，由 `evaluateStageGate` 计入 missingBudgetDays，不静默按 0/60 处理
+      budgetMinutes: budgetByDate.get(date)?.minutes ?? Number.NaN,
     }));
 
     const gateResult = evaluateStageGate({

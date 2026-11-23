@@ -138,8 +138,20 @@ export function GatePanel({ gate, stageId, stageName, otherStages, onToast }: Ga
               <b className="tabular">{formatPercent(gate.metrics.h3Rate)}</b>
             </p>
             <p className="rounded border border-line bg-surfaceAlt px-2 py-1">
-              H4 近 30 天达标占比：
-              <b className="tabular">{formatPercent(gate.metrics.h4Rate)}</b>
+              <span className="text-inkMuted">投入稳定性（参考，不参与判定）：</span>
+              <b className="tabular">{formatPercent(gate.metrics.h4.rate)}</b>
+              <span className="ml-1 text-[10px] text-inkMuted">
+                {gate.metrics.h4.qualifiedDays}/{gate.metrics.h4.eligibleDays} 天
+              </span>
+            </p>
+            <p className="rounded border border-dashed border-line bg-surface px-2 py-1 text-[10px] text-inkMuted">
+              旧规则参考值（净时长 ≥240 分钟/天）：
+              <b className="tabular">{formatPercent(gate.metrics.h4.legacyRate)}</b>
+              {gate.metrics.h4.missingBudgetDays > 0 && (
+                <span className="ml-1">
+                  · 另有 {gate.metrics.h4.missingBudgetDays} 天缺预算信息，未计入
+                </span>
+              )}
             </p>
             <p className="rounded border border-line bg-surfaceAlt px-2 py-1">
               H5 未处理红灯：<b className="tabular">{gate.metrics.redLessons}</b> 个

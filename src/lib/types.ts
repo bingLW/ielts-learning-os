@@ -528,10 +528,37 @@ export interface WeakModuleHint {
 
 /** 阶段门禁结果。 */
 export interface GateUnmetItem {
+  /**
+   * 未满足项代码。
+   *
+   * 注意：**`H4` 永远不会出现在 `unmet` 里**（v2.7 Q5 起它只是参考指标）。
+   * 这个成员保留是为了让历史文案/日志解析不炸，而不是"将来可能又变回 blocker"。
+   */
   code: 'H1' | 'H2' | 'H3' | 'H4' | 'H5';
   label: string;
   current: string;
   target: string;
+}
+
+/**
+ * H4「投入稳定性」指标（**参考，不参与判定**）。
+ *
+ * 为什么 `rate` 允许 `null` 而不是 0：分母为 0 时"0%"是错的 —— 那不是
+ * "一天都没达标"，而是"还没有可比的样本"。UI 必须显示「—」。
+ */
+export interface GateH4Metrics {
+  /** 相对预算口径的达标率；`eligibleDays === 0` 时为 null（展示 —，不得当 0）。 */
+  rate: number | null;
+  /** 净时长 ≥ 当日预算 × GATE_H4_MIN_RATIO 的天数。 */
+  qualifiedDays: number;
+  /** 有预算且预算 ≥ GATE_H4_MIN_BUDGET_MINUTES 的有计划天数（分母）。 */
+  eligibleDays: number;
+  /** 有计划但没有预算信息的天数（数据缺口，单独计数以便提示补录）。 */
+  missingBudgetDays: number;
+  /** 旧 240 分钟口径，同一批 eligible 日；仅供「旧规则参考值」展示，永不进 verdict。 */
+  legacyRate: number | null;
+  /** 恒为 true：结构上声明"这一项是参考指标"，防止有人再拿它当 blocker。 */
+  advisory: true;
 }
 
 export interface GateResult {
@@ -541,7 +568,8 @@ export interface GateResult {
     requiredPassed: number;
     requiredTotal: number;
     h3Rate: number | null;
-    h4Rate: number | null;
+    /** H4 参考指标（v2.7 起不再参与 `suggested` 判定）。 */
+    h4: GateH4Metrics;
     redLessons: number;
   };
 }

@@ -15,6 +15,7 @@ import {
 import { addDays, diffDays, lastNDays, today } from '@/lib/date';
 import { evaluateStageGate } from '@/lib/domain/stageGate';
 import { prisma } from '@/lib/prisma';
+import { getBudgetRange } from './budget';
 import type {
   AcceptanceDimension,
   AcceptanceItemDto,
@@ -147,6 +148,16 @@ export async function getStageGate(
   for (const row of splitRows) netByDate.set(row.date, row._sum.minutes ?? 0);
   const plannedDates = new Set(plannedDatesRaw.map((row) => row.planDate));
 
+  /**
+   * H4 的每日预算：逐日取**真实有效预算**（与 `getEffectiveBudget` 同一套优先级）。
+   *
+   * 为什么不用一次 `getEffectiveBudget` 循环 30 次：`getBudgetRange` 把
+   * `DailyBudget` 与 `PlannerSettings` 各读一次就够，30 天窗口不再打 30 轮查询；
+   * 解析规则仍是同一处实现，不是近似值。
+   */
+  const gateDates = lastNDays(GATE_H4_WINDOW_DAYS, now);
+  const budgetByDate = await getBudgetRange(gateDates);
+
   return evaluateStageGate({
     stageStart: stage.startedAt,
     stageEnd: stage.completedAt,
@@ -165,10 +176,12 @@ export async function getStageGate(
       dueDate: task.dueDate,
       result: (task.result as ReviewResult | null) ?? null,
     })),
-    days: lastNDays(GATE_H4_WINDOW_DAYS, now).map((date) => ({
+    days: gateDates.map((date) => ({
       date,
       hasPlan: plannedDates.has(date),
       netMinutes: netByDate.get(date) ?? 0,
+      // 缺预算 → NaN（进 missingBudgetDays），绝不默认 0 或 60
+      budgetMinutes: budgetByDate.get(date)?.minutes ?? Number.NaN,
     })),
     lessons: lessons.map((lesson) => ({ currentColor: lesson.currentColor as EgiuColor })),
   });
