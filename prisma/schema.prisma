@@ -206,6 +206,20 @@ model PlanTask {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // ── v2.7 溯源（纯加法，可空）────────────────────────────────────────────
+  // 为什么放在字段列表末尾：SQLite 的 ALTER TABLE ADD COLUMN 只能追加到末尾，
+  // 把新字段写在末尾，schema 顺序与物理列顺序一致（迁移后再 db push 是零变更）。
+  /**
+   * 生成这条任务时选中的候选（`TaskCandidate.id`）。
+   *
+   * **普通 String?，不建跨域外键**：v2.7 的新表与既有 110 张表之间刻意不建立
+   * 外键关系，避免一次数据层改动把级联删除语义扩散到整个计划域。
+   * 溯源靠应用层查询，候选过期后这里只留一个"再也查不到"的 id（可接受）。
+   */
+  candidateId           String?
+  /// JSON：当时的优先级决策快照（factors/score/priority/rationale），可解释性溯源
+  decisionJson          String?
+
   stage                 Stage                       @relation(fields: [stageId], references: [id], onDelete: Restrict)
   resource              Resource?                   @relation(fields: [resourceId], references: [id], onDelete: SetNull)
   sessions              StudySession[]
@@ -224,6 +238,7 @@ model PlanTask {
   @@index([primarySkill])
   @@index([planDate, priority])
   @@index([planVersion])
+  @@index([candidateId])
 }
 
 // ── v2.1 B1 每日时间预算（同一日期只有一条当前有效预算）
@@ -355,8 +370,25 @@ model PlanVersion {
   idempotencyKey        String?  @unique
   createdAt             DateTime @default(now())
 
+  // ── v2.7 计划层级与失效标记（纯加法，可空）──────────────────────────────
+  /// 这次变更是基于哪一份输入快照算出来的（`PlanningSnapshot.id`，普通 String?，不建外键）
+  snapshotId            String?
+  /**
+   * 计划层级：DAY | WEEK | CYCLE。null 读作 `DAILY`（v2.7 之前的数据全是日计划）。
+   * 用可空 + 读取时回落，而不是加默认值 'DAILY' —— 默认值会让历史行"看起来"是
+   * 新语义写出来的，而它们其实只是日计划。
+   */
+  layer                 String?
+  /// 上层版本的来源（周 → 日、周期 → 周的父子关系；普通 String?，自引用不建外键）
+  parentVersionId       String?
+  /// 上游变化导致这份版本不再可直接执行的时间点（null = 仍然有效）
+  staleAt               DateTime?
+  /// 失效原因（人话：预算变更 / 候选过期 / 上游版本被替换 …）
+  staleReason           String?
+
   @@unique([planDate, version])
   @@index([planDate])
+  @@index([snapshotId])
 }
 
 // ── E5 计时段（append-only；一 task 可多段）
@@ -1325,6 +1357,14 @@ model LearningCycle {
   archivedAt   DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+
+  // ── v2.7 周期主题与阶段切换留痕（纯加法，可空）────────────────────────
+  /// 本周期唯一主主题（90 天周期：1 个主主题 + 至多 2 个次主题）
+  primaryTheme         String?
+  /// JSON string[]：次主题（≤2 条；与主主题一起构成"这 90 天在练什么"）
+  secondaryThemesJson  String?
+  /// 最近一次 phase 切换（CALIBRATION→BUILD→DELIVER）的时间点，用于中途校准留痕
+  phaseChangedAt       DateTime?
 
   weeklyFocus WeeklyFocus[]
   diagnoses   BarrierDiagnosis[]
@@ -3245,4 +3285,210 @@ model TaskProposalItem {
 
   @@index([proposalId, suggestedDate])
   @@index([planTaskId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// v2.7 规划内核（ADR-09）：输入快照 → 缺口 → 候选 → 优先级决策 → readiness
+//
+// 五张表共同要保证的一件事：**"为什么今天排了这些"可复现、可解释、可审计**。
+// 因此每个环节都留一个可回读的快照/决策行，而不是把结论直接写进 PlanTask。
+//
+// 跨域引用（`sourceRef` / `aiCallLogId` / `PlanTask.candidateId` /
+// `PlanVersion.snapshotId` / `SkillGap.evidenceIdsJson`）**一律是普通 String?**，
+// 不建外键：v2.7 不触碰既有 110 张表的约束关系，删候选/删快照也不会级联
+// 影响计划与账本（宁可留一个查不到的 id，也不要一次误删带走历史）。
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── V27-1 计划输入快照（每次生成/重排各一行；保证可复现"为什么这样排"）──
+model PlanningSnapshot {
+  id                   String   @id @default(cuid())
+  /// GENERATE | REPLAN | WEEKLY | CYCLE_CALIBRATION
+  purpose              String
+  /// 业务日期（快照针对哪一天/哪一周）
+  asOfDate             String
+  /// 幂等/缓存键：同输入同规则 → 同 hash，可用于断言确定性
+  inputHash            String
+  /// 规则版本（scheduler 语义版本，规则改动必须递增，否则历史不可复算）
+  ruleVersion          String   @default("v2.7.0")
+  /// JSON：预算快照 { budgetMinutes, tierCode, isRestDay, source, isInitialSuggestion }
+  budgetJson           String
+  /// JSON：画像/证据摘要 { skills:[{skill,direction,confidence,evidenceCount,independentCount,lastAssessedAt,freshDays}], gaps:[...] }
+  profileJson          String?
+  /// JSON：到期负荷 { dueReviewMinutes, dueReviewCount, maxOverdueDays, dueRetestItems:[...] }
+  workloadJson         String?
+  /// JSON：候选池摘要 [{candidateId, module, skill, estMinutes, minMinutes, priorityHint}]
+  candidatesJson       String?
+  /// JSON：配置快照 { minTaskMinutes, p0CapRatio, coreMinRatio, bufferRatio, allocation, weights }
+  configJson           String
+  /// JSON：输入校验结果 { ok, stale:[], missingBaseline:[], lowConfidence:[] }
+  validationJson       String?
+  createdAt            DateTime @default(now())
+
+  gaps        SkillGap[]
+  candidates  TaskCandidate[]
+  reviews     StageReadinessReview[]
+
+  @@unique([purpose, asOfDate, inputHash])
+  @@index([asOfDate])
+}
+
+// ── V27-2 技能缺口（子维度粒度；官方四项与辅助维度共用一张表，靠 dimensionKind 分层）──
+model SkillGap {
+  id                String   @id @default(cuid())
+  snapshotId        String
+  /**
+   * 语义分层：OFFICIAL = 四项官方能力；AUXILIARY = 语法/词汇/句子结构。
+   *
+   * **所有「四技能占比 / 配比分母 / 弱项排序」查询必须显式带 `dimensionKind: 'OFFICIAL'`。**
+   * 辅助维度只允许出现在：候选任务、缺口清单、补测建议；**绝不**进入任何
+   * `allocatedMinutes` 类字段的分母（否则 Grammar 缺口会让四项占比合计 ≠ 100%）。
+   */
+  dimensionKind     String   @default("OFFICIAL")
+  /**
+   * dimensionKind=OFFICIAL 时取 LISTENING|READING|SPEAKING|WRITING；
+   * =AUXILIARY 时取 GRAMMAR|VOCABULARY|SENTENCE_STRUCTURE。
+   */
+  skill             String
+  /// 子维度，如 gist_understanding / detail_scanning / coherence；空串 = 技能级缺口
+  subskill          String   @default("")
+  /// GAP（已证实）| UNCERTAINTY（证据不足，需补测）| UNKNOWN（无基线）
+  kind              String
+  /// LOW | MEDIUM | HIGH —— 与 SkillProfile.confidence 同源
+  confidence        String   @default("LOW")
+  /// 证据样本数（实时聚合，非快照冗余）
+  evidenceCount     Int      @default(0)
+  /// A0 无辅助样本数 —— 独立性门槛
+  independentCount  Int      @default(0)
+  /// 证据新鲜度（最近证据距 asOfDate 的天数；null = 无证据）
+  freshnessDays     Int?
+  /// 覆盖比例 0..1（coverage 分母由 blueprint 决定；null = 未知）
+  coverageRatio     Float?
+  /// 0..1，缺口严重度（证据支持下的偏离幅度；UNCERTAINTY 恒 0）
+  severity          Float    @default(0)
+  /// 一句话依据（人话，直接进解释面板）
+  reason            String
+  /// JSON string[]：支撑本缺口的 EvidenceRecord.id（可追溯，AC-8）
+  evidenceIdsJson   String?
+  /// JSON string[]：suggestProfileConfidence().gaps 原文
+  missingEvidenceJson String?
+  /// PENDING | ADDRESSED | SUPERSEDED
+  status            String   @default("PENDING")
+  createdAt         DateTime @default(now())
+
+  snapshot    PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  candidates  TaskCandidate[]
+  decisions   TaskPriorityDecision[]
+
+  /**
+   * 一个维度在一次快照里**只有一个裁决**。
+   *
+   * 唯一键刻意**不含** `kind`：把 kind 放进来意味着同一维度可以同时是 GAP 与
+   * UNCERTAINTY，双池立刻变成双份计数，"低置信度必须进 Uncertainty 且不进 ranked"
+   * 就形同虚设。裁决互斥由 DB 保证，不靠应用层自觉。
+   */
+  @@unique([snapshotId, skill, subskill])
+  @@index([skill, kind, status])
+  @@index([dimensionKind])
+}
+
+// ── V27-3 候选任务（跨来源的统一视图；**不参与任何时长统计**）──
+model TaskCandidate {
+  id                 String   @id @default(cuid())
+  snapshotId         String
+  /// REVIEW | RETEST | VOCAB | MATERIAL | EGUI | QUESTION | LISTENING | SPEAKING | PROBE | EXTENSIVE
+  sourceKind         String
+  /// 源表弱引用（普通 String?，不建跨域外键，避免触碰既有 110 表）
+  sourceRef          String?
+  /// 稳定去重键：sourceKind:sourceRef:module:dateKey（幂等复用同一候选）
+  candidateKey       String
+  /// PlanTask.module 取值（14 值）
+  module             String
+  /// 四技能子集 + FOUNDATION
+  targetSkill        String
+  skillGapId         String?
+  title              String
+  /// 预计分钟
+  estMinutes         Int
+  /// 最小可执行单元（不生成低于它的碎片）
+  minMinutes         Int      @default(5)
+  /// 建议粒度上限（材料包用 15/30/60）
+  maxBlockMinutes    Int?
+  /// JSON string[]：前置条件（如 ['stage:S2_A2_B1','retest:D7_done']）
+  prerequisitesJson  String?
+  /// VERIFIED | RUBRIC | AI_PRACTICE | UNVERIFIED —— 未验证不得进正式估分
+  validationStatus   String   @default("UNVERIFIED")
+  /// 0..1 难度归一（A0..C1 → 0..1），用于难度匹配
+  difficultyScore    Float?
+  /// true = AI 建议生成（必须在 UI 标注）
+  isAiSuggested      Boolean  @default(false)
+  /// 关联 AI 调用日志（复用 v2.4 账本；普通 String?）
+  aiCallLogId        String?
+  /// PROPOSED | SELECTED | REJECTED | EXPIRED
+  status             String   @default("PROPOSED")
+  createdAt          DateTime @default(now())
+
+  snapshot PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  gap      SkillGap?        @relation(fields: [skillGapId], references: [id], onDelete: SetNull)
+  decision TaskPriorityDecision?
+
+  @@unique([snapshotId, candidateKey])
+  @@index([snapshotId, sourceKind])
+  @@index([targetSkill, status])
+}
+
+// ── V27-4 优先级决策（可解释性核心；1:1 候选）──
+model TaskPriorityDecision {
+  id                   String   @id @default(cuid())
+  candidateId          String   @unique
+  snapshotId           String
+  skillGapId           String?
+  /// 权重版本（改权重必须递增，否则历史不可复算）
+  weightsVersion       String   @default("v1")
+  /// 各因子原始值 0..1（JSON：{urgency,goalRelevance,evidenceStrength,errorRecurrence,prerequisiteReady,timeCost,preferenceFit}）
+  factorsJson          String
+  /// 加权总分 0..1
+  score                Float
+  /// P0 | P1 | P2 | P3（由 score 阈值映射，不是角色硬编码）
+  priority             String
+  /// 一句话推荐原因（模板化生成，人话）
+  rationale            String
+  /// 若不做的影响（可判则填；null = 无法判断，UI 不得编造）
+  consequenceIfSkipped String?
+  /// ELIGIBLE | BLOCKED_PREREQUISITE | OVER_BUDGET | DUPLICATE
+  eligibility          String   @default("ELIGIBLE")
+  blockedReason        String?
+  createdAt            DateTime @default(now())
+
+  candidate TaskCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  gap       SkillGap?     @relation(fields: [skillGapId], references: [id], onDelete: SetNull)
+
+  @@index([snapshotId, priority])
+}
+
+// ── V27-5 阶段 readiness 评审（append-only；stageGate 纯函数结果的持久化）──
+model StageReadinessReview {
+  id                String   @id @default(cuid())
+  snapshotId        String
+  stageId           String
+  /// ruleVersion 记录当时用的门禁规则版本（H1–H5 口径变更必须递增）
+  ruleVersion       String   @default("v2.7.0")
+  /// READY_FOR_REVIEW | CONTINUE_CURRENT | NEED_TARGETED_PRACTICE | NEED_MORE_EVIDENCE | USER_APPROVED_TRANSITION
+  outcome           String
+  /// JSON：H1–H5 逐条 { code, label, current, target, passed }
+  criteriaJson      String
+  /// JSON string[]：依据的 evidenceIds / retestScheduleIds
+  evidenceRefsJson  String?
+  /// JSON string[]：未满足项的人话说明
+  unmetJson         String?
+  /// 用户确认信息（系统只建议，不自动切换）
+  userConfirmed     Boolean  @default(false)
+  confirmedAt       DateTime?
+  confirmedBy       String?
+  note              String?
+  createdAt         DateTime @default(now())
+
+  snapshot PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([stageId, createdAt])
+  @@index([outcome])
 }
