@@ -24,6 +24,7 @@ import {
   CANDIDATE_DEFAULT_MINUTES,
   CANDIDATE_FALLBACK_MINUTES,
   LISTENING_MODES,
+  MATERIAL_EXERCISE_TYPES,
   SPEAKING_TASK_TYPES,
 } from '../../constants';
 import { DIAG_TASK_TYPES } from '@/lib/diagnostic/constants';
@@ -158,19 +159,29 @@ describe('8 源全覆盖与两张分钟表', () => {
     expect(CANDIDATE_DEFAULT_MINUTES.PROBE).toBe(10);
   });
 
-  it('QUESTION 不可拍平：写作 20 / 口语 10 / 单选 3 各不相同', () => {
+  it('QUESTION 不可拍平：开放题 15 / 简答 6 / 单选 3 各不相同', () => {
     const table = CANDIDATE_DEFAULT_MINUTES.QUESTION;
-    expect(table.OPEN_WRITING).toBe(20);
-    expect(table.OPEN_SPEAKING).toBe(10);
+    expect(table.OPEN_TASK).toBe(15);
+    expect(table.SHORT_ANSWER).toBe(6);
     expect(table.MCQ).toBe(3);
-    // 拍平成一个数会同时毁掉两端：写作少算 10 分钟、单选多算 7 分钟
+    // 拍平成一个数会同时毁掉两端：开放题少算 5 分钟、单选多算 12 分钟
     expect(new Set(Object.values(table)).size).toBeGreaterThan(1);
+  });
+
+  it('QUESTION 的键 = 诊断域 ∪ 材料域（共 8 个），LAB = 听力 ∪ 口语（共 17 个）', () => {
+    expect(Object.keys(CANDIDATE_DEFAULT_MINUTES.QUESTION)).toHaveLength(
+      new Set([...DIAG_TASK_TYPES, ...MATERIAL_EXERCISE_TYPES]).size,
+    );
+    expect(Object.keys(CANDIDATE_DEFAULT_MINUTES.LAB)).toHaveLength(
+      new Set([...LISTENING_MODES, ...SPEAKING_TASK_TYPES]).size,
+    );
+    expect(Object.keys(CANDIDATE_DEFAULT_MINUTES.LAB)).toHaveLength(17);
   });
 });
 
 describe('映射表的键集合必须由枚举钉死（NaN 防线）', () => {
-  it('QUESTION 表覆盖 DiagnosticItem.taskType 的**每一个**枚举值', () => {
-    for (const taskType of DIAG_TASK_TYPES) {
+  it('QUESTION 表覆盖诊断域与材料域的**每一个**枚举值', () => {
+    for (const taskType of [...DIAG_TASK_TYPES, ...MATERIAL_EXERCISE_TYPES]) {
       // 缺键 → 采集时 undefined → estMinutes NaN → 装箱 Σ 变 NaN → 任务全被挤出
       // 且**不报错**，所以只能靠这条断言在测试期拦住
       expect(

@@ -1,3 +1,4 @@
+import type { DiagTaskType } from './diagnostic/constants';
 /**
  * 全站唯一常量与阈值来源。
  *
@@ -3264,33 +3265,38 @@ export const MATERIAL_CHARS_PER_TOKEN = {
 /**
  * 派生分钟：**仅用于源表本来就没有时长字段的来源**（审计 §3）。
  *
- * 进 `configJson` → 进 `inputHash`。集中在常量里而不是散落在 8 个采集函数中，
- * 是因为三件事：改一处才能解释全部变化、同一份输入必须算出同一个 hash、
- * 采集函数里随手写的 `?? 15` 就是第二套事实上的配置。
+ * **键集合由枚举在编译期钉死**：`QUESTION` 是 `Record<DiagTaskType | MaterialExerciseType, number>`，
+ * `LAB` 是 `Record<ListeningMode | SpeakingTaskType, number>`。漏一个键、多一个键都编译不过。
  *
- * `QUESTION` / `LAB` 必须是按 `taskType` / `mode` 键控的子表 —— **不能拍平成一个数**：
- * 拍平会让 `OPEN_WRITING(20)` 被算成 10，60 分钟预算排 6 个写作任务时，
- * 计划写「60 分钟」而实际要 120 分钟。因为这类任务不可拆（`minMinutes = estMinutes`），
- * 它还会以一个错误的尺寸进入装箱，而 `Σ ≤ budget` 照样满足 —— 那个 budget 是假的。
+ * 为什么不用 `as const {}` 手写字面量：本项目同类事故已经三次（`sourceKind` 6 vs 7、
+ * `TASK_SOURCE_LABEL_ZH` 空白标签、这张 `QUESTION` 表照文档造出来的 5 个键全都不存在）。
+ * `as const` 只固定值，**不固定键集合**。改成 `Record<枚举联合, V>` 之后，
+ * 抓错的人从"三个月后改这张表的人"变成"现在写这张表的人"，早一个环节。
+ *
+ * 拍平成一个数的后果是可算的：`OPEN_TASK(15)` 被算成 10，60 分钟预算排 6 个开放题时，
+ * 计划写「60 分钟」而实际要 90 分钟；且这类任务不可拆（`minMinutes = estMinutes`），
+ * 错误尺寸会直接进入装箱，`Σ ≤ budget` 照样满足 —— 那个 budget 是假的。
  */
-export const CANDIDATE_DEFAULT_MINUTES = {
+export const CANDIDATE_DEFAULT_MINUTES: {
+  PROBE: number;
+  QUESTION: Record<DiagTaskType | MaterialExerciseType, number>;
+  LAB: Record<ListeningMode | SpeakingTaskType, number>;
+} = {
   PROBE: 10,
   QUESTION: {
-    MCQ: 3,
-    MULTI: 4,
-    SHORT_ANSWER: 5,
-    OPEN_WRITING: 20,
-    OPEN_SPEAKING: 10,
-    /**
-     * `DiagnosticItem.taskType` 的真实枚举值是 `OPEN_TASK`（`DIAG_TASK_TYPES`），
-     * 而 `41 §2.3` 写的是 `OPEN_WRITING` / `OPEN_SPEAKING` —— **文档与代码的键集合不一致**。
-     * 这里两者都保留：漏掉 `OPEN_TASK` 会让诊断题拿到 `undefined` → `estMinutes NaN`
-     * → 装箱 `Σ` 变 NaN → 任务被静默挤出（不报错）。已提请架构师在 `41` 里对齐。
-     */
-    OPEN_TASK: 15,
+    // ── 诊断域（DIAG_TASK_TYPES）──
+    MCQ: 3, // 单题选择，含读题干
+    SHORT_ANSWER: 6, // 简答，需组织一句话
+    OPEN_TASK: 15, // 开放式作答（写作/口语类长题），诊断域里最重的一档
+    // ── 材料域（MATERIAL_EXERCISE_TYPES）──
+    reading_gist: 8, // 读一段 + 抓主旨
+    reading_detail: 10, // 定位细节，通常要回读
+    vocab_in_context: 3, // 语境词义，近乎单点判断
+    vocab_collocation: 4, // 搭配辨析，需比较两个选项
+    grammar_error: 5, // 改错，需判断 + 修正
   },
   LAB: {
-    // 听力（LISTENING_MODES）
+    // ── 听力（LISTENING_MODES）──
     BLIND: 15,
     GIST: 10,
     DETAIL: 12,
@@ -3298,9 +3304,8 @@ export const CANDIDATE_DEFAULT_MINUTES = {
     TRANSCRIPT_COMPARISON: 12,
     CHUNKING: 10,
     SHADOWING: 10,
-    RETELLING: 12,
     TRANSFER: 15,
-    // 口语（SPEAKING_TASK_TYPES）
+    // ── 口语（SPEAKING_TASK_TYPES）──
     READ_ALOUD: 8,
     SHORT_ANSWER: 6,
     TOPIC_MONOLOGUE: 15,
@@ -3309,8 +3314,10 @@ export const CANDIDATE_DEFAULT_MINUTES = {
     FOLLOW_UP: 8,
     CLARIFICATION: 6,
     IELTS_PART: 15,
+    // RETELLING 同时属于听力与口语，并集里只出现一次（9 + 9 − 1 = 17 项）
+    RETELLING: 12,
   },
-} as const;
+};
 
 /**
  * 兜底分钟：源表**有**时长字段、但该行恰好为空时才用。
@@ -3320,15 +3327,14 @@ export const CANDIDATE_DEFAULT_MINUTES = {
  * 采集时必须标 `estMinutesSource:'DERIVED'` 且 `derivedFrom` 写成
  * `fallback:REVIEW(null estMinutes)` 这种形状，让它在一堆候选里看得见。
  *
- * 这五个来源在源表里都有真时长字段：
- * `ReviewTask.estMinutes` / `RetestSchedule.estMinutes` /
- * `VocabularyAssignment.estimatedMinutes` / `MaterialPackItem.suggestedMinutes` /
- * `EGIU` 用既有的 `EST_MINUTES_BY_INTERVAL`（不要另造一个数把它盖掉）。
+ * `EGIU` 的优先级：先用既有的 `EST_MINUTES_BY_INTERVAL[intervalCode]`（那是按
+ * `IntervalCode` 键控的既有常量，比这里的 20 更准），**只有 interval 未知时**才落到本表。
  */
 export const CANDIDATE_FALLBACK_MINUTES = {
   REVIEW: 10,
   RETEST: 10,
   VOCAB: 10,
   MATERIAL: 15,
+  /** 仅当 `EST_MINUTES_BY_INTERVAL` 也取不到（interval 未知）时使用。 */
   EGIU: 20,
 } as const;
