@@ -123,16 +123,25 @@ const SOURCE_REF_PREFIX: Record<CandidateSourceKind, string> = {
  * @param id 源行主键（`probe` 时传 `skill`）
  * @param extra `probe` 传 `subskill`；`question` 传链路；`lab` 传 listening/speaking
  */
+export function sourceRefOf(kind: 'QUESTION', id: string, chain: QuestionChain): string;
+export function sourceRefOf(kind: 'LAB', id: string, chain: LabChain): string;
+export function sourceRefOf(kind: 'PROBE', id: string, subskill: string): string;
 export function sourceRefOf(
-  kind: CandidateSourceKind,
+  kind: Exclude<CandidateSourceKind, 'QUESTION' | 'LAB' | 'PROBE'>,
   id: string,
-  extra?: string,
-): string {
+): string;
+export function sourceRefOf(kind: CandidateSourceKind, id: string, extra?: string): string {
   const prefix = SOURCE_REF_PREFIX[kind];
-  if (kind === 'PROBE') return `${prefix}:${id}|${extra ?? ''}`;
-  if (kind === 'QUESTION') return `${extra ?? prefix}:${id}`;
-  if (kind === 'LAB') return `${extra ?? prefix}:${id}`;
-  return `${prefix}:${id}`;
+  switch (kind) {
+    case 'PROBE':
+      // 技能级缺口用空串是**显式**表达（`probe:READING|`），省略不是
+      return `${prefix}:${id}|${extra ?? ''}`;
+    case 'QUESTION':
+    case 'LAB':
+      return `${extra}:${id}`;
+    default:
+      return `${prefix}:${id}`;
+  }
 }
 
 /**

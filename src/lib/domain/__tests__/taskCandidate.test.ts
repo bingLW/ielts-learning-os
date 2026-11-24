@@ -309,11 +309,34 @@ describe('sourceRefOf：身份字段的格式只允许一处定义', () => {
       LAB: 'listening',
       EGIU: 'egiu',
     };
+    /** 按来源补齐必填的链路信息（QUESTION/LAB/PROBE 的 extra 是必填的）。 */
+    const refOf = (kind: (typeof CANDIDATE_SOURCE_KINDS)[number]): string => {
+      if (kind === 'PROBE') return sourceRefOf(kind, 'x', 'sub');
+      if (kind === 'QUESTION') return sourceRefOf(kind, 'x', 'diagnostic');
+      if (kind === 'LAB') return sourceRefOf(kind, 'x', 'listening');
+      return sourceRefOf(kind, 'x');
+    };
     for (const kind of CANDIDATE_SOURCE_KINDS) {
-      const ref = sourceRefOf(kind, 'x');
-      expect(ref, kind).toBe(sourceRefOf(kind, 'x'));
+      const ref = refOf(kind);
+      expect(ref, kind).toBe(refOf(kind));
       expect(ref.split(':')[0], kind).toBe(expectedPrefix[kind]);
     }
+  });
+
+  it('不带链路信息 → 编译期失败（QUESTION / LAB / PROBE 的 extra 是必填的）', () => {
+    // 这三行 `@ts-expect-error` 是**编译期断言**：如果哪天有人把 extra 改回可选，
+    // ts-expect-error 本身就会报"未使用"，typecheck:test 立刻红。
+    // 静默回落成诊断链路，正是"两条链路混成一条"的入口 —— 混了之后 candidateKey 会撞、
+    // dedupeGroup 会合，且都不报错。
+    // @ts-expect-error QUESTION 缺 chain
+    const missingQuestionChain = () => sourceRefOf('QUESTION', 'x');
+    // @ts-expect-error LAB 缺 chain
+    const missingLabChain = () => sourceRefOf('LAB', 'x');
+    // @ts-expect-error PROBE 缺 subskill
+    const missingProbeSubskill = () => sourceRefOf('PROBE', 'READING');
+    void missingQuestionChain;
+    void missingLabChain;
+    void missingProbeSubskill;
   });
 
   it('LAB 的两条链路前缀互不相等；QUESTION 的两条链路前缀互不相等', () => {
