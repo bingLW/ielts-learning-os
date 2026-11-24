@@ -98,6 +98,22 @@ describe('dedupeGroupOf：证据类按维度、其它按身份', () => {
     expect(dedupeGroupOf(q1)).not.toBe(dedupeGroupOf(q2));
     expect(dedupeGroupOf(q1)).toBe(q1.candidateKey);
   });
+
+  it('MATERIAL / VOCAB 的分组键**逐字**等于 `sourceRef`（不许再加一次前缀）', () => {
+    // 这两条以前没有任何断言钉住返回值，于是 `material:${sourceRef}` 写出了
+    // `material:material:<id>` —— 功能上仍唯一，但那个字符串会进 `dropped[].why`
+    // 渲染给用户（"与 … 是同一件事（material:material:xyz）"）。
+    // 文案级缺陷只能靠**字面量**断言抓：`not.toBe(candidateKey)` 之类的写法看不见它。
+    const material = draft({ sourceKind: 'MATERIAL', sourceRef: 'material:m-1' });
+    expect(dedupeGroupOf(material)).toBe('material:m-1');
+    const vocab = draft({ sourceKind: 'VOCAB', sourceRef: 'vocab:v-1' });
+    expect(dedupeGroupOf(vocab)).toBe('vocab:v-1');
+  });
+
+  it('MATERIAL / VOCAB 没有 sourceRef 时回落 `candidateKey`（各走各的）', () => {
+    const material = draft({ sourceKind: 'MATERIAL', sourceRef: null });
+    expect(dedupeGroupOf(material)).toBe(material.candidateKey);
+  });
 });
 
 describe('dedupeCandidates：该合的合，不该合的不合', () => {

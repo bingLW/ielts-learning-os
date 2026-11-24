@@ -189,9 +189,20 @@ export function dedupeGroupOf(c: TaskCandidateDraft): string {
       // 用户少看到 4 条任务，还以为系统本来就这么安排。
       return c.skillGapKey ? `evidence:${c.skillGapKey}` : c.candidateKey;
     case 'MATERIAL':
-      return `material:${c.sourceRef ?? 'none'}`;
     case 'VOCAB':
-      return `vocab:${c.sourceRef ?? 'none'}`;
+      /**
+       * 分组键**就是** `sourceRef` 本身，不要再加一次 `material:` 前缀。
+       *
+       * `sourceRefOf('MATERIAL', id)` 已经产出 `material:<id>`，而 `41 §2.3.1` 规定
+       * 分组键也正是 `material:<id>` —— 两者同形不是巧合：这两类来源的"同一件工作"
+       * 就是"同一个源行"，没有跨来源合并的需求。
+       *
+       * 写成 `material:${c.sourceRef}` 会得到 `material:material:<id>`：功能上仍唯一，
+       * 但这个字符串会进 `dropped[].why` 显示给用户（"与 … 是同一件事（…）"），
+       * 于是候选页会渲染出一个双前缀。文案级缺陷不会被任何断言抓到 —— 除非这里
+       * 的返回值被逐字钉住（见 `taskCandidate.test.ts` 的两条字面量断言）。
+       */
+      return c.sourceRef ?? c.candidateKey;
     default:
       return c.candidateKey;
   }
