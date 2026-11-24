@@ -26,6 +26,8 @@
 
 - `SkillGapDraft` 追加 `evidenceQuestions` / `repeatedErrorCount` 两个**派生字段**（与 `stale` 同样不落库）。此前二者缺失会让 T04 的 `errorRecurrence` 因子与 `noObservation` 标注整条失效，而只断言 `0.00` 的测试仍会全绿。`repeatedErrorCount` 的 `null`（未统计）必须原样保留，不得 `?? 0`。
 - `candidateKey` 定为 `sourceKind:sourceRef|none:module`：**不含 `dateKey`**（一个快照一个 `asOfDate`，放进来会让跨快照比对永远失配），**也不含 `estMinutes`**（载荷不是身份）。
+- `TaskCandidateDraft` 追加 **`dueDate: string | null`**（必填，不是可选）：`urgency` 因子与 `P0` 判定都需要"这条什么时候到期"，而它**只能由采集层填**（只有采集函数见过 `ReviewTask.dueDate` / `RetestSchedule.dueDate` / `EgiuLesson.nextReviewDate`），评分层自己查就变成第二套真相。**载荷不是身份**，不进 `candidateKey`。必填是刻意的：可选字段会让新采集函数"忘了填"而不报错，症状是"这条永远不紧急"，永远不会被发现。只有 3 个来源有到期概念，其余（`MATERIAL`/`QUESTION`/`LAB`/`VOCAB`）一律 `null` —— 给假到期日会让 `urgency` 把普通核心任务抬到 P1，而 P1 在装箱里属于核心保障，等于凭空多占预算。
+- `repeatedErrorCount` 的取数口径（`planningSnapshot` 装配信号时）：`Mistake` 近 28 天、**能归属到 `StudyRecord`** 的错题条数，技能从 `studyRecord.skill` 取。窗口锚 **`StudyRecord.recordDate`（发生日期）而不是 `Mistake.createdAt`（录入时刻）** —— 后者会让"补录半年前的错题"抬高今天的重复度，又让历史 `asOfDate` 的快照看不到补录。
 
 ### 内部实现变更（行为不变）
 
