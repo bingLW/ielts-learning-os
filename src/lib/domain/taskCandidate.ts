@@ -89,6 +89,53 @@ export interface TaskCandidateDraft {
 }
 
 /**
+ * `QUESTION` 来源的两条链路（必须可辨：一个是诊断题，一个是材料题）。
+ */
+export type QuestionChain = 'diagnostic' | 'material_exercise';
+
+/** `LAB` 来源的两条链路（听力 / 口语靠前缀区分，与 `LISTENING_MODES`+`SPEAKING_TASK_TYPES` 对应）。 */
+export type LabChain = 'listening' | 'speaking';
+
+/** 各来源的 `sourceRef` 前缀。**唯一真相**，别处不许手写字符串。 */
+const SOURCE_REF_PREFIX: Record<CandidateSourceKind, string> = {
+  REVIEW: 'review',
+  RETEST: 'retest',
+  PROBE: 'probe',
+  VOCAB: 'vocab',
+  MATERIAL: 'material',
+  QUESTION: 'diagnostic',
+  LAB: 'listening',
+  EGIU: 'egiu',
+};
+
+/**
+ * 生成 `sourceRef`（源行弱引用）。
+ *
+ * **必须收敛到这一处**：`sourceRef` 同时是三个东西的输入 ——
+ * `candidateKey`（身份）、`dedupeGroupOf` 的 `material:`/`vocab:` 分组、
+ * 以及徽章解析里的 `listening:`/`speaking:` 前缀。
+ *
+ * 8 个采集函数各写一遍字符串，迟早出现 `listening:<id>` / `listening|id` /
+ * `listening#<id>` 三种写法并存；而身份字段一旦分叉，跨快照比对与去重分组会**同时**
+ * 静默失效 —— 表现只是"历史里找不到这个候选了"，没有任何报错。
+ *
+ * @param kind 来源
+ * @param id 源行主键（`probe` 时传 `skill`）
+ * @param extra `probe` 传 `subskill`；`question` 传链路；`lab` 传 listening/speaking
+ */
+export function sourceRefOf(
+  kind: CandidateSourceKind,
+  id: string,
+  extra?: string,
+): string {
+  const prefix = SOURCE_REF_PREFIX[kind];
+  if (kind === 'PROBE') return `${prefix}:${id}|${extra ?? ''}`;
+  if (kind === 'QUESTION') return `${extra ?? prefix}:${id}`;
+  if (kind === 'LAB') return `${extra ?? prefix}:${id}`;
+  return `${prefix}:${id}`;
+}
+
+/**
  * 候选身份键。
  *
  * **不含 `estMinutes`**：它是载荷。改时长（用户改、默认表改）不该让"同一件事"

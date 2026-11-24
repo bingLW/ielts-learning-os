@@ -18,6 +18,7 @@ import {
   dedupeGroupOf,
   evaluatePrerequisites,
   gapKeyOf,
+  sourceRefOf,
   type TaskCandidateDraft,
 } from '../taskCandidate';
 import {
@@ -277,5 +278,54 @@ describe('evaluatePrerequisites', () => {
     );
     expect(result.ready).toBe(false);
     expect(result.unmet).toHaveLength(2);
+  });
+});
+
+describe('sourceRefOf：身份字段的格式只允许一处定义', () => {
+  it('8 个来源各有稳定前缀', () => {
+    expect(sourceRefOf('REVIEW', 'r1')).toBe('review:r1');
+    expect(sourceRefOf('RETEST', 'rt1')).toBe('retest:rt1');
+    expect(sourceRefOf('PROBE', 'READING', 'detail_scanning')).toBe(
+      'probe:READING|detail_scanning',
+    );
+    expect(sourceRefOf('VOCAB', 'a1')).toBe('vocab:a1');
+    expect(sourceRefOf('MATERIAL', 'm1')).toBe('material:m1');
+    expect(sourceRefOf('QUESTION', 'q1', 'diagnostic')).toBe('diagnostic:q1');
+    expect(sourceRefOf('QUESTION', 'q2', 'material_exercise')).toBe('material_exercise:q2');
+    expect(sourceRefOf('LAB', 'l1', 'listening')).toBe('listening:l1');
+    expect(sourceRefOf('LAB', 's1', 'speaking')).toBe('speaking:s1');
+    expect(sourceRefOf('EGIU', 'e1')).toBe('egiu:e1');
+  });
+
+  it('每个来源的前缀与契约一一对应，且两次调用结果相同', () => {
+    // 契约表（与实现里的 SOURCE_REF_PREFIX 独立写一遍：两边都对才算数）
+    const expectedPrefix: Record<(typeof CANDIDATE_SOURCE_KINDS)[number], string> = {
+      REVIEW: 'review',
+      RETEST: 'retest',
+      PROBE: 'probe',
+      VOCAB: 'vocab',
+      MATERIAL: 'material',
+      QUESTION: 'diagnostic',
+      LAB: 'listening',
+      EGIU: 'egiu',
+    };
+    for (const kind of CANDIDATE_SOURCE_KINDS) {
+      const ref = sourceRefOf(kind, 'x');
+      expect(ref, kind).toBe(sourceRefOf(kind, 'x'));
+      expect(ref.split(':')[0], kind).toBe(expectedPrefix[kind]);
+    }
+  });
+
+  it('LAB 的两条链路前缀互不相等；QUESTION 的两条链路前缀互不相等', () => {
+    expect(sourceRefOf('LAB', '1', 'listening')).not.toBe(sourceRefOf('LAB', '1', 'speaking'));
+    expect(sourceRefOf('QUESTION', '1', 'diagnostic')).not.toBe(
+      sourceRefOf('QUESTION', '1', 'material_exercise'),
+    );
+  });
+
+  it('sourceRef 变则 candidateKey 变（身份由它构成）', () => {
+    const a = draft({ sourceKind: 'LAB', sourceRef: sourceRefOf('LAB', '1', 'listening') });
+    const b = draft({ sourceKind: 'LAB', sourceRef: sourceRefOf('LAB', '1', 'speaking') });
+    expect(a.candidateKey).not.toBe(b.candidateKey);
   });
 });
