@@ -453,6 +453,10 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
     // `EvidenceRecord` 没有 subskill 列 → 技能级缺口用空串**显式**表达
     expect(retest.skillGapKey).toBe('OFFICIAL:READING:');
 
+    // 到期日只有三个来源有，其余必须是 null（否则 `urgency` 会把它们当到期任务）
+    expect(review.dueDate).toBe(AS_OF);
+    expect(retest.dueDate).toBe(AS_OF);
+
     const vocab = find(pool, `VOCAB:vocab:${ids.vocabToday}:VOCAB_REVIEW`);
     expect(vocab.estMinutes).toBe(12);
     expect(vocab.minMinutes).toBe(5);
@@ -488,7 +492,12 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
 
     const egui = find(pool, `EGIU:egiu:${ids.eguiUnit1}:GRAMMAR`);
     expect(egui.estMinutes).toBe(10); // EST_MINUTES_BY_INTERVAL.D7
+    expect(egui.dueDate).toBe(AS_OF); // 教材单元的到期 = 复习点日期
     expect(egui.prerequisites).toEqual([]);
+    expect(vocab.dueDate).toBeNull();
+    expect(material.dueDate).toBeNull();
+    expect(question.dueDate).toBeNull();
+    expect(lab.dueDate).toBeNull();
   });
 });
 

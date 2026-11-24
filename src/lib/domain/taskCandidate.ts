@@ -77,6 +77,17 @@ export interface TaskCandidateDraft {
   estMinutes: number;
   minMinutes: number;
   maxBlockMinutes: number | null;
+  /**
+   * 源行的到期日（`YYYY-MM-DD`；没有到期概念时为 `null`）。
+   *
+   * **载荷，不是身份**，与 `estMinutes` 同理：它进 `candidatesJson`、决定 `urgency`
+   * 因子与 `P0` 判定，但不进 `candidateKey`（§2.3.1 已裁「`dateKey` 不进 key」）。
+   *
+   * 由**采集层**填：只有它知道「这条为什么今天该做」（`ReviewTask.dueDate`、
+   * `RetestSchedule.dueDate`、`EgiuLesson.nextReviewDate`）。评分层不许自己去查 ——
+   * 那会让同一候选在不同调用点算出不同紧迫度。
+   */
+  dueDate: string | null;
   prerequisites: Prerequisite[];
   validationStatus: 'VERIFIED' | 'RUBRIC' | 'AI_PRACTICE' | 'UNVERIFIED';
   difficultyScore: number | null;

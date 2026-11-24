@@ -296,6 +296,8 @@ interface DraftInit {
   estMinutes: number;
   minMinutes: number;
   maxBlockMinutes?: number | null;
+  /** 源行到期日（只有 REVIEW / RETEST / EGIU 有；其余不给 → null） */
+  dueDate?: string | null;
   prerequisites?: Prerequisite[];
   validationStatus: TaskCandidateDraft['validationStatus'];
   difficultyScore?: number | null;
@@ -325,6 +327,7 @@ function makeDraft(init: DraftInit): TaskCandidateDraft {
     estMinutes: init.estMinutes,
     minMinutes: init.minMinutes,
     maxBlockMinutes: init.maxBlockMinutes ?? null,
+    dueDate: init.dueDate ?? null,
     prerequisites: init.prerequisites ?? [],
     validationStatus: init.validationStatus,
     difficultyScore: init.difficultyScore ?? null,
@@ -354,12 +357,14 @@ interface ReviewRow {
   targetType: string;
   targetLabel: string;
   estMinutes: number;
+  dueDate: string;
 }
 
 interface RetestRow {
   id: string;
   retestType: string;
   estMinutes: number;
+  dueDate: string;
   parentEvidenceId: string;
   parent: { id: string; skill: string } | null;
 }
@@ -420,6 +425,7 @@ interface EgiuRow {
   resourceId: string | null;
   unitNo: string;
   knowledgePoint: string;
+  nextReviewDate: string | null;
 }
 
 // ───────────────────────── 1. REVIEW ─────────────────────────
@@ -454,6 +460,8 @@ function reviewDraftOf(row: ReviewRow, sink: SkipSink): TaskCandidateDraft | nul
     axes: AXES_BY_TARGET_TYPE[row.targetType],
     title: `${TARGET_TYPE_LABEL_ZH[row.targetType]}复习：${row.targetLabel}`,
     estMinutes: minutes.estMinutes,
+    // 到期日决定 `urgency` 与 P0 判定 —— 只有采集层知道
+    dueDate: row.dueDate,
     // 复习项是**原子**的：做半条复习等于没复习，不可拆
     minMinutes: minutes.estMinutes,
     validationStatus: 'VERIFIED',
@@ -495,6 +503,7 @@ function retestDraftOf(row: RetestRow, sink: SkipSink): TaskCandidateDraft | nul
     skillGapKey: gapKeyOf(dimensionKindOf(skill), skill, ''),
     title: `${SKILL_LABEL_ZH[AXES_BY_SKILL[skill].skill]}复测：${row.retestType}`,
     estMinutes: minutes.estMinutes,
+    dueDate: row.dueDate,
     // v2.1 语义：复测不可拆 —— 做半截的复测无法判定是否迁移
     minMinutes: minutes.estMinutes,
     prerequisites: [{ kind: 'EVIDENCE_EXISTS', evidenceId: row.parentEvidenceId }],
@@ -982,6 +991,8 @@ function egiuDraftOf(
     skillGapKey: gapKeyOf('AUXILIARY', 'GRAMMAR', ''),
     title: `EGIU ${row.unitNo}：${row.knowledgePoint}`,
     estMinutes: minutes.estMinutes,
+    // 教材单元的「到期」就是它的复习点日期
+    dueDate: row.nextReviewDate,
     minMinutes: minutes.estMinutes,
     prerequisites: requiresLessonId ? [{ kind: 'UNIT_ORDER', lessonId: row.id, requiresLessonId }] : [],
     validationStatus: 'VERIFIED',

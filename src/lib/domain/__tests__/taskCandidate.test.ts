@@ -45,6 +45,7 @@ function draft(over: Partial<TaskCandidateDraft> = {}): TaskCandidateDraft {
     estMinutes: 10,
     minMinutes: 5,
     maxBlockMinutes: null,
+    dueDate: null,
     prerequisites: [],
     validationStatus: 'RUBRIC',
     difficultyScore: null,
