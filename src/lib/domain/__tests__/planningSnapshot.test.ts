@@ -228,4 +228,28 @@ describe('parseSkillTargets：把宽类型收紧成 Partial（NaN 的第一道�
       expect(parseSkillTargets(bad)).toEqual({});
     }
   });
+
+  it('null / 空串 / 空数组 / false **丢键**，不许变成「目标 0 分」', () => {
+    // `LearningGoal.min*` 是 `Float?`，用户建档时往往只填关心的两三项。
+    // 用 `Number(value)` 收窄会得到 `0` —— 于是「没设目标」被读成「目标 0 分」，
+    // 读侧算出"已完全达标"。这两件事在数值上都正常，事后无法归因。
+    expect(parseSkillTargets({ READING: null })).toEqual({});
+    expect('READING' in parseSkillTargets({ READING: null })).toBe(false);
+    for (const bad of ['', [], false, '20', {}, Number.POSITIVE_INFINITY]) {
+      const parsed = parseSkillTargets({ READING: bad });
+      expect(parsed, JSON.stringify(bad)).toEqual({});
+      expect('READING' in parsed, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it('真实形状：只填了两项、其余为 null → 只有两个键', () => {
+    const targets = parseSkillTargets({
+      LISTENING: 7,
+      READING: null,
+      WRITING: 6.5,
+      SPEAKING: null,
+    });
+    expect(Object.keys(targets).sort()).toEqual(['LISTENING', 'WRITING']);
+    expect(targets.READING).toBeUndefined();
+  });
 });

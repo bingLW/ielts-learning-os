@@ -245,6 +245,12 @@ export function periodOf(input: LayerInput): PlanPeriod {
  * 1. **丢掉非 `SkillId` 的键**（脏配置不该变成"某个技能有目标"）；
  * 2. 返回值类型是 `Partial<…>`，读取侧必须写 `?? 0.30`（该技能不在目标内）。
  *
+ * ⚠️ **值必须是 `number`，不能用 `Number(value)` 收窄**：`LearningGoal` 的四个分数字段
+ * 都是 `Float?`，`Number(null) === 0`、`Number('') === 0`、`Number([]) === 0`、
+ * `Number(false) === 0` —— 用 `Number()` 收窄会把「**没设目标**」变成一个真实存在的
+ * 「**目标 0 分**」。这两件事在读侧完全不同：前者走"该技能与目标无直接关系"的中性分，
+ * 后者算出"已经完全达标"。后者更难发现，因为它在数值上看起来完全正常。
+ *
  * @param raw 任意输入（通常来自 `LearningGoal` 的四个分数字段）
  */
 export function parseSkillTargets(raw: unknown): Partial<Record<SkillId, number>> {
@@ -253,9 +259,10 @@ export function parseSkillTargets(raw: unknown): Partial<Record<SkillId, number>
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!known.has(key)) continue;
-    const minutes = Number(value);
-    if (!Number.isFinite(minutes) || minutes < 0) continue;
-    out[key as SkillId] = minutes;
+    // 严格 `typeof`：null / '' / [] / false / '20' 全部丢弃（见上方注释）
+    if (typeof value !== 'number') continue;
+    if (!Number.isFinite(value) || value < 0) continue;
+    out[key as SkillId] = value;
   }
   return out;
 }
