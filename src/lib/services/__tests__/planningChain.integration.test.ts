@@ -272,3 +272,75 @@ describe('C-J：多条 ACTIVE 目标时，取哪一条必须是确定的', () =>
     expect(rebuilt.data.context.goal?.skillTargets).toEqual({ READING: 6.5 });
   });
 });
+
+describe('⑳㉑ 调用链：真实 LearningGoal 行 → goalRelevance（不是单测手搓的 ctx）', () => {
+  const rebuild = async () => {
+    const result = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, horizonDays: 7 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('快照构建失败');
+    const reading = result.data.context.decisions.find(
+      (row) => row.candidateKey.startsWith('RETEST:') && row.candidateKey.endsWith(':READING'),
+    );
+    if (!reading) throw new Error('没有 READING 的复测决策');
+    return { context: result.data.context, reading };
+  };
+
+  it('minReading = null、其余三项有值 → skillTargets 里没有 READING，因子得 0.30', async () => {
+    await prisma.learningGoal.deleteMany({});
+    await prisma.learningGoal.create({
+      data: {
+        goalType: 'IELTS',
+        name: '雅思（只关心三项）',
+        status: 'ACTIVE',
+        targetValue: '6.5',
+        targetDate: '2026-06-01',
+        minListening: 6,
+        minWriting: 6,
+        minSpeaking: 6,
+        // `minReading` 刻意不给 → 数据库里是 null
+      },
+    });
+    await prisma.learningCycle.deleteMany({});
+    await prisma.learningCycle.create({
+      data: { title: '90 天周期', goal: 'IELTS 6.5', startDate: '2026-01-01', endDate: '2026-03-31', status: 'BUILD' },
+    });
+
+    const { context, reading } = await rebuild();
+    // `parseSkillTargets` 丢掉了 null → 键不存在（不是"目标 0 分"）
+    expect('READING' in (context.goal?.skillTargets ?? {})).toBe(false);
+    expect(context.goal?.skillTargets).toEqual({ LISTENING: 6, WRITING: 6, SPEAKING: 6 });
+    // 该技能不在目标内 → 0.30（确认为无关系），不是 0、不是 NaN
+    expect(reading.factors.goalRelevance).toBe(0.3);
+    expect(Number.isFinite(reading.factors.goalRelevance)).toBe(true);
+  });
+
+  it('同一目标、但没有任何在跑的周期 → 0.50（不是 1.00）', async () => {
+    await prisma.learningCycle.deleteMany({});
+    const { context, reading } = await rebuild();
+    // 目标行还在，只是没有周期
+    expect(context.goal).not.toBeNull();
+    expect(reading.factors.goalRelevance).toBe(0.5);
+    expect(reading.factors.goalRelevance).not.toBe(1);
+  });
+
+  it('有周期 + 目标内有 READING → 走 90 天公式：剩余 83 天 → 1 − 83/90 ≈ 0.0778', async () => {
+    await prisma.learningGoal.deleteMany({});
+    await prisma.learningGoal.create({
+      data: {
+        goalType: 'IELTS',
+        name: '雅思（含阅读）',
+        status: 'ACTIVE',
+        targetValue: '6.5',
+        targetDate: '2026-06-01', // 距 AS_OF 83 天
+        minReading: 6.5,
+      },
+    });
+    await prisma.learningCycle.create({
+      data: { title: '90 天周期', goal: 'IELTS 6.5', startDate: '2026-01-01', endDate: '2026-03-31', status: 'BUILD' },
+    });
+    const { reading } = await rebuild();
+    // 期望值**手算**：2026-03-10 → 2026-06-01 = 83 天，1 − 83/90 = 0.07777…
+    // （不写 `1 - 83/90`：那与被测实现是同一个表达式，等于用实现验证实现）
+    expect(reading.factors.goalRelevance).toBeCloseTo(0.0778, 4);
+  });
+});
