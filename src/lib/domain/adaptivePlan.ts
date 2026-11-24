@@ -98,6 +98,44 @@ export interface DueRetestInput {
   maxOverdueDays?: number;
 }
 
+/**
+ * v2.7：已按 `rankDecisions()` 排好序的内容级候选。
+ * `priority` / `rationale` 来自评分层的决策轨迹，装箱层**原样消费、不重算**。
+ */
+export interface RankedCandidateInput {
+  candidateKey: string;
+  module: ModuleId;
+  primarySkill: PrimarySkill;
+  track: LearningTrack;
+  estMinutes: number;
+  minMinutes: number;
+  maxBlockMinutes: number | null;
+  priority: TaskPriority;
+  splittable: boolean;
+  rationale: string;
+  score: number;
+  /** 缺省 CORE；真实来源应由 candidateId 在展示层反查，这里只是审计兜底。 */
+  sourceKind?: TaskSourceKind;
+}
+
+/** v2.7：UNCERTAINTY 驱动的补测探针（P2，不占 P0 份额）。 */
+export interface UncertaintyProbeInput {
+  skillGapKey: string;
+  module: ModuleId;
+  primarySkill: PrimarySkill;
+  minutes: number;
+  reason: string;
+}
+
+/** v2.7：缺口提示，只影响 rationale，不改变分配算法。 */
+export interface SkillGapHint {
+  dimensionKind: 'OFFICIAL' | 'AUXILIARY';
+  skill: string;
+  subskill: string;
+  severity: number;
+  reason: string;
+}
+
 export interface AdaptivePlanInput {
   /** 当日有效预算（分钟）。0 或不传 isRestDay 时按休息日处理。 */
   budgetMinutes: number;
@@ -126,6 +164,20 @@ export interface AdaptivePlanInput {
    * S0 阶段传「已完成的基线诊断」。省下的时间流向技能池，不重复排同一项。
    */
   skipModules?: ModuleId[];
+
+  /* ── v2.7 可选扩展：全部 undefined 时与 v2.1 逐字相同（golden 钉死） ── */
+
+  /**
+   * 预算缓冲比例 0..0.3，默认 0。**只作用于技能池与拓展**，
+   * 不作用于 P0 / 复测 / 核心保障（AC-7）。
+   */
+  bufferRatio?: number;
+  /** 已按 `rankDecisions()` 排好序的内容级候选；有值时代替模块级技能池装箱。 */
+  candidates?: RankedCandidateInput[];
+  /** UNCERTAINTY 驱动的补测探针：P0 之后、核心之前的独立池，不占 P0 份额。 */
+  uncertainties?: UncertaintyProbeInput[];
+  /** 缺口提示：只写入 rationale，不改变任何分钟分配。 */
+  skillGaps?: SkillGapHint[];
 }
 
 export interface AdaptivePlanResult {
@@ -213,6 +265,17 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     return { ok: false, code: 'INVALID_BUDGET' };
   }
   const granularity = Math.max(1, Math.round(input.minTaskMinutes ?? MIN_TASK_MINUTES));
+  // v2.7 缓冲：非法值按 0 处理（不得让脏配置改变 v2.1 的分配结果）。
+  const bufferRatio = Number.isFinite(input.bufferRatio)
+    ? Math.min(0.3, Math.max(0, input.bufferRatio!))
+    : 0;
+  /** 缺口提示只进 rationale；未传时返回空串，保证 v2.1 文案逐字不变。 */
+  const gapHint = (skill: SkillId): string => {
+    const hint = (input.skillGaps ?? []).find(
+      (gap) => gap.skill === skill && gap.dimensionKind === 'OFFICIAL',
+    );
+    return hint ? `；缺口证据：${hint.reason}` : '';
+  };
 
   const empty: AdaptivePlanResult = {
     ok: true,
@@ -383,6 +446,40 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
     return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds);
   }
 
+  // ④.5 v2.7 补测探针（UNCERTAINTY）：P0 之后、核心之前的独立池。
+  //     它是 P2，**不占 P0 份额**；核心保障 coreReserve 仍然保留给基础模块。
+  //     单项不拆分（放不下整项就记 backlog），与复测的处理方式一致。
+  if (input.uncertainties && input.uncertainties.length > 0) {
+    const probeReserve = Math.max(0, remaining - coreReserve);
+    let probeUsed = 0;
+    for (const probe of input.uncertainties) {
+      const minutes = Math.max(0, Math.round(probe.minutes));
+      if (minutes <= 0 || minutes < granularity) continue;
+      if (probeUsed + minutes > probeReserve) {
+        backlog.push({
+          kind: 'RETEST',
+          label: '补测探针（未排入）',
+          minutes,
+          reason: `证据不足维度的补测放不下（${probe.skillGapKey}），整体顺延，不占 P0 份额`,
+        });
+        continue;
+      }
+      probeUsed += minutes;
+      push({
+        module: probe.module,
+        skill: MODULE_META[probe.module].skill,
+        minutes,
+        track: MODULE_TRACK[probe.module],
+        primarySkill: probe.primarySkill,
+        priority: 'P2',
+        sourceKind: 'RETEST',
+        splittable: false,
+        minChunkMinutes: minutes,
+        rationale: `${probe.reason}${gapHint(MODULE_META[probe.module].skill)}`,
+      });
+    }
+  }
+
   // ⑤ 基础支持模块（词汇复习 + 语法/句子），从模板 foundation 中切。
   //    取整余量不丢弃：并入技能池（技能池才是需要按配比分配的部分）。
   //    S1 阶段语法类不得超过当日预算的 20%（v2.0 口径），超出的部分让给词汇。
@@ -448,8 +545,57 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
   // ⑦ 技能池 = 预算 − 已安排（P0 + 基础 + 复盘 + 拓展）。按阶段配比切分并做余数补块，
   //    保证不浪费预算、也不产生低于粒度的碎片。
   const extensivePlanned = 0; // 拓展在技能池之后分配
-  const skillPool = floorTo(Math.max(0, remaining - extensivePlanned), granularity);
-  if (skillPool > 0) {
+  // bufferRatio 只削减技能池（与拓展），P0 / 复测 / 核心保障已在上面排定，不受影响。
+  const skillPool = floorTo(Math.max(0, remaining - extensivePlanned) * (1 - bufferRatio), granularity);
+
+  // v2.7 候选装箱：按调用方给出的顺序消费，**不重排**（㉓③）。
+  // priority / rationale 直接取自评分决策，装箱层只解决"放不放得下"。
+  if (input.candidates && input.candidates.length > 0) {
+    let candidateBudget = skillPool;
+    for (const candidate of input.candidates) {
+      const cap = candidate.maxBlockMinutes == null
+        ? Infinity
+        : Math.max(0, Math.round(candidate.maxBlockMinutes));
+      const wanted = Math.min(Math.max(0, Math.round(candidate.estMinutes)), cap);
+      const minMinutes = Math.max(1, Math.round(candidate.minMinutes));
+      if (wanted < minMinutes) continue;
+      let minutes = wanted;
+      if (minutes > candidateBudget) {
+        if (!candidate.splittable) {
+          backlog.push({
+            kind: 'CORE_DEFERRED',
+            label: `候选 ${candidate.candidateKey}`,
+            minutes: wanted,
+            reason: `候选不可拆且超出当日技能预算 ${candidateBudget} 分钟，整体顺延`,
+          });
+          continue;
+        }
+        minutes = floorTo(candidateBudget, minMinutes);
+        if (minutes < minMinutes) {
+          backlog.push({
+            kind: 'CORE_DEFERRED',
+            label: `候选 ${candidate.candidateKey}`,
+            minutes: wanted,
+            reason: `剩余 ${candidateBudget} 分钟不足最小单元 ${minMinutes} 分钟，转入后续日期`,
+          });
+          continue;
+        }
+      }
+      candidateBudget -= minutes;
+      push({
+        module: candidate.module,
+        skill: MODULE_META[candidate.module].skill,
+        minutes,
+        track: candidate.track,
+        primarySkill: candidate.primarySkill,
+        priority: candidate.priority,
+        sourceKind: candidate.sourceKind ?? 'CORE',
+        splittable: candidate.splittable,
+        minChunkMinutes: minMinutes,
+        rationale: candidate.rationale,
+      });
+    }
+  } else if (skillPool > 0) {
     const target: SkillAllocation =
       input.allocation ?? { LISTENING: 25, READING: 25, SPEAKING: 25, WRITING: 25 };
     const weak = new Set(input.weakSkills ?? []);
@@ -540,9 +686,9 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
         sourceKind: isWeak ? 'WEAKNESS' : 'CORE',
         splittable: true,
         minChunkMinutes: granularity,
-        rationale: isWeak
+        rationale: `${isWeak
           ? `有证据的弱项：${row.skill}，本周缺口约 ${gapMinutes} 分钟`
-          : `${row.skill} 阶段核心训练`,
+          : `${row.skill} 阶段核心训练`}${gapHint(row.skill)}`,
       });
     }
 
@@ -559,8 +705,9 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
   }
 
   // ⑧ 拓展（P3）：仅当预算充足（>= 120）且仍有 >= 2 个粒度的剩余
-  if (budget >= 120 && remaining >= granularity * 2) {
-    const extensive = Math.floor(remaining / granularity) * granularity;
+  const extensiveBudget = Math.floor(remaining * (1 - bufferRatio));
+  if (budget >= 120 && extensiveBudget >= granularity * 2) {
+    const extensive = floorTo(extensiveBudget, granularity);
     push({
       module: 'EXTENSIVE',
       skill: 'LISTENING_EXT',

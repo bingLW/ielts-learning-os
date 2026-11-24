@@ -51,4 +51,32 @@ describe('v2.1 golden：18 组输入逐字不变', () => {
       expect(serialize(item.input), item.name).toBe(expected!.output);
     }
   });
+
+  it('断言 2：四个新字段全为 undefined 时逐字相同', () => {
+    for (const [index, item] of LEGACY_GOLDEN_CASES.entries()) {
+      const withUndefined = {
+        ...item.input,
+        bufferRatio: undefined,
+        candidates: undefined,
+        uncertainties: undefined,
+        skillGaps: undefined,
+      };
+      expect(serialize(withUndefined), item.name).toBe(golden[index]!.output);
+    }
+  });
+
+  it('断言 3：bufferRatio=0 时逐字相同（默认值不得改变 v2.1 行为）', () => {
+    for (const [index, item] of LEGACY_GOLDEN_CASES.entries()) {
+      expect(serialize({ ...item.input, bufferRatio: 0 }), item.name).toBe(golden[index]!.output);
+    }
+  });
+
+  it('断言 4：三个空数组等价于未传（服务层默认会给 [] 而不是 undefined）', () => {
+    for (const [index, item] of LEGACY_GOLDEN_CASES.entries()) {
+      expect(
+        serialize({ ...item.input, candidates: [], uncertainties: [], skillGaps: [] }),
+        item.name,
+      ).toBe(golden[index]!.output);
+    }
+  });
 });
