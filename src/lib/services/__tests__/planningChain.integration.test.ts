@@ -233,3 +233,42 @@ describe('⑲ 落库的一侧：候选与决策成对写入', () => {
     expect(missing).not.toContain('CANDIDATES');
   });
 });
+
+describe('C-J：多条 ACTIVE 目标时，取哪一条必须是确定的', () => {
+  it('按 `createdAt asc` 取最早那条（而不是插入顺序）', async () => {
+    await prisma.learningGoal.deleteMany({});
+    // 刻意**先建新的、后建旧的**：如果实现漏了 `orderBy`，SQLite 会返回先插入的那条
+    // （= 新的），这条断言就会红 —— 这就是 A-3 要求的"变异能精准命中"。
+    await prisma.learningGoal.create({
+      data: {
+        goalType: 'GENERAL_ENGLISH',
+        name: '通用英语（较新）',
+        status: 'ACTIVE',
+        targetValue: 'B2',
+        targetDate: '2026-09-01',
+        createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      },
+    });
+    await prisma.learningGoal.create({
+      data: {
+        // `goalType` 有唯一约束 → 两条 ACTIVE 只能是不同轨道（这正是 seed 造出
+        // 3 条 ACTIVE 的原因，也是 C-J 必须加确定性排序的原因）
+        goalType: 'IELTS',
+        name: '雅思（较早）',
+        status: 'ACTIVE',
+        targetValue: '6.5',
+        targetDate: '2026-06-01',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        minReading: 6.5,
+      },
+    });
+
+    const rebuilt = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: '2026-03-11', horizonDays: 7 });
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    // 旧的那条 `targetDate` 是 2026-06-01；新的那条是 2026-09-01
+    expect(rebuilt.data.context.goal?.targetDate).toBe('2026-06-01');
+    // 顺带证明 `skillTargets` 也确实来自同一行（旧那条设了 minReading）
+    expect(rebuilt.data.context.goal?.skillTargets).toEqual({ READING: 6.5 });
+  });
+});

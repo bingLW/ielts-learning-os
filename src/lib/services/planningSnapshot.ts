@@ -181,7 +181,15 @@ export async function buildPlanningSnapshot(
   }
 
   // ── ① 目标（degraded） ──
-  const goalRow = await prisma.learningGoal.findFirst({ where: { status: 'ACTIVE' } });
+  // ⚠️ `orderBy` 是**必须**的（`41 §9.1` C-J）：`seedLearningGoals()` 按 `GOAL_TYPES`
+  // 建了 3 条 `status='ACTIVE'` 的目标，没有排序时取到哪一条由 SQLite 的插入顺序决定
+  // —— 而 `goalRelevance` 的两个输入（`targetDate` / `skillTargets`）都来自这一行。
+  // 取错目标 = 相关度算错，且**没有任何报错**；换台机器结果就变。
+  // "三条 ACTIVE 本身可疑"是数据问题（不在本改动范围）；这里只保证**取哪一条是确定的**。
+  const goalRow = await prisma.learningGoal.findFirst({
+    where: { status: 'ACTIVE' },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
   // 有在跑的周期 = `CALIBRATION|BUILD|DELIVER` 且未归档。评分层的 `goalRelevance`
   // 只在有周期时才敢用 90 天公式（见 `domain/taskPriority.ts` 的注释）。
   const activeCycle = await prisma.learningCycle.findFirst({
