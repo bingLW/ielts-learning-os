@@ -175,16 +175,19 @@ export async function buildPlanningSnapshot(
         track: 'IELTS_PREPARATION' as LearningTrack,
         targetValue: goalRow.targetValue,
         targetDate: goalRow.targetDate,
-        skillTargets: parseSkillTargets(Object.fromEntries(
-          (
-            [
-              ['LISTENING', goalRow.minListening],
-              ['READING', goalRow.minReading],
-              ['WRITING', goalRow.minWriting],
-              ['SPEAKING', goalRow.minSpeaking],
-            ] as const
-          ).filter(([, value]) => typeof value === 'number'),
-        )),
+        // 这里**刻意不**先 `.filter(v => typeof v === 'number')`：
+        // `LearningGoal.min*` 是 `Float?`，null 会经 `Object.fromEntries` 原样进来，
+        // 而 `parseSkillTargets()` 自己就负责把它们丢掉（A-4：守卫在函数入口，
+        // 不在调用方）。留着那道 filter 会让人以为函数离不开它 —— 下一个调用点
+        // 就不会知道要写，而函数那时仍然"看起来是对的"。
+        skillTargets: parseSkillTargets(
+          Object.fromEntries([
+            ['LISTENING', goalRow.minListening],
+            ['READING', goalRow.minReading],
+            ['WRITING', goalRow.minWriting],
+            ['SPEAKING', goalRow.minSpeaking],
+          ] as const),
+        ),
       }
     : null;
   if (!goal) {

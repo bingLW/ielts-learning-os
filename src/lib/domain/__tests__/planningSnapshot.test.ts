@@ -252,4 +252,19 @@ describe('parseSkillTargets：把宽类型收紧成 Partial（NaN 的第一道�
     expect(Object.keys(targets).sort()).toEqual(['LISTENING', 'WRITING']);
     expect(targets.READING).toBeUndefined();
   });
+
+  it('一条真值 + 一条 null → 只留真值（不因 null 拖累整批）', () => {
+    expect(parseSkillTargets({ READING: null, VOCAB: 6 })).toEqual({ VOCAB: 6 });
+  });
+
+  it('**显式 0 必须保留** —— 对照用例，防「修 bug 时顺手把 0 也丢了」', () => {
+    // `{READING: 0}` 与「没有 READING 这个键」是两件事：
+    // 前者读侧算出"已完全达标"，后者走"该技能与目标无直接关系"的中性分。
+    // 判据必须是**键是否存在**，不是值真假 —— 所以实现里不许出现 `if (!value) continue`。
+    // 这条在修 `Number()` 之前就是绿的，它守的不是那个 bug，而是修复过程本身。
+    const targets = parseSkillTargets({ READING: 0 });
+    expect(targets).toEqual({ READING: 0 });
+    expect('READING' in targets).toBe(true);
+    expect(targets.READING).toBe(0);
+  });
 });
