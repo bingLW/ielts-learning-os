@@ -16,7 +16,11 @@
  */
 
 import type { StageCode } from '@/lib/types';
-import { addDays, listDateRange, diffDays } from '@/lib/date';
+import { addDays, listDateRange, diffDays, endOfBusinessDay, toUtcInstant } from '@/lib/date';
+import { STAGE_CODES, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
+import { DEFAULT_WEIGHTS, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
+import type { PrerequisiteContext, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
+import { collectCandidates } from '@/lib/services/candidateSources';
 import {
   buildCanonicalPlanningInput,
   parseSkillTargets,
@@ -69,6 +73,14 @@ export interface PlanEngineContextV27 {
      * 而运行时拿到 `undefined` → `goalRelevance` 算术变 `NaN` → 排序静默乱序。
      */
     skillTargets: Partial<Record<SkillId, number>>;
+    /**
+     * 是否有正在跑的 `LearningCycle`（`CALIBRATION`/`BUILD`/`DELIVER` 且未归档）。
+     *
+     * 评分层的 `goalRelevance` 靠它决定是"算得出来"还是"不知道"（回落 0.50）：
+     * 没有周期就没有 90 天的参照系，用 `diffDays(undefined, …)` 会退化成 0
+     * → 公式算出 1.00 → 所有候选满分。显式布尔是唯一安全的传法。
+     */
+    hasActiveCycle: boolean;
   } | null;
   budget: Awaited<ReturnType<typeof getEffectiveBudget>>;
   budgetDays: { date: string; minutes: number; isRestDay: boolean }[];
@@ -77,10 +89,10 @@ export interface PlanEngineContextV27 {
   gaps: SkillGapDraft[];
   uncertainties: SkillGapDraft[];
   unknowns: SkillGapDraft[];
-  /** T03 注入（本任务为空，且必须在 validation.missing 里可见）。 */
-  candidates: unknown[];
-  /** T04 注入。 */
-  decisions: unknown[];
+  /** T03：8 源归一后的候选（**不排序**，顺序即采集顺序）。 */
+  candidates: TaskCandidateDraft[];
+  /** T04：与 `candidates` 一一对应的评分决策。 */
+  decisions: TaskPriorityDecisionDraft[];
   execution: { last7NetMinutes: number; last30NetMinutes: number; activeDaysLast7: number };
   validation: { ok: boolean; missing: MissingInputItem[]; warnings: string[] };
 }
@@ -170,6 +182,12 @@ export async function buildPlanningSnapshot(
 
   // ── ① 目标（degraded） ──
   const goalRow = await prisma.learningGoal.findFirst({ where: { status: 'ACTIVE' } });
+  // 有在跑的周期 = `CALIBRATION|BUILD|DELIVER` 且未归档。评分层的 `goalRelevance`
+  // 只在有周期时才敢用 90 天公式（见 `domain/taskPriority.ts` 的注释）。
+  const activeCycle = await prisma.learningCycle.findFirst({
+    where: { archivedAt: null, status: { in: ['CALIBRATION', 'BUILD', 'DELIVER'] } },
+    select: { id: true },
+  });
   const goal = goalRow
     ? {
         track: 'IELTS_PREPARATION' as LearningTrack,
@@ -188,6 +206,7 @@ export async function buildPlanningSnapshot(
             ['SPEAKING', goalRow.minSpeaking],
           ] as const),
         ),
+        hasActiveCycle: Boolean(activeCycle),
       }
     : null;
   if (!goal) {
@@ -216,6 +235,30 @@ export async function buildPlanningSnapshot(
       take: 500,
     }),
   ]);
+  /**
+   * 近 28 天的错题（`Mistake`）按技能聚合成 `repeatedErrorCount`（`41 §9.1` C-H 的另一半）。
+   *
+   * 三个细节：
+   * 1. **窗口按 `asOfDate` 算，不是按 `Date.now()`**：否则同一 `asOfDate` 在不同时刻
+   *    跑出不同 hash，快照幂等与"历史可复算"同时失效。
+   * 2. **只统计能归属到 `StudyRecord` 的错题**：`Mistake` 表没有 skill 列，技能只能从
+   *    `studyRecord.skill` 拿到；手工录入、没挂记录的错题归不了维度，宁可漏计也不错挂。
+   * 3. `?? 0` 在这里是**对的**：窗口内该技能没有错题就是"确认为无重复错误"，
+   *    而"这个维度根本没练过"由 `evidenceQuestions === 0` 表达，两者在评分层分开处理。
+   */
+  const windowStart = toUtcInstant(addDays(input.asOfDate, -(WEAKNESS_WINDOW_DAYS - 1)));
+  const windowEnd = endOfBusinessDay(input.asOfDate);
+  const mistakeRows = await prisma.mistake.findMany({
+    where: { archivedAt: null, createdAt: { gte: windowStart, lte: windowEnd } },
+    select: { studyRecord: { select: { skill: true } } },
+  });
+  const repeatedBySkill = new Map<string, number>();
+  for (const row of mistakeRows) {
+    const skill = row.studyRecord?.skill;
+    if (!skill) continue;
+    repeatedBySkill.set(skill, (repeatedBySkill.get(skill) ?? 0) + 1);
+  }
+
   if (profiles.length === 0) {
     missing.push({
       key: 'PROFILE',
@@ -260,10 +303,10 @@ export async function buildPlanningSnapshot(
       evidenceQuestions: scored.length,
       freshnessDays: latest ? diffDays(latest.toISOString().slice(0, 10), input.asOfDate) : null,
       coverageRatio: null,
-      // 这两项由 T04 的 weakness 聚合提供；在此之前传 null（= 不知道），
-      // 不能传 0 —— 那等于告诉严重度公式"已确认该维度没有任何问题"
+      // `accuracyDelta` 仍缺真值（需要分题型正确率，当前证据行没有这个维度）→ `null` = 不知道；
+      // 不能传 0，那等于告诉严重度公式"已确认该维度没有任何问题"
       accuracyDelta: null,
-      repeatedErrorCount: null,
+      repeatedErrorCount: repeatedBySkill.get(skill) ?? 0,
       evidenceIds: rows.slice(0, 20).map((row) => row.id),
       missingEvidence: suggestion.gaps,
     };
@@ -299,14 +342,7 @@ export async function buildPlanningSnapshot(
     activeDaysLast7,
   };
 
-  // ── T03/T04 才能产出的两项：留空但必须可见 ──
-  missing.push({
-    key: 'CANDIDATES',
-    label: '候选任务池',
-    severity: 'degraded',
-    hint: '候选池由 T03 产出；在此之前计划无法按候选排序，只能排固定核心',
-  });
-
+  // ── 配置（先于候选采集：评分要用 `minTaskMinutes` 与 `weightsVersion`） ──
   const settings = await getPlannerSettings();
   const weightsVersion = weightsVersionOf(settings?.priorityPolicy);
   const config = {
@@ -315,6 +351,41 @@ export async function buildPlanningSnapshot(
     gapMinSeverity: 0.15,
     profileReviewDays: { LOW: 14, MEDIUM: 30, HIGH: 90 },
   };
+
+  // ── ⑧ 候选池（T03）+ 评分（T04） ──
+  // `gaps` 传全部三组：`PROBE` 只认 `kind='UNCERTAINTY'`，而 `gapOf()` 按
+  // `dimensionKind:skill:subskill` 找缺口，漏掉任何一组都会让某类候选拿不到证据强度。
+  const allGaps = [...split.gaps, ...split.uncertainties, ...split.unknowns];
+  const collected = await collectCandidates({ asOfDate: input.asOfDate, gaps: allGaps });
+  if (collected.degraded.length > 0) {
+    missing.push({
+      key: 'CANDIDATES',
+      label: '候选任务池',
+      severity: 'degraded',
+      hint: `以下来源读取失败，今天的候选池可能不完整：${collected.degraded.join('、')}`,
+    });
+  } else if (collected.candidates.length === 0) {
+    missing.push({
+      key: 'CANDIDATES',
+      label: '候选任务池',
+      severity: 'degraded',
+      hint: '今天没有可排的候选（到期复习/复测、材料草案、题库、听说、EGIU 都没有命中入池条件）',
+    });
+  }
+
+  const prerequisites = await buildPrerequisiteContext(collected.candidates, stage.code as StageCode);
+  const decisions = collected.candidates.map((row) =>
+    scoreCandidate(row, {
+      asOfDate: input.asOfDate,
+      budgetMinutes: budget.minutes,
+      minTaskMinutes: config.minTaskMinutes,
+      goal,
+      gaps: allGaps,
+      weights: DEFAULT_WEIGHTS,
+      weightsVersion,
+      prerequisites,
+    }),
+  );
 
   // ── 归一化一次：hash 与落库共用同一个对象（约束⑦） ──
   const { canonical, hash } = buildCanonicalPlanningInput({
@@ -340,8 +411,8 @@ export async function buildPlanningSnapshot(
     dueReviews: legacy.dueReviews,
     dueRetests: legacy.dueRetests,
     execution,
-    candidates: [],
-    decisions: [],
+    candidates: collected.candidates,
+    decisions,
     validation: { missing, warnings },
     replan:
       input.purpose === 'REPLAN'
@@ -361,8 +432,8 @@ export async function buildPlanningSnapshot(
     gaps: split.gaps,
     uncertainties: split.uncertainties,
     unknowns: split.unknowns,
-    candidates: [],
-    decisions: [],
+    candidates: collected.candidates,
+    decisions,
     execution,
     validation,
   };
@@ -381,6 +452,9 @@ export async function buildPlanningSnapshot(
   if (existing && (input.reuseIfSameHash ?? true)) {
     const gapCount = await prisma.skillGap.count({ where: { snapshotId: existing.id } });
     if (gapCount === 0) await persistGaps(existing.id, split);
+    // 与缺口同理：复用路径也要保证候选/决策已落库（可能是上一版只写了快照行）
+    const candidateCount = await prisma.taskCandidate.count({ where: { snapshotId: existing.id } });
+    if (candidateCount === 0) await persistCandidates(existing.id, collected.candidates, decisions);
     return ok({
       snapshotId: existing.id,
       inputHash: hash,
@@ -416,7 +490,9 @@ export async function buildPlanningSnapshot(
     return row.id;
   });
 
+  // 顺序固定：缺口先落库，候选靠 `dimensionKind:skill:subskill` 反查 `SkillGap.id`
   await persistGaps(snapshotId, split);
+  await persistCandidates(snapshotId, collected.candidates, decisions);
 
   return ok({
     snapshotId,
@@ -425,6 +501,158 @@ export async function buildPlanningSnapshot(
     ruleVersion: RULE_VERSION,
     weightsVersion,
     context,
+  });
+}
+
+/**
+ * 前置条件判定上下文：**只查候选真正引用到的 id**。
+ *
+ * 不写"把整张表读进来"，因为那会随数据量增长而变慢；也不写"逐条查"，那是 N+1。
+ * 折中：先把候选的 `prerequisites` 里出现的 id 收成五个集合，再一次 `in` 查回、
+ * 用查询时带的状态条件筛出"真的满足"的那些。
+ *
+ * ⚠️ 每个集合的**判定条件**必须写在这里而不是散在采集层：
+ * - 材料就绪 = `status ∈ {ready, partial}`（`partial` 也算：用户明确接受过降级）
+ * - 题目可用 = `reviewStatus='approved'`（草稿/待审一律不算）
+ * - 转写确认 = `status='CONFIRMED'`（机器草稿不算，这是 AC-2 的同一条口径）
+ * - 单元完成 = `currentColor='GREEN'`（黄/红都不算学完）
+ * - 证据存在 = 未归档
+ */
+async function buildPrerequisiteContext(
+  candidates: readonly TaskCandidateDraft[],
+  stageCode: StageCode,
+): Promise<PrerequisiteContext> {
+  const referenced = { materials: new Set<string>(), exercises: new Set<string>(), audio: new Set<string>(), lessons: new Set<string>(), evidences: new Set<string>() };
+  for (const candidate of candidates) {
+    for (const item of candidate.prerequisites) {
+      if (item.kind === 'MATERIAL_READY') referenced.materials.add(item.materialId);
+      else if (item.kind === 'EXERCISE_APPROVED') referenced.exercises.add(item.exerciseId);
+      else if (item.kind === 'TRANSCRIPT_CONFIRMED') referenced.audio.add(item.audioAssetId);
+      else if (item.kind === 'UNIT_ORDER') referenced.lessons.add(item.requiresLessonId);
+      else if (item.kind === 'EVIDENCE_EXISTS') referenced.evidences.add(item.evidenceId);
+    }
+  }
+  const stageOrder: Record<string, number> = {};
+  STAGE_CODES.forEach((code, index) => {
+    stageOrder[code] = index;
+  });
+  const base: PrerequisiteContext = {
+    stageCode,
+    stageOrder,
+    readyMaterialIds: new Set(),
+    approvedExerciseIds: new Set(),
+    confirmedTranscriptAssetIds: new Set(),
+    completedLessonIds: new Set(),
+    evidenceIds: new Set(),
+  };
+  const anyReferenced =
+    referenced.materials.size + referenced.exercises.size + referenced.audio.size + referenced.lessons.size + referenced.evidences.size > 0;
+  if (!anyReferenced) return base;
+
+  const [materials, exercises, transcripts, lessons, evidences] = await Promise.all([
+    prisma.learningMaterial.findMany({
+      where: { id: { in: [...referenced.materials] }, status: { in: ['ready', 'partial'] } },
+      select: { id: true },
+    }),
+    prisma.generatedExercise.findMany({
+      where: { id: { in: [...referenced.exercises] }, reviewStatus: 'approved' },
+      select: { id: true },
+    }),
+    prisma.transcript.findMany({
+      where: { audioAssetId: { in: [...referenced.audio] }, status: 'CONFIRMED' },
+      select: { audioAssetId: true },
+    }),
+    prisma.egiuLesson.findMany({
+      where: { id: { in: [...referenced.lessons] }, currentColor: 'GREEN' },
+      select: { id: true },
+    }),
+    prisma.evidenceRecord.findMany({
+      where: { id: { in: [...referenced.evidences] }, archivedAt: null },
+      select: { id: true },
+    }),
+  ]);
+  return {
+    ...base,
+    readyMaterialIds: new Set(materials.map((row) => row.id)),
+    approvedExerciseIds: new Set(exercises.map((row) => row.id)),
+    confirmedTranscriptAssetIds: new Set(
+      transcripts.flatMap((row) => (row.audioAssetId ? [row.audioAssetId] : [])),
+    ),
+    completedLessonIds: new Set(lessons.map((row) => row.id)),
+    evidenceIds: new Set(evidences.map((row) => row.id)),
+  };
+}
+
+/**
+ * 候选与决策落库。
+ *
+ * 两条形状上的约束：
+ * 1. **`factorsJson` 由 `toFactorsJson()` 产出**，服务层不自己拼 JSON —— 平铺的后果
+ *    （`NaN` → 排序静默乱序）在运行时看不见，只有"只有一个地方能产出这个形状"才挡得住。
+ * 2. `skillGapId` 用 `dimensionKind:skill:subskill` 反查已落库的 `SkillGap` 行：
+ *    不建跨域外键，但**仍然**把关系填上，否则解释面板要再查一次。
+ *
+ * @param snapshotId 快照 id
+ * @param candidates 归一候选
+ * @param decisions 与候选一一对应的决策
+ */
+async function persistCandidates(
+  snapshotId: string,
+  candidates: readonly TaskCandidateDraft[],
+  decisions: readonly TaskPriorityDecisionDraft[],
+): Promise<void> {
+  if (candidates.length === 0) return;
+  const gapRows = await prisma.skillGap.findMany({
+    where: { snapshotId },
+    select: { id: true, dimensionKind: true, skill: true, subskill: true },
+  });
+  const gapIdByKey = new Map<string, string>(
+    gapRows.map((row) => [`${row.dimensionKind}:${row.skill}:${row.subskill}`, row.id]),
+  );
+  const decisionByKey = new Map(decisions.map((row) => [row.candidateKey, row] as const));
+
+  await prisma.$transaction(async (tx) => {
+    for (const candidate of candidates) {
+      const skillGapId = candidate.skillGapKey ? (gapIdByKey.get(candidate.skillGapKey) ?? null) : null;
+      const created = await tx.taskCandidate.create({
+        data: {
+          snapshotId,
+          sourceKind: candidate.sourceKind,
+          sourceRef: candidate.sourceRef,
+          candidateKey: candidate.candidateKey,
+          module: candidate.module,
+          targetSkill: candidate.targetSkill,
+          skillGapId,
+          title: candidate.title,
+          estMinutes: candidate.estMinutes,
+          minMinutes: candidate.minMinutes,
+          maxBlockMinutes: candidate.maxBlockMinutes,
+          prerequisitesJson: JSON.stringify(candidate.prerequisites),
+          validationStatus: candidate.validationStatus,
+          difficultyScore: candidate.difficultyScore,
+          isAiSuggested: candidate.isAiSuggested,
+          aiCallLogId: candidate.aiCallLogId,
+        },
+        select: { id: true },
+      });
+      const decision = decisionByKey.get(candidate.candidateKey);
+      if (!decision) continue;
+      await tx.taskPriorityDecision.create({
+        data: {
+          candidateId: created.id,
+          snapshotId,
+          skillGapId,
+          weightsVersion: decision.weightsVersion,
+          factorsJson: JSON.stringify(toFactorsJson(decision)),
+          score: decision.score,
+          priority: decision.priority,
+          rationale: decision.rationale,
+          consequenceIfSkipped: decision.consequenceIfSkipped,
+          eligibility: decision.eligibility,
+          blockedReason: decision.blockedReason,
+        },
+      });
+    }
   });
 }
 
