@@ -9,6 +9,7 @@
  * 同时钉「该合的合」与「不该合的不合」。
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   CANDIDATE_SOURCE_KINDS,
@@ -324,10 +325,14 @@ describe('sourceRefOf：身份字段的格式只允许一处定义', () => {
   });
 
   it('不带链路信息 → 编译期失败（QUESTION / LAB / PROBE 的 extra 是必填的）', () => {
-    // 这三行 `@ts-expect-error` 是**编译期断言**：如果哪天有人把 extra 改回可选，
-    // ts-expect-error 本身就会报"未使用"，typecheck:test 立刻红。
+    // 下面三条编译期指令是**断言**：如果哪天有人把 extra 改回可选，
+    // 指令本身就会报"未使用"（TS2578），`typecheck:test` 立刻红。
     // 静默回落成诊断链路，正是"两条链路混成一条"的入口 —— 混了之后 candidateKey 会撞、
     // dedupeGroup 会合，且都不报错。
+    //
+    // 但它只守「守卫被放松」，守不住「守卫被删除」——把整行删掉既没有指令也没有断言，
+    // `typecheck:test` 照样绿。数量兜底见文件末尾 `编译期指令的数量守门`。
+    // （本段刻意不写出 `@` 开头的字面量，否则数量统计会被注释误算一条。）
     // @ts-expect-error QUESTION 缺 chain
     const missingQuestionChain = () => sourceRefOf('QUESTION', 'x');
     // @ts-expect-error LAB 缺 chain
@@ -350,5 +355,42 @@ describe('sourceRefOf：身份字段的格式只允许一处定义', () => {
     const a = draft({ sourceKind: 'LAB', sourceRef: sourceRefOf('LAB', '1', 'listening') });
     const b = draft({ sourceKind: 'LAB', sourceRef: sourceRefOf('LAB', '1', 'speaking') });
     expect(a.candidateKey).not.toBe(b.candidateKey);
+  });
+});
+
+/**
+ * 编译期指令的数量守门。
+ *
+ * 上一段那三条指令**只守「守卫被放松」，守不住「守卫被删除」**：
+ * 把整行连注释带调用一起删掉，既没有指令也没有断言，`typecheck:test` 照样绿 ——
+ * 而"少了一条链路必填约束"正是它们守着的那件事。
+ *
+ * 所以这里数一遍。注意**只数指令行**（行首可缩进 + `//` 直接跟指令关键字），
+ * 不数正文里的提及：一旦全文统计，正文里迟早会写这个词（本文就在讨论它），
+ * 于是"删掉一条指令 + 顺手多写一句说明"两件事一起做，计数还是对得上，守门静默失效。
+ * （本段刻意不写出带 `@` 的完整字面量：那会被 scanner 当成一条未使用的指令。）
+ *
+ * 这个上限同时管住另一种用法：有人为了压掉**真错误**而顺手多写几条指令。
+ */
+describe('编译期指令的数量守门（防删除 / 防滥用）', () => {
+  const source = readFileSync(new URL('./taskCandidate.test.ts', import.meta.url), 'utf8');
+  const lines = source.split('\n');
+  /** 只有「行首（允许缩进）是 `//` 且紧跟指令关键字」的行才是真指令。 */
+  const directiveLines = lines
+    .map((line, at) => (/^[ \t]*\/\/[ \t]*@ts-expect-error/.test(line) ? at : -1))
+    .filter((at) => at >= 0);
+
+  it('QUESTION / LAB / PROBE 三条链路必填约束的指令不多不少', () => {
+    expect(directiveLines).toHaveLength(3);
+  });
+
+  it('每条指令的下一行都真的是 sourceRefOf 调用（防止指令被挪到别的语句上）', () => {
+    // 先证集合非空（`41 §1.9` A-1）：`[]` 会让下面的循环空转，这条测试静默变绿。
+    expect(directiveLines.length).toBeGreaterThan(0);
+    for (const at of directiveLines) {
+      // TS 只要求"下一条语句报错"，不要求"报的错是我们想守的那个"：
+      // 指令被挪到一条无关的语句上，约束丢了而指令还在，编译仍然绿。
+      expect(lines[at + 1] ?? '', `第 ${at + 1} 行`).toContain('sourceRefOf(');
+    }
   });
 });

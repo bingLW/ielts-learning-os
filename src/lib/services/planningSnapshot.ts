@@ -19,6 +19,7 @@ import type { StageCode } from '@/lib/types';
 import { addDays, listDateRange, diffDays } from '@/lib/date';
 import {
   buildCanonicalPlanningInput,
+  parseSkillTargets,
   RULE_VERSION,
   type PlanningLayer,
 } from '@/lib/domain/planningSnapshot';
@@ -33,7 +34,7 @@ import { prisma } from '@/lib/prisma';
 import { getBudgetRange, getEffectiveBudget, getPlannerSettings } from '@/lib/queries/budget';
 import { loadPlanEngineContext } from '@/lib/queries/planning';
 import { fail, ok } from '@/lib/result';
-import type { ActionResult, EvidenceConfidence, LearningTrack } from '@/lib/types';
+import type { ActionResult, EvidenceConfidence, LearningTrack, SkillId } from '@/lib/types';
 
 /** 快照用途（与 `PlanningSnapshot.purpose` 一致）。 */
 export const PLANNING_SNAPSHOT_PURPOSES = [
@@ -62,7 +63,12 @@ export interface PlanEngineContextV27 {
     track: LearningTrack;
     targetValue: string | null;
     targetDate: string | null;
-    skillTargets: Record<string, number>;
+    /**
+     * `Partial` 是**刻意**的：未列出的技能表示"不在目标内"，读取侧必须写
+     * `?? 0.30`。用 `Record<string, number>` 会让 TS 声称每个键都有值，
+     * 而运行时拿到 `undefined` → `goalRelevance` 算术变 `NaN` → 排序静默乱序。
+     */
+    skillTargets: Partial<Record<SkillId, number>>;
   } | null;
   budget: Awaited<ReturnType<typeof getEffectiveBudget>>;
   budgetDays: { date: string; minutes: number; isRestDay: boolean }[];
@@ -169,7 +175,7 @@ export async function buildPlanningSnapshot(
         track: 'IELTS_PREPARATION' as LearningTrack,
         targetValue: goalRow.targetValue,
         targetDate: goalRow.targetDate,
-        skillTargets: Object.fromEntries(
+        skillTargets: parseSkillTargets(Object.fromEntries(
           (
             [
               ['LISTENING', goalRow.minListening],
@@ -178,7 +184,7 @@ export async function buildPlanningSnapshot(
               ['SPEAKING', goalRow.minSpeaking],
             ] as const
           ).filter(([, value]) => typeof value === 'number'),
-        ) as Record<string, number>,
+        )),
       }
     : null;
   if (!goal) {

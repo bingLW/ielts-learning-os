@@ -17,6 +17,7 @@ import {
   RULE_VERSION,
   canonicalizePlanningValue,
   hashPlanningInput,
+  parseSkillTargets,
   periodOf,
 } from '../planningSnapshot';
 import { addDays } from '../../date';
@@ -202,5 +203,29 @@ describe('periodOf：层级区间由纯函数派生（区间不落列）', () =>
 
   it('未知层级直接抛错（静默当 DAY 会让 30 天版本缩成 1 天）', () => {
     expect(() => periodOf({ layer: 'QUARTER', planDate: '2025-10-20' })).toThrow(/未知的计划层级/);
+  });
+});
+
+describe('parseSkillTargets：把宽类型收紧成 Partial（NaN 的第一道闸）', () => {
+  it('丢掉非 SkillId 的键（脏配置不该变成"某个技能有目标"）', () => {
+    const targets = parseSkillTargets({ READING: 7, NOT_A_SKILL: 9, VOCAB: 6 });
+    expect(targets).toEqual({ READING: 7, VOCAB: 6 });
+    expect('NOT_A_SKILL' in targets).toBe(false);
+  });
+
+  it('未列出的技能读出来是 undefined（调用方必须 ?? 回落，不许当 0）', () => {
+    const targets = parseSkillTargets({ READING: 7 });
+    expect(targets.SPEAKING).toBeUndefined();
+    // 这条是"类型收紧"的意义所在：`Record<string, number>` 会让 TS 声称这里是 number
+    expect(typeof targets.SPEAKING).toBe('undefined');
+  });
+
+  it('非有限数 / 负数 / 非对象输入被丢弃，不产生 NaN', () => {
+    expect(parseSkillTargets({ READING: Number.NaN, VOCAB: -1, GRAMMAR: 6 })).toEqual({
+      GRAMMAR: 6,
+    });
+    for (const bad of [null, undefined, 42, 'x', [1, 2]]) {
+      expect(parseSkillTargets(bad)).toEqual({});
+    }
   });
 });

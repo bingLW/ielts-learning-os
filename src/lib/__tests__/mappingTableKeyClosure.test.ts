@@ -113,10 +113,21 @@ describe('第二道：键集合与枚举集合相等（不是包含）', () => {
     const keys = Object.keys(QUESTION_OPEN_TASK_SKILL_OVERRIDE);
     expect(keys.length).toBeGreaterThan(0);
     expect(keys.every((key) => (SKILL_IDS as readonly string[]).includes(key))).toBe(true);
-    // 未命中必须落到一个**正的有限数**，不能是 undefined
+    // `Partial` 的安全性全在**缺失侧**：`for (const k in table)` 遍历的是"实际有的键"，
+    // 永远不会告诉你有哪个键没有。所以先证缺失侧非空，再逐个断言它能回落到一个正数。
+    //
+    // 防空转（`42` T03 ⑮）：将来有人把 8 个键填满，下面的循环体一次都不执行，
+    // 整条测试会静默通过 —— 先断言 missing 非空，让"填满"这件事也必须被显式处理。
     const fallback = CANDIDATE_DEFAULT_MINUTES.QUESTION.OPEN_TASK;
-    expect(Number.isFinite(QUESTION_OPEN_TASK_SKILL_OVERRIDE.READING ?? fallback)).toBe(true);
-    expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE.READING ?? fallback).toBe(fallback);
+    const missing = SKILL_IDS.filter((skill) => !(skill in QUESTION_OPEN_TASK_SKILL_OVERRIDE));
+    expect(missing.length).toBeGreaterThan(0);
+    for (const skill of missing) {
+      // 注意这里测的是"表层回落"，真正的防线在 `candidateSources.test.ts` 里打查找点
+      // （表合法而调用处漏 `??` 时，任何表侧断言都看不见）
+      expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE[skill] ?? fallback, skill).toBe(fallback);
+      expect(Number.isFinite(fallback), skill).toBe(true);
+      expect(fallback, skill).toBeGreaterThan(0);
+    }
   });
 
   it('覆写表的两个键取值不同（写作 20 / 口语 10），否则覆写没有意义', () => {

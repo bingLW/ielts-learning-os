@@ -20,7 +20,9 @@
  */
 
 import { createHash } from 'node:crypto';
+import { SKILL_IDS } from '../constants';
 import { addDays } from '../date';
+import type { SkillId } from '../types';
 
 /**
  * 调度语义版本。
@@ -230,4 +232,30 @@ export function periodOf(input: LayerInput): PlanPeriod {
     start: input.planDate,
     end: addDays(input.planDate, LAYER_SPAN_DAYS[layer]),
   };
+}
+
+/**
+ * 把自由 JSON 里的技能目标收窄成 `Partial<Record<SkillId, number>>`。
+ *
+ * 为什么不能直接用 `Record<string, number>`：那个类型会让 TS 告诉你**每个键都一定有
+ * `number`** —— 而实际未列出的 `SkillId` 取到的是 `undefined`，它流进 `goalRelevance`
+ * 的算术就变 `NaN`；`NaN` 参与比较恒 `false`，`sort` 不报错、只静默乱序。
+ *
+ * 所以这里做两件事：
+ * 1. **丢掉非 `SkillId` 的键**（脏配置不该变成"某个技能有目标"）；
+ * 2. 返回值类型是 `Partial<…>`，读取侧必须写 `?? 0.30`（该技能不在目标内）。
+ *
+ * @param raw 任意输入（通常来自 `LearningGoal` 的四个分数字段）
+ */
+export function parseSkillTargets(raw: unknown): Partial<Record<SkillId, number>> {
+  const known = new Set<string>(SKILL_IDS);
+  const out: Partial<Record<SkillId, number>> = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!known.has(key)) continue;
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes < 0) continue;
+    out[key as SkillId] = minutes;
+  }
+  return out;
 }
