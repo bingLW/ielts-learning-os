@@ -18,7 +18,7 @@
 import type { StageCode } from '@/lib/types';
 import { addDays, listDateRange, diffDays, endOfBusinessDay, toUtcInstant } from '@/lib/date';
 import { STAGE_CODES, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
-import { DEFAULT_WEIGHTS, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
+import { DEFAULT_WEIGHTS, orderDecisions, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
 import type { PrerequisiteContext, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
 import { collectCandidates } from '@/lib/services/candidateSources';
 import {
@@ -382,7 +382,7 @@ export async function buildPlanningSnapshot(
   }
 
   const prerequisites = await buildPrerequisiteContext(collected.candidates, stage.code as StageCode);
-  const decisions = collected.candidates.map((row) =>
+  const scored = collected.candidates.map((row) =>
     scoreCandidate(row, {
       asOfDate: input.asOfDate,
       budgetMinutes: budget.minutes,
@@ -394,6 +394,11 @@ export async function buildPlanningSnapshot(
       prerequisites,
     }),
   );
+  // 排序只在这里发生一次（`orderDecisions`）：`candidates` 跟着 `decisions` 走，
+  // 下游拿到的是同一份顺序 —— 否则"候选列表"和"决策列表"各按各的顺序渲染，
+  // 而两处都自称有序。
+  const decisions = orderDecisions(scored);
+  const orderedCandidates = canonicalCandidateOrder(collected.candidates, decisions);
 
   // ── 归一化一次：hash 与落库共用同一个对象（约束⑦） ──
   const { canonical, hash } = buildCanonicalPlanningInput({
@@ -419,7 +424,7 @@ export async function buildPlanningSnapshot(
     dueReviews: legacy.dueReviews,
     dueRetests: legacy.dueRetests,
     execution,
-    candidates: collected.candidates,
+    candidates: orderedCandidates,
     decisions,
     validation: { missing, warnings },
     replan:
@@ -440,7 +445,7 @@ export async function buildPlanningSnapshot(
     gaps: split.gaps,
     uncertainties: split.uncertainties,
     unknowns: split.unknowns,
-    candidates: collected.candidates,
+    candidates: orderedCandidates,
     decisions,
     execution,
     validation,
@@ -500,7 +505,7 @@ export async function buildPlanningSnapshot(
 
   // 顺序固定：缺口先落库，候选靠 `dimensionKind:skill:subskill` 反查 `SkillGap.id`
   await persistGaps(snapshotId, split);
-  await persistCandidates(snapshotId, collected.candidates, decisions);
+  await persistCandidates(snapshotId, orderedCandidates, decisions);
 
   return ok({
     snapshotId,
@@ -510,6 +515,28 @@ export async function buildPlanningSnapshot(
     weightsVersion,
     context,
   });
+}
+
+/**
+ * 按决策顺序重排候选。
+ *
+ * 两者必须同序：UI 与 `adaptivePlan` 拿到的是两个平行数组，各自按自己的顺序渲染/消费
+ * 会让"第 3 条候选"与"第 3 条决策"指向不同任务 —— 这种错位不会报错，只会让解释面板
+ * 显示别人的理由。
+ */
+function canonicalCandidateOrder(
+  candidates: readonly TaskCandidateDraft[],
+  decisions: readonly TaskPriorityDecisionDraft[],
+): TaskCandidateDraft[] {
+  const byKey = new Map(candidates.map((row) => [row.candidateKey, row] as const));
+  const ordered = decisions.flatMap((row) => {
+    const hit = byKey.get(row.candidateKey);
+    return hit ? [hit] : [];
+  });
+  // 理论上每个候选都有决策；真出现没有决策的（不该发生），按原顺序补在末尾，
+  // **不静默丢**：丢了会让"候选池少一条"永远查不出来
+  const seen = new Set(ordered.map((row) => row.candidateKey));
+  return [...ordered, ...candidates.filter((row) => !seen.has(row.candidateKey))];
 }
 
 /**

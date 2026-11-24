@@ -311,6 +311,47 @@ export function priorityOf(
   return 'P3';
 }
 
+// ───────────────────────── 排序（全仓唯一一处） ─────────────────────────
+
+/** 分层的排序权重（`P0` 最前）。 */
+const PRIORITY_RANK: Record<TaskPriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+/**
+ * 决策的比较函数：`priority` 升序 → `score` 降序 → `candidateKey` 升序。
+ *
+ * 三个键缺一不可，理由各不相同：
+ * 1. **`priority` 必须在 `score` 之前**：否则一条 `score=0.99` 的 P3 拓展会排到
+ *    `score=0.10` 的 P0 到期复习前面 —— 那是在渲染层把「P0 是约定不是排名」直接破掉，
+ *    而页面看起来完全正常（两条都在今天的列表里，只是顺序不同）。
+ * 2. **`score` 降序**：同层内先做更值得的。
+ * 3. **`candidateKey` 升序兜底**：`urgency` / `goalRelevance` 都是**离散回落值**
+ *    （0.40 / 0.50 / 0.30…），撞分极常见；没有末位键，兜底就变成"数据库返回顺序"，
+ *    而 `dev.db` 的行序在 `VACUUM` / 重建表之后会变。
+ */
+export function compareDecisions(a: TaskPriorityDecisionDraft, b: TaskPriorityDecisionDraft): number {
+  const byPriority = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+  if (byPriority !== 0) return byPriority;
+  if (a.score !== b.score) return b.score - a.score;
+  return a.candidateKey < b.candidateKey ? -1 : a.candidateKey > b.candidateKey ? 1 : 0;
+}
+
+/**
+ * 把决策排成**唯一确定**的顺序。
+ *
+ * 这是全仓唯一允许决定"先做哪条"的地方。`adaptivePlan` 必须按传入顺序消费、
+ * 不得二次排序 —— 否则同一份数据有两处决定顺序，「可复算」立刻失效
+ * （用户看到 A 在 B 前面，重算一次却变了，而两处代码各自都"没错"）。
+ *
+ * 纯函数、不改入参。
+ *
+ * @param decisions 决策列表（顺序任意）
+ */
+export function orderDecisions(
+  decisions: readonly TaskPriorityDecisionDraft[],
+): TaskPriorityDecisionDraft[] {
+  return [...decisions].sort(compareDecisions);
+}
+
 // ───────────────────────── 解释文案 ─────────────────────────
 
 /** 主导因子（加权贡献最大者）——解释面板先说这一句。 */

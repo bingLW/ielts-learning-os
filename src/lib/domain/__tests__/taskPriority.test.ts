@@ -33,6 +33,7 @@ import {
   DEFAULT_WEIGHTS,
   FACTOR_LABEL_ZH,
   WEIGHTS_VERSION,
+  orderDecisions,
   priorityOf,
   scoreCandidate,
   toFactorsJson,
@@ -40,6 +41,7 @@ import {
   type FactorTrace,
   type PriorityWeights,
   type ScoreContext,
+  type TaskPriorityDecisionDraft,
 } from '@/lib/domain/taskPriority';
 import { validatePriorityWeights } from '@/lib/schema/planner';
 
@@ -823,5 +825,62 @@ describe('常量自洽：中性值与额度分档', () => {
     );
     expect(probe.meta.estMinutesSource).toBe('DERIVED');
     expect(probe.priority).not.toBe('P0');
+  });
+});
+
+// ───────────────────────── ㉓ 排序键 ─────────────────────────
+
+describe('㉓ 排序键：priority 升序 → score 降序 → candidateKey 升序', () => {
+  const decision = (over: Partial<TaskPriorityDecisionDraft>): TaskPriorityDecisionDraft => ({
+    candidateKey: 'REVIEW:review:r1:READING',
+    weightsVersion: WEIGHTS_VERSION,
+    factors: { ...DEFAULT_WEIGHTS },
+    score: 0.5,
+    priority: 'P2',
+    rationale: '测试',
+    consequenceIfSkipped: null,
+    eligibility: 'ELIGIBLE',
+    blockedReason: null,
+    meta: { estMinutesSource: 'SOURCE', skillGapKey: null, evidenceRefs: [], noObservation: false },
+    ...over,
+  });
+
+  it('① 同 priority 同 score → 按 candidateKey 升序，且与输入顺序无关', () => {
+    const a = decision({ candidateKey: 'QUESTION:diagnostic:a:READING' });
+    const b = decision({ candidateKey: 'QUESTION:diagnostic:b:READING' });
+    // 两条完全相同（同分层、同分），唯一能决出顺序的就是末位键
+    const forward = orderDecisions([b, a]).map((row) => row.candidateKey);
+    const backward = orderDecisions([a, b]).map((row) => row.candidateKey);
+    expect(forward).toEqual(['QUESTION:diagnostic:a:READING', 'QUESTION:diagnostic:b:READING']);
+    // 打乱输入两次 → 输出逐字相同（证明末位键生效，而不是靠数组/DB 顺序）
+    expect(forward).toEqual(backward);
+  });
+
+  it('② priority 必须排在 score 之前：高分 P3 不能排到低分 P0 前面', () => {
+    const highScoreP3 = decision({ candidateKey: 'EXTENDED:x:READING', priority: 'P3', score: 0.99 });
+    const lowScoreP0 = decision({ candidateKey: 'REVIEW:review:r1:READING', priority: 'P0', score: 0.1 });
+    const ordered = orderDecisions([highScoreP3, lowScoreP0]);
+    expect(ordered[0]?.priority).toBe('P0');
+    expect(ordered[1]?.priority).toBe('P3');
+    // 写成 `score desc → priority` 时这一条会红 —— 而它在页面上只表现为"顺序不同"
+  });
+
+  it('同分层内按 score 降序', () => {
+    const low = decision({ candidateKey: 'QUESTION:diagnostic:z:READING', score: 0.45 });
+    const high = decision({ candidateKey: 'QUESTION:diagnostic:y:READING', score: 0.55 });
+    expect(orderDecisions([low, high]).map((row) => row.candidateKey)).toEqual([
+      'QUESTION:diagnostic:y:READING',
+      'QUESTION:diagnostic:z:READING',
+    ]);
+  });
+
+  it('排序是纯函数：不改入参顺序', () => {
+    const list = [
+      decision({ candidateKey: 'QUESTION:diagnostic:b:READING', priority: 'P3', score: 0.1 }),
+      decision({ candidateKey: 'QUESTION:diagnostic:a:READING', priority: 'P0', score: 0.9 }),
+    ];
+    const before = list.map((row) => row.candidateKey);
+    orderDecisions(list);
+    expect(list.map((row) => row.candidateKey)).toEqual(before);
   });
 });
