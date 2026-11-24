@@ -600,6 +600,10 @@ describe('⑤ TaskProposalItem.planTaskId 非空 → 不入池（Q6 入池过滤
     ).length;
     expect(packItemIds.size).toBe(1);
     expect(noProposalCount).toBe(1);
+    // 原因文案按**包**说（不是"这条还没提草案"）：草案是整包生成的，界面上没有"条目"这个对象
+    const reason = skipped.find((row) => row.why.includes('no-proposal'));
+    expect(reason?.why).toContain('材料包');
+    expect(reason?.why).not.toContain('该材料条目');
   });
 
   it('「没提案」与「已排过」是两个原因，不许合成一句「无候选」', () => {

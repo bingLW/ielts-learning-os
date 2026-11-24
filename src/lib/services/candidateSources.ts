@@ -683,7 +683,9 @@ function reportUnproposedPackItems(
     // 两条判据任一条成立即视为"已有草案"
     if (proposedPackIds.has(packItem.pack.id)) continue;
     if (proposedMaterialIds.has(packItem.pack.materialId)) continue;
-    sink({ sourceKind: 'MATERIAL', sourceRef: null, why: 'no-proposal：该材料条目还没有草案（或被丢弃）' });
+    // 文案按**包**说，不按条目说：`41 §2.3` 要求"被排除原因"按包粒度写 ——
+    // 说"这条还没提草案"会让用户去界面上找一条根本不存在的条目（草案是整包生成的）。
+    sink({ sourceKind: 'MATERIAL', sourceRef: null, why: 'no-proposal：该材料包还没有草案（或被丢弃）' });
   }
 }
 
