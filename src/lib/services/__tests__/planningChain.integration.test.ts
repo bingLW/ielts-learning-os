@@ -23,22 +23,57 @@
  * 这份测试就不再是 C-H 的证据，得重新设计。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-chain-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+/**
+ * **读集必须写全**：`buildPlanningSnapshot` 会跑 `collectCandidates()`（8 个来源）
+ * 再对每条候选评分。任何一张没清的源表都会让种子数据混进 `decisions`，
+ * 于是"READING / SPEAKING 两个维度必须表现不同"这类断言就变成在赌本机库的现状。
+ *
+ * 清空之后候选池里只剩本文件造的两条 `RETEST`（READING / SPEAKING），
+ * 所以下面可以断言 `decisions` **恰好 2 条**。
+ */
+const { prisma } = await createTestDb([
+  'exerciseAttempt',
+  'diagnosticAttempt',
+  'generatedExercise',
+  'diagnosticItem',
+  'diagnosticBlueprint',
+  'materialPackItem',
+  'materialPack',
+  'taskProposalItem',
+  'taskProposal',
+  'vocabularyAssignmentItem',
+  'vocabularyAssignment',
+  'reviewTask',
+  'retestSchedule',
+  'egiuReview',
+  'egiuLesson',
+  'listeningExercise',
+  'speakingPrompt',
+  'transcript',
+  'audioAsset',
+  'contentChunk',
+  'parsedDocument',
+  'materialExerciseSet',
+  'mistake',
+  'studyRecord',
+  'evidenceRecord',
+  'skillProfile',
+  'learningGoal',
+  'learningCycle',
+  'skillGap',
+  'taskPriorityDecision',
+  'taskCandidate',
+  'planningSnapshot',
+  'planTask',
+  'learningMaterial',
+  'resource',
+]);
 
 const { buildPlanningSnapshot } = await import('@/lib/services/planningSnapshot');
 const { WEAKNESS_MIN_QUESTIONS } = await import('@/lib/constants');
@@ -50,15 +85,6 @@ let snapshot: Awaited<ReturnType<typeof buildPlanningSnapshot>>;
 let stageId = '';
 
 beforeAll(async () => {
-  // 只清本测试依赖的表；其它来源的数据留着不影响断言（我们只找特定维度的候选）
-  await prisma.retestSchedule.deleteMany({});
-  await prisma.reviewTask.deleteMany({});
-  await prisma.mistake.deleteMany({});
-  await prisma.studyRecord.deleteMany({});
-  await prisma.evidenceRecord.deleteMany({});
-  await prisma.skillProfile.deleteMany({});
-  await prisma.planningSnapshot.deleteMany({});
-
   const existingStage = await prisma.stage.findFirst({ where: { status: 'ACTIVE' } });
   const stage =
     existingStage ??
@@ -225,6 +251,14 @@ describe('⑲ 落库的一侧：候选与决策成对写入', () => {
       expect(Object.keys(parsed.factors as object).length, row.candidateKey).toBe(7);
       expect(row.decision!.weightsVersion, row.candidateKey).toBeTruthy();
     }
+  });
+
+  it('候选池恰好只剩本文件造的两条 RETEST（读集清干净了，没有种子数据混进来）', async () => {
+    if (!snapshot.ok) throw new Error('快照构建失败');
+    const keys = snapshot.data.context.decisions.map((row) => row.candidateKey).sort();
+    expect(keys).toHaveLength(2);
+    expect(keys[0]?.startsWith('RETEST:')).toBe(true);
+    expect(keys[1]?.startsWith('RETEST:')).toBe(true);
   });
 
   it('快照不再把候选池报成"缺失输入"', async () => {

@@ -251,6 +251,14 @@ export function periodOf(input: LayerInput): PlanPeriod {
  * 「**目标 0 分**」。这两件事在读侧完全不同：前者走"该技能与目标无直接关系"的中性分，
  * 后者算出"已经完全达标"。后者更难发现，因为它在数值上看起来完全正常。
  *
+ * ⚠️ **显式 `0` 必须保留**（`{READING: 0}` 与原样 0 都要留着）：`0` 是合法目标值，
+ * "没设目标"的唯一判据是**键不存在**，这正是 `Partial` 要表达的东西。
+ *
+ * ⚠️ **与 `services/candidateSources.ts:sourceMinutesOf()` 对 `0` 的处理相反** ——
+ * 那里把 `0` 当"缺数据"落兜底。两处不是笔误：目标是"想要多少分"，`0` 是有效输入；
+ * 而 0 分钟的**任务**在装箱时"永远放得下"，会把真实任务挤出去且不留痕迹。
+ * 见到这两处的差异时请先读这句，不要"统一一下"。
+ *
  * @param raw 任意输入（通常来自 `LearningGoal` 的四个分数字段）
  */
 export function parseSkillTargets(raw: unknown): Partial<Record<SkillId, number>> {

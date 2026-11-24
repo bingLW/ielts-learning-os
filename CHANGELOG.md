@@ -27,9 +27,15 @@
 - `SkillGapDraft` 追加 `evidenceQuestions` / `repeatedErrorCount` 两个**派生字段**（与 `stale` 同样不落库）。此前二者缺失会让 T04 的 `errorRecurrence` 因子与 `noObservation` 标注整条失效，而只断言 `0.00` 的测试仍会全绿。`repeatedErrorCount` 的 `null`（未统计）必须原样保留，不得 `?? 0`。
 - `candidateKey` 定为 `sourceKind:sourceRef|none:module`：**不含 `dateKey`**（一个快照一个 `asOfDate`，放进来会让跨快照比对永远失配），**也不含 `estMinutes`**（载荷不是身份）。
 
+### 内部实现变更（行为不变）
+
+- **`services/planningSnapshot.ts` 删掉了调用点的 `.filter(([, v]) => typeof v === 'number')`**（`parseSkillTargets` 的入参准备处）。守卫已移到 `parseSkillTargets()` 函数体内（`if (typeof value !== 'number') continue`），语义完全等价；删的理由是 `41 §1.9` **A-4**：一个 `export` 的函数如果去掉调用方的前置过滤就会错，那它自己就错了。留着那道 `.filter` 会让下一个调用点（T04 的 `goalRelevance`）以为"函数需要我这样做"，于是每个新调用点都加一份自己的守卫，而函数真正的边界永远没人管。
+- 变更前后行为一致性有**可执行证明**：把 `parseSkillTargets` 的守卫退回 `Number(value)`（坏实现）——**不加** `.filter` 时夹具报 `{LISTENING: 0, READING: 7, …}`（红）；**加回** `.filter` 时全绿。同一个坏函数两种结果，正是"filter 的存在掩盖了函数本身的缺陷"的实证。夹具见 `services/__tests__/planningSnapshot.integration.test.ts`（`minReading: 7`、其余三项 `null`）。
+
 ### 测试
 
 - 新增 `domain/__tests__/budgetResolve.test.ts`：五段分支各一条 + 「批量 vs 逐日」逐字段等价性（30 天 × 3 种配置状态）——后者是防止两条实现再次分叉的唯一防线。
+- 新增 `src/lib/__tests__/helpers/testDb.ts`：集成测试建库助手，**强制调用方声明读集**（`delegates` 为空直接抛错、delegate 名写错直接抛错）。此前的做法是每个测试自己 `copyFileSync(dev.db)` + `deleteMany` 几张**它想得起来的**表，于是"读了但没清"的表把本机开发库的现状带进了断言。新建的两个集成测试已迁移；旧文件不动，碰到再迁。
 
 ## v2.6 — 2026-11-23
 

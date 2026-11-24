@@ -36,6 +36,31 @@ beforeAll(async () => {
   await prisma.planningSnapshot.deleteMany({});
   await prisma.skillProfile.deleteMany({});
   await prisma.evidenceRecord.deleteMany({});
+  /**
+   * **目标行必须自己建，不能靠本机 `dev.db`**（`41 §10.1`）。
+   *
+   * 不建的话 `goalRow` 取到的是开发库里恰好存在（或不存在）的那条 ACTIVE 目标，
+   * 于是"`parseSkillTargets` 有没有丢掉 `null`"这件事**根本没被执行** ——
+   * 删掉调用点那道 `.filter` 也观测不到差别（`41 §1.9` A-3 第 2 层：
+   * 变异没打中被测代码）。
+   *
+   * `minReading: 7` 其余 `null` 是**真实形状**：用户建档时往往只填关心的那一两项。
+   * 这条夹具是唯一能区分「`parseSkillTargets` 丢掉 null」与「调用点先 `.filter`」的输入。
+   */
+  await prisma.learningGoal.deleteMany({});
+  await prisma.learningGoal.create({
+    data: {
+      goalType: 'IELTS',
+      name: '集成测试目标（只填阅读）',
+      status: 'ACTIVE',
+      targetValue: '6.5',
+      targetDate: '2026-06-01',
+      minReading: 7,
+      minListening: null,
+      minWriting: null,
+      minSpeaking: null,
+    },
+  });
 });
 
 afterAll(async () => {
@@ -182,5 +207,19 @@ describe('端到端：真实装配路径下的缺口不能被 S6 静默抑制', 
     expect(rows, '真实缺口不能被当成"没有缺口"').toHaveLength(1);
     expect(rows[0].kind).toBe('GAP');
     expect(rows[0].severity).toBeGreaterThan(0.15);
+  });
+});
+
+describe('目标装配（A-4）：`parseSkillTargets` 自己丢掉 `null`，不靠调用点 pre-filter', () => {
+  it('`skillTargets` 恰好只有真正设了目标的那一科；缺键 ≠ 值 0', async () => {
+    const result = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, horizonDays: 7 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const targets = result.data.context.goal?.skillTargets;
+    expect(targets).toEqual({ READING: 7 });
+    // 三条 `null` 不许变成三个 0 —— 0 会被读侧当成"目标 0 分，已完全达标"
+    expect('LISTENING' in (targets ?? {})).toBe(false);
+    expect('WRITING' in (targets ?? {})).toBe(false);
+    expect('SPEAKING' in (targets ?? {})).toBe(false);
   });
 });
