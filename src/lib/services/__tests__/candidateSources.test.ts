@@ -66,6 +66,7 @@ const ids = {
   exerciseDraft: '',
   diagMcq: '',
   diagOpenTask: '',
+  diagAi: '',
   audioConfirmed: '',
   audioMissing: '',
   listeningConfirmed: '',
@@ -299,6 +300,21 @@ beforeAll(async () => {
     },
   });
   ids.diagOpenTask = diagOpenTask.id;
+  const diagAi = await prisma.diagnosticItem.create({
+    data: {
+      blueprintId: blueprint.id,
+      itemCode: `CAND-AI-${Date.now()}`,
+      skill: 'SPEAKING',
+      subskill: '',
+      targetLevelMin: 'A2',
+      targetLevelMax: 'B1',
+      difficulty: 1,
+      taskType: 'SHORT_ANSWER',
+      sourceType: 'AI_PRACTICE',
+      prompt: 'What do you do at weekends?',
+    },
+  });
+  ids.diagAi = diagAi.id;
 
   // ── 7. LAB ──
   const audioConfirmed = await prisma.audioAsset.create({
@@ -451,6 +467,11 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
       { kind: 'MATERIAL_READY', materialId: expect.any(String) },
       { kind: 'EXERCISE_APPROVED', exerciseId: ids.exerciseApproved },
     ]);
+
+    // AI 临时生成的练习题必须保持 `AI_PRACTICE`（不许被标成 VERIFIED）
+    const aiPractice = find(pool, `QUESTION:diagnostic:${ids.diagAi}:SPEAKING`);
+    expect(aiPractice.validationStatus).toBe('AI_PRACTICE');
+    expect(aiPractice.estMinutes).toBe(6); // SHORT_ANSWER
 
     const question = find(pool, `QUESTION:diagnostic:${ids.diagMcq}:READING`);
     expect(question.estMinutes).toBe(3);

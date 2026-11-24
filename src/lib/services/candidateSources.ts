@@ -659,7 +659,10 @@ export async function collectQuestionCandidates(
         // `minMinutes = estMinutes`：开放题走 skill 覆写后最小可执行单元随之变大，
         // 大作文**不该**再被塞进 15 分钟的应急日
         minMinutes: minutes.estMinutes,
-        validationStatus: item.sourceType === 'RUBRIC' ? 'RUBRIC' : 'VERIFIED',
+        // 三种来源照抄，**不合并**：`AI_PRACTICE` 若被标成 `VERIFIED`，一条 AI 临时
+        // 生成的练习题会和有标准答案的题库题长得一模一样 —— 而"AI 生成的东西被当成
+        // 正式练习"正是本站最容易发生也最难事后解释的一类事故。
+        validationStatus: diagnosticValidationStatusOf(item.sourceType),
         difficultyScore: difficulty,
         meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
       }),
@@ -688,6 +691,13 @@ export async function collectQuestionCandidates(
     );
   }
   return out;
+}
+
+/** `DiagnosticItem.sourceType` → 候选的 `validationStatus`（值域更窄，必须显式映射）。 */
+function diagnosticValidationStatusOf(sourceType: string): TaskCandidateDraft['validationStatus'] {
+  if (sourceType === 'RUBRIC') return 'RUBRIC';
+  if (sourceType === 'AI_PRACTICE') return 'AI_PRACTICE';
+  return 'VERIFIED';
 }
 
 /** 表外题型在这里被拦下并记一条 skip（**不**用默认值兜）。 */
