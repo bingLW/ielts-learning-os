@@ -14,27 +14,50 @@
  * - **A-3**：下面每条断言都能说出「哪种错误实现会让它红」。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { QUESTION_OPEN_TASK_SKILL_OVERRIDE, SKILL_IDS } from '@/lib/constants';
 // `CANDIDATE_SOURCE_KINDS` 的真身在 domain 层（constants 只引用它的类型）——
 // 从 constants 拿会是 `undefined`，而 `[].filter(...)` 恰好不会报错。
 import { CANDIDATE_SOURCE_KINDS, type TaskCandidateDraft } from '@/lib/domain/taskCandidate';
-
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-candidates-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+/**
+ * **这棵读集必须写全**：`collectCandidates()` 会把 8 个来源全查一遍，任何一张没清的
+ * 表都会把本机 `dev.db` 的种子数据混进候选池（例如 seed 里的一条 ready 材料会凭空
+ * 多出一批 MATERIAL 候选，而 `no-proposal` 的计数断言会因此变红 —— 换台机器就复现不了）。
+ * 顺序：先子后父。
+ */
+const { prisma } = await createTestDb([
+  'exerciseAttempt',
+  'diagnosticAttempt',
+  'generatedExercise',
+  'diagnosticItem',
+  'diagnosticBlueprint',
+  'materialPackItem',
+  'materialPack',
+  'taskProposalItem',
+  'taskProposal',
+  'vocabularyAssignmentItem',
+  'vocabularyAssignment',
+  'reviewTask',
+  'retestSchedule',
+  'egiuReview',
+  'egiuLesson',
+  'listeningExercise',
+  'speakingPrompt',
+  'transcript',
+  'audioAsset',
+  'contentChunk',
+  'parsedDocument',
+  'materialExerciseSet',
+  'evidenceRecord',
+  'planTask',
+  'learningMaterial',
+  'resource',
+]);
 
 const {
   collectCandidates,
@@ -59,6 +82,8 @@ const ids = {
   vocabPlanned: '',
   packWithProposal: '',
   packWithoutProposal: '',
+  packWithDirectProposal: '',
+  proposalItemDirect: '',
   proposal: '',
   proposalItemOk: '',
   proposalItemPlanned: '',
@@ -88,23 +113,6 @@ function find(list: readonly TaskCandidateDraft[], key: string): TaskCandidateDr
 }
 
 beforeAll(async () => {
-  // ── 清空 8 源涉及的源表（这是 dev.db 的临时副本，只服务本文件）──
-  await prisma.diagnosticAttempt.deleteMany({});
-  await prisma.diagnosticItem.deleteMany({});
-  await prisma.exerciseAttempt.deleteMany({});
-  await prisma.generatedExercise.deleteMany({});
-  await prisma.materialPackItem.deleteMany({});
-  await prisma.materialPack.deleteMany({});
-  await prisma.taskProposalItem.deleteMany({});
-  await prisma.taskProposal.deleteMany({});
-  await prisma.vocabularyAssignment.deleteMany({});
-  await prisma.reviewTask.deleteMany({});
-  await prisma.retestSchedule.deleteMany({});
-  await prisma.egiuReview.deleteMany({});
-  await prisma.egiuLesson.deleteMany({});
-  await prisma.listeningExercise.deleteMany({});
-  await prisma.speakingPrompt.deleteMany({});
-
   const existingStage = await prisma.stage.findFirst({ where: { status: 'ACTIVE' } });
   const stage =
     existingStage ??
@@ -182,6 +190,47 @@ beforeAll(async () => {
   await prisma.materialPackItem.create({
     data: { packId: otherPack.id, itemType: 'CHUNK', refId: 'chunk-2', sortOrder: 1 },
   });
+
+  // ── 第三种形态：包存在，但材料只有「单材料直出」的提案（`TaskProposal.packId IS NULL`）──
+  const directMaterial = await prisma.learningMaterial.create({
+    data: {
+      title: '单材料直出的材料',
+      format: 'TXT',
+      sourceType: 'user_upload',
+      contentHash: `cand3-${Date.now()}`,
+      status: 'ready',
+    },
+  });
+  const directPack = await prisma.materialPack.create({
+    data: { materialId: directMaterial.id, estimatedMinutes: 20 },
+  });
+  ids.packWithDirectProposal = directPack.id;
+  await prisma.materialPackItem.create({
+    data: { packId: directPack.id, itemType: 'CHUNK', refId: 'chunk-3', sortOrder: 1 },
+  });
+  const directProposal = await prisma.taskProposal.create({
+    data: {
+      materialId: directMaterial.id,
+      // 关键：**不挂包**
+      packId: null,
+      baseDate: AS_OF,
+      budgetMinutes: 40,
+      totalMinutes: 20,
+      status: 'draft',
+    },
+  });
+  const directItem = await prisma.taskProposalItem.create({
+    data: {
+      proposalId: directProposal.id,
+      module: 'READING',
+      targetSkill: 'READING',
+      title: '单材料直出：精读',
+      suggestedMinutes: 20,
+      granularity: 15,
+      suggestedDate: AS_OF,
+    },
+  });
+  ids.proposalItemDirect = directItem.id;
 
   const exerciseSet = await prisma.materialExerciseSet.create({
     data: { materialId: material.id, title: '选段练习', targetSkill: 'READING' },
@@ -535,6 +584,22 @@ describe('⑤ TaskProposalItem.planTaskId 非空 → 不入池（Q6 入池过滤
     expect(pool.some((row) => row.sourceRef === `material:${ids.proposalItemPlanned}`)).toBe(false);
     const reason = skipped.find((row) => row.sourceRef === `material:${ids.proposalItemPlanned}`);
     expect(reason?.why).toContain('already-planned');
+  });
+
+  it('单材料直出（`TaskProposal.packId IS NULL`）的包条目不算「没提案」', () => {
+    // 这条包的 `packId` 下没有任何提案（提案挂在材料上、不挂包），所以"只按 packId 查"
+    // 的实现会把它报成 no-proposal —— 而它的草案其实存在，候选池里也已经有它。
+    expect(pool.some((row) => row.sourceRef === `material:${ids.proposalItemDirect}`)).toBe(true);
+    const packItemIds = new Set(
+      skipped.filter((row) => row.sourceKind === 'MATERIAL' && row.why.includes('no-proposal')).map((row) => row.sourceRef),
+    );
+    // `no-proposal` 按包条目报，`sourceRef` 为 null，所以只能按**数量**核对：
+    // 完全没有提案的那一个包（1 条条目）应该被报，单材料直出的那条**不应该**被报。
+    const noProposalCount = skipped.filter(
+      (row) => row.sourceKind === 'MATERIAL' && row.why.includes('no-proposal'),
+    ).length;
+    expect(packItemIds.size).toBe(1);
+    expect(noProposalCount).toBe(1);
   });
 
   it('「没提案」与「已排过」是两个原因，不许合成一句「无候选」', () => {

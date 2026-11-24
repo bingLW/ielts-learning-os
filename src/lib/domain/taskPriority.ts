@@ -346,7 +346,7 @@ export function compareDecisions(a: TaskPriorityDecisionDraft, b: TaskPriorityDe
  *
  * @param decisions 决策列表（顺序任意）
  */
-export function orderDecisions(
+export function rankDecisions(
   decisions: readonly TaskPriorityDecisionDraft[],
 ): TaskPriorityDecisionDraft[] {
   return [...decisions].sort(compareDecisions);

@@ -18,7 +18,7 @@
 import type { StageCode } from '@/lib/types';
 import { addDays, listDateRange, diffDays, endOfBusinessDay, toUtcInstant } from '@/lib/date';
 import { STAGE_CODES, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
-import { DEFAULT_WEIGHTS, orderDecisions, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
+import { DEFAULT_WEIGHTS, rankDecisions, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
 import type { PrerequisiteContext, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
 import { collectCandidates } from '@/lib/services/candidateSources';
 import {
@@ -394,10 +394,10 @@ export async function buildPlanningSnapshot(
       prerequisites,
     }),
   );
-  // 排序只在这里发生一次（`orderDecisions`）：`candidates` 跟着 `decisions` 走，
+  // 排序只在这里发生一次（`rankDecisions`）：`candidates` 跟着 `decisions` 走，
   // 下游拿到的是同一份顺序 —— 否则"候选列表"和"决策列表"各按各的顺序渲染，
   // 而两处都自称有序。
-  const decisions = orderDecisions(scored);
+  const decisions = rankDecisions(scored);
   const orderedCandidates = canonicalCandidateOrder(collected.candidates, decisions);
 
   // ── 归一化一次：hash 与落库共用同一个对象（约束⑦） ──

@@ -213,6 +213,11 @@ export function egiuMinutesOf(intervalCode: string | null): DerivedMinutes {
  *
  * 为什么把 `0` 也算缺失：`VocabularyAssignment.estimatedMinutes` 的默认值就是 `0`，
  * 而 0 分钟的任务在装箱时**永远放得下**，会挤掉真实任务且不留痕迹。
+ *
+ * ⚠️ **与 `domain/planningSnapshot.ts:parseSkillTargets()` 对 `0` 的处理相反** ——
+ * 那里保留显式 `0`（`{READING: 0}` 是"目标 0 分"，键必须还在）。
+ * 两处不是笔误：目标分值 `0` 是有效输入；而 0 分钟的**任务**不可执行。
+ * 见到这两处的差异时请先读这句，不要"统一一下"。
  */
 export function sourceMinutesOf(
   kind: MinuteBearingSourceKind,
@@ -633,7 +638,9 @@ export async function collectMaterialCandidates(
 ): Promise<TaskCandidateDraft[]> {
   const packItems = await prisma.materialPackItem.findMany({
     where: { pack: { material: { status: { in: ['ready', 'partial'] } } } },
-    select: { id: true, pack: { select: { id: true } } },
+    // 需要 `materialId`：判断"这条包条目有没有草案"时，另一种提案形态（单材料直出、
+    // `TaskProposal.packId IS NULL`）只能按材料认，按包认永远查不到（见下方注释）
+    select: { id: true, pack: { select: { id: true, materialId: true } } },
   });
   const proposals: ProposalRow[] = await prisma.taskProposalItem.findMany({
     where: { proposal: { status: 'draft' } },
@@ -648,15 +655,34 @@ export async function collectMaterialCandidates(
   });
 }
 
-/** 有包条目、但整包没有任何 draft 草案 → 逐条报 `no-proposal`。 */
+/**
+ * 有包条目、但没有对应草案 → 逐条报 `no-proposal`。
+ *
+ * **两条并列判据，不是"以包为主、为空兜底"**（`TaskProposal.packId` 是 `String?`）：
+ *
+ * | 提案形态 | 判据 |
+ * | --- | --- |
+ * | 挂包（`packId` 非空） | 该 `packId` 下存在 `status='draft'` 的提案 |
+ * | 单材料直出（`packId IS NULL`） | 该 `materialId` 存在 `status='draft'` 的提案 |
+ *
+ * 写成"只按 `packId` 查"会让单材料直出的材料**永远查不到自己已有的草案**，
+ * 于是它的每一条包条目都被报成「还没有草案」—— 表现是候选池里凭空多出一批
+ * 本该被排除的条目，而不是报错。第二种形态是**正常数据**，不是异常兜底：
+ * 写成兜底会让后来的人把 `packId IS NULL` 当坏数据去"修"。
+ */
 function reportUnproposedPackItems(
-  packItems: readonly { id: string; pack: { id: string } }[],
+  packItems: readonly { id: string; pack: { id: string; materialId: string } }[],
   proposals: readonly ProposalRow[],
   sink: SkipSink,
 ): void {
-  const proposed = new Set(proposals.map((row) => row.proposal.packId).filter((id): id is string => !!id));
+  const proposedPackIds = new Set(
+    proposals.map((row) => row.proposal.packId).filter((id): id is string => !!id),
+  );
+  const proposedMaterialIds = new Set(proposals.map((row) => row.proposal.materialId));
   for (const packItem of packItems) {
-    if (proposed.has(packItem.pack.id)) continue;
+    // 两条判据任一条成立即视为"已有草案"
+    if (proposedPackIds.has(packItem.pack.id)) continue;
+    if (proposedMaterialIds.has(packItem.pack.materialId)) continue;
     sink({ sourceKind: 'MATERIAL', sourceRef: null, why: 'no-proposal：该材料条目还没有草案（或被丢弃）' });
   }
 }
