@@ -3380,3 +3380,86 @@ export const CANDIDATE_FALLBACK_MINUTES: Record<MinuteBearingSourceKind, number>
   /** 仅当 `EST_MINUTES_BY_INTERVAL` 也取不到（interval 未知）时使用。 */
   EGIU: 20,
 };
+
+// ───────────────────────── v2.7 评分层（T04） ─────────────────────────
+
+/**
+ * 七因子的键（**顺序即解释面板的展示顺序**）。
+ *
+ * 它与 `DEFAULT_PRIORITY_WEIGHTS` 的键类型由这个联合钉死（`41 §1.8`）：漏一个键、
+ * 多一个键都编译不过。运行时再断言一次「`Object.keys(weights)` 与该数组**集合相等**」
+ * 是第二道 —— 它挡的是"有人绕过类型在别处造一份权重对象"。
+ */
+export const PRIORITY_FACTOR_KEYS = [
+  'urgency', // 到期压力
+  'goalRelevance', // 与目标的关系
+  'evidenceStrength', // 证据支撑强度
+  'errorRecurrence', // 同类错误重复度
+  'prerequisiteReady', // 前置条件是否满足（二值）
+  'timeCost', // 时间性价比（越短越高）
+  'preferenceFit', // 用户偏好
+] as const;
+export type PriorityFactorKey = (typeof PRIORITY_FACTOR_KEYS)[number];
+
+/**
+ * 默认权重（`Σ = 1`，`|Σ−1| < 1e-9` 有测试守着）。
+ *
+ * 设计意图：`urgency + evidenceStrength = 0.42` 让「到期」与「真有证据的缺口」主导；
+ * `timeCost` 只有 0.10，避免把计划变成"只做 5 分钟小任务"；`preferenceFit` 最低，
+ * 防止偏好压过证据。
+ *
+ * **改任何一个值都必须同时递增 `PRIORITY_WEIGHTS_VERSION`**，否则历史决策不可复算
+ * （`weightsVersion` 落库的意义就是"这条分数是用哪套权重算的"）。
+ */
+export const DEFAULT_PRIORITY_WEIGHTS: Record<PriorityFactorKey, number> = {
+  urgency: 0.22,
+  goalRelevance: 0.18,
+  evidenceStrength: 0.2,
+  errorRecurrence: 0.12,
+  prerequisiteReady: 0.1,
+  timeCost: 0.1,
+  preferenceFit: 0.08,
+};
+
+/** 权重版本。权重或阈值改动必须递增。 */
+export const PRIORITY_WEIGHTS_VERSION = 'w1';
+
+/**
+ * 分层阈值（**P0 不由分数决定**）：`score ≥ p1 → P1`、`≥ p2 → P2`、其余 `P3`。
+ *
+ * 同时进 `configJson` → 进 `inputHash`；改阈值必须换 hash + 递增 `weightsVersion`。
+ */
+export const PRIORITY_THRESHOLDS = { p1: 0.6, p2: 0.42 } as const;
+
+/** `goalRelevance` 的周期视野（天）：剩余 90 天 → 0.00，今天到期 → 1.00。 */
+export const PRIORITY_GOAL_HORIZON_DAYS = 90;
+
+/** `urgency`：到期/未到期基准分（今天到期也是它）。 */
+export const PRIORITY_URGENCY_DUE_BASE = 0.4;
+/** `urgency`：逾期每多一天加多少。 */
+export const PRIORITY_URGENCY_OVERDUE_STEP = 0.2;
+/** `urgency`：逾期加分封顶天数（逾期 3 天即到 1.00）。 */
+export const PRIORITY_URGENCY_MAX_OVERDUE_DAYS = 3;
+
+/**
+ * 缺口置信度 → 证据权重。
+ *
+ * `LOW` 记 `0` 而不是编一个中间值：T02 已保证低置信缺口**不会进 `gaps`**
+ * （它们只进 `uncertainties`），所以这里出现的 `LOW` 属于不该发生的数据。
+ * 真出现时按「无证据」处理比给它一个似是而非的 0.3 更安全 —— 后者会让一条
+ * 没人信的缺口悄悄占到 `0.20 × 0.3 × severity` 的分。
+ */
+export const PRIORITY_CONFIDENCE_WEIGHT: Record<EvidenceConfidence, number> = {
+  LOW: 0,
+  MEDIUM: 0.6,
+  HIGH: 1,
+};
+
+/** 未关联缺口时的 `evidenceStrength`：**中性偏低**，不是打压到 0。 */
+export const PRIORITY_EVIDENCE_NO_GAP = 0.3;
+
+/** 「不知道」的中性值（`goalRelevance` / `preferenceFit` 共用）。 */
+export const PRIORITY_NEUTRAL_VALUE = 0.5;
+
+/** 有目标、但该技能不在目标内（**确认为无关系**）时的 `goalRelevance`。 */
+export const PRIORITY_GOAL_UNRELATED = 0.3;

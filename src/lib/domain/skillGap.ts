@@ -122,8 +122,14 @@ export interface SplitGapsResult {
   suppressed: { skill: string; subskill: string; why: string }[];
 }
 
-/** 收敛到 0..1。 */
-function clamp01(value: number): number {
+/**
+ * 收敛到 0..1（全仓唯一实现）。
+ *
+ * `taskPriority.ts` 的七个因子与本题的 `severity` 用的是同一条收敛规则 —— 两份实现
+ * 迟早一份改成 `Math.min(1, x)`（漏下界）、另一份改成 `Math.max(0, x)`（漏上界）。
+ * 非有限数一律记 `0`：`NaN` 参与比较恒 `false`，留在链路上会变成"排序随机"。
+ */
+export function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
 }
