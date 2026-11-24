@@ -3331,6 +3331,25 @@ export const CANDIDATE_DEFAULT_MINUTES: {
 };
 
 /**
+ * `OPEN_TASK` 的 skill 覆写（**只做这一档，不泛化**）。
+ *
+ * 为什么只有它需要覆写：`OPEN_TASK` 是唯一**跨两种输出形态、且耗时差 2–3 倍**的题型 ——
+ * 写作开放题要成篇（40 分钟级），口语开放题只要开口（10 分钟级），而其余题型
+ * （`MCQ`/`SHORT_ANSWER`/材料域五类）在 skill 之间没有这个量级的差异。
+ *
+ * 用 `Partial<Record<…>>` 而非全键 `Record`，判据是：**键缺失时的行为是「有定义的回落」
+ * 还是「`undefined` 流进算术」**。这里未命中会回落到 `QUESTION.OPEN_TASK`（15），
+ * 所以可以 `Partial`；反例见 `CANDIDATE_DEFAULT_MINUTES`，那里漏键会变成 `NaN`。
+ *
+ * 取值顺序：`OVERRIDE[skill]` → 回落 `QUESTION.OPEN_TASK`。
+ * **只对 `taskType === 'OPEN_TASK'` 生效**，其余题型一律不查这张表。
+ */
+export const QUESTION_OPEN_TASK_SKILL_OVERRIDE: Partial<Record<SkillId, number>> = {
+  WRITING: 20,
+  SPEAKING: 10,
+};
+
+/**
  * 源表**有**时长字段的来源（其余三个是"本来就没有"，走 `CANDIDATE_DEFAULT_MINUTES`）。
  *
  * 用 `Exclude` 而不是另立一个 `FALLBACK_SOURCE_KINDS` 常量数组：只有一份真相。

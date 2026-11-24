@@ -24,8 +24,10 @@ import {
   CANDIDATE_DEFAULT_MINUTES,
   CANDIDATE_FALLBACK_MINUTES,
   LISTENING_MODES,
+  QUESTION_OPEN_TASK_SKILL_OVERRIDE,
   MATERIAL_EXERCISE_TYPES,
   SPEAKING_TASK_TYPES,
+  SKILL_IDS,
   TASK_SOURCE_KINDS,
   TASK_SOURCE_LABEL_ZH,
 } from '@/lib/constants';
@@ -65,6 +67,10 @@ describe('第一道：声明处必须用 Record<…> 定型（不是 as const）
     expect(declarationOf(constantsSource, 'CANDIDATE_FALLBACK_MINUTES')).toMatch(
       /Record<MinuteBearingSourceKind,/,
     );
+    // 覆写表必须是 Partial：全键会逼着为每个 skill 都填一个数，等于编造
+    expect(declarationOf(constantsSource, 'QUESTION_OPEN_TASK_SKILL_OVERRIDE')).toMatch(
+      /Partial<Record<SkillId,/,
+    );
     expect(declarationOf(constantsSource, 'TASK_SOURCE_LABEL_ZH')).toMatch(
       /Record<\(typeof TASK_SOURCE_KINDS\)\[number\],/,
     );
@@ -98,6 +104,27 @@ describe('第二道：键集合与枚举集合相等（不是包含）', () => {
     const fallback = Object.keys(CANDIDATE_FALLBACK_MINUTES);
     expect([...derived, ...fallback].sort()).toEqual([...CANDIDATE_SOURCE_KINDS].sort());
     expect(derived.filter((key) => fallback.includes(key))).toEqual([]);
+  });
+
+  it('Partial 表豁免：OVERRIDE 的键 ⊆ SkillId，且未命中时有确定回落', () => {
+    // 判据（41 §1.8）：键缺失时的行为是「有定义的回落」还是「undefined 流进算术」？
+    // 前者可以 Partial，后者必须全键。覆写表未命中回落 QUESTION.OPEN_TASK，所以 ⊆ 即可。
+    // 照「键集 = 枚举」写会假红，而假红的真实下场是有人把这条断言直接删掉。
+    const keys = Object.keys(QUESTION_OPEN_TASK_SKILL_OVERRIDE);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.every((key) => (SKILL_IDS as readonly string[]).includes(key))).toBe(true);
+    // 未命中必须落到一个**正的有限数**，不能是 undefined
+    const fallback = CANDIDATE_DEFAULT_MINUTES.QUESTION.OPEN_TASK;
+    expect(Number.isFinite(QUESTION_OPEN_TASK_SKILL_OVERRIDE.READING ?? fallback)).toBe(true);
+    expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE.READING ?? fallback).toBe(fallback);
+  });
+
+  it('覆写表的两个键取值不同（写作 20 / 口语 10），否则覆写没有意义', () => {
+    expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE.WRITING).toBe(20);
+    expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE.SPEAKING).toBe(10);
+    expect(QUESTION_OPEN_TASK_SKILL_OVERRIDE.WRITING).not.toBe(
+      QUESTION_OPEN_TASK_SKILL_OVERRIDE.SPEAKING,
+    );
   });
 
   it('TASK_SOURCE_LABEL_ZH 的键 = TASK_SOURCE_KINDS（漏一个就是空白标签）', () => {
