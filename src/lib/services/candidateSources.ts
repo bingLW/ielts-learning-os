@@ -340,6 +340,87 @@ function truncate(text: string, max = 48): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   return flat.length <= max ? flat : `${flat.slice(0, max)}…`;
 }
+// ───────────────────────── 各源的行类型（只声明"映射用到的字段"） ─────────────────────────
+
+/**
+ * 行类型刻意**手写**而不直接用 Prisma 生成的类型。
+ *
+ * 理由：映射函数只应该依赖它真正读的列。用整行类型会让"这个字段其实没人用"藏起来
+ * （比如 `ReviewTask.result` / `VocabularyAssignment.priorityPolicyJson`），
+ * 下一次改表时无从判断哪些字段可以删。
+ */
+interface ReviewRow {
+  id: string;
+  targetType: string;
+  targetLabel: string;
+  estMinutes: number;
+}
+
+interface RetestRow {
+  id: string;
+  retestType: string;
+  estMinutes: number;
+  parentEvidenceId: string;
+  parent: { id: string; skill: string } | null;
+}
+
+interface DiagnosticRow {
+  id: string;
+  skill: string;
+  subskill: string;
+  taskType: string;
+  sourceType: string;
+  prompt: string;
+  difficulty: number;
+}
+
+interface ExerciseRow {
+  id: string;
+  type: string;
+  targetSkill: string;
+  prompt: string;
+}
+
+interface VocabRow {
+  id: string;
+  planTaskId: string | null;
+  reviewTarget: number;
+  newTarget: number;
+  estimatedMinutes: number;
+}
+
+interface ProposalRow {
+  id: string;
+  module: string;
+  targetSkill: string;
+  title: string;
+  suggestedMinutes: number;
+  finalMinutes: number | null;
+  granularity: number;
+  planTaskId: string | null;
+  exerciseIdsJson: string | null;
+  proposal: { packId: string | null; materialId: string };
+}
+
+interface ListeningRow {
+  id: string;
+  audioAssetId: string;
+  mode: string;
+  title: string;
+}
+
+interface SpeakingRow {
+  id: string;
+  taskType: string;
+  title: string;
+}
+
+interface EgiuRow {
+  id: string;
+  resourceId: string | null;
+  unitNo: string;
+  knowledgePoint: string;
+}
 
 // ───────────────────────── 1. REVIEW ─────────────────────────
 
@@ -348,35 +429,36 @@ export async function collectReviewCandidates(
   input: CollectCandidatesInput,
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
-  const rows = await prisma.reviewTask.findMany({
+  const rows: ReviewRow[] = await prisma.reviewTask.findMany({
     where: { status: 'PENDING', dueDate: { lte: input.asOfDate } },
     orderBy: [{ dueDate: 'asc' }, { id: 'asc' }],
   });
-  const out: TaskCandidateDraft[] = [];
-  for (const row of rows) {
-    const sourceRef = sourceRefOf('REVIEW', row.id);
-    if (!isTargetType(row.targetType)) {
-      sink({ sourceKind: 'REVIEW', sourceRef, why: `未知的复习目标类型 ${row.targetType}，无法确定模块` });
-      continue;
-    }
-    // `ReviewTask` 没有 skill/subskill 列 —— 绝大多数复习项的缺口键天生为空，
-    // 于是它们的 `dedupeGroup` 回落 `candidateKey`，各走各的（不许合并成一条）。
-    const minutes = sourceMinutesOf('REVIEW', row.estMinutes);
-    out.push(
-      makeDraft({
-        sourceKind: 'REVIEW',
-        sourceRef,
-        axes: AXES_BY_TARGET_TYPE[row.targetType],
-        title: `${TARGET_TYPE_LABEL_ZH[row.targetType]}复习：${row.targetLabel}`,
-        estMinutes: minutes.estMinutes,
-        // 复习项是**原子**的：做半条复习等于没复习，不可拆
-        minMinutes: minutes.estMinutes,
-        validationStatus: 'VERIFIED',
-        meta: minutes.meta,
-      }),
-    );
+  return rows.flatMap((row) => {
+    const draft = reviewDraftOf(row, sink);
+    return draft ? [draft] : [];
+  });
+}
+
+function reviewDraftOf(row: ReviewRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('REVIEW', row.id);
+  if (!isTargetType(row.targetType)) {
+    sink({ sourceKind: 'REVIEW', sourceRef, why: `未知的复习目标类型 ${row.targetType}，无法确定模块` });
+    return null;
   }
-  return out;
+  // `ReviewTask` 没有 skill/subskill 列 —— 绝大多数复习项的缺口键天生为空，
+  // 于是它们的 `dedupeGroup` 回落 `candidateKey`，各走各的（不许合并成一条）。
+  const minutes = sourceMinutesOf('REVIEW', row.estMinutes);
+  return makeDraft({
+    sourceKind: 'REVIEW',
+    sourceRef,
+    axes: AXES_BY_TARGET_TYPE[row.targetType],
+    title: `${TARGET_TYPE_LABEL_ZH[row.targetType]}复习：${row.targetLabel}`,
+    estMinutes: minutes.estMinutes,
+    // 复习项是**原子**的：做半条复习等于没复习，不可拆
+    minMinutes: minutes.estMinutes,
+    validationStatus: 'VERIFIED',
+    meta: minutes.meta,
+  });
 }
 
 // ───────────────────────── 2. RETEST ─────────────────────────
@@ -386,38 +468,39 @@ export async function collectRetestCandidates(
   input: CollectCandidatesInput,
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
-  const rows = await prisma.retestSchedule.findMany({
+  const rows: RetestRow[] = await prisma.retestSchedule.findMany({
     where: { status: 'PENDING', dueDate: { lte: input.asOfDate }, planTaskId: null },
     orderBy: [{ dueDate: 'asc' }, { id: 'asc' }],
     include: { parent: { select: { id: true, skill: true } } },
   });
-  const out: TaskCandidateDraft[] = [];
-  for (const row of rows) {
-    const sourceRef = sourceRefOf('RETEST', row.id);
-    const skill = row.parent?.skill ?? '';
-    if (!isAxesSkill(skill)) {
-      sink({ sourceKind: 'RETEST', sourceRef, why: `父证据 ${row.parentEvidenceId} 的技能 ${skill} 无法映射到模块` });
-      continue;
-    }
-    const minutes = sourceMinutesOf('RETEST', row.estMinutes);
-    out.push(
-      makeDraft({
-        sourceKind: 'RETEST',
-        sourceRef,
-        axes: AXES_BY_SKILL[skill],
-        // `EvidenceRecord` 没有 subskill 列 → 技能级缺口（空串是**显式**表达，不是缺省）
-        skillGapKey: gapKeyOf(dimensionKindOf(skill), skill, ''),
-        title: `${SKILL_LABEL_ZH[AXES_BY_SKILL[skill].skill]}复测：${row.retestType}`,
-        estMinutes: minutes.estMinutes,
-        // v2.1 语义：复测不可拆 —— 做半截的复测无法判定是否迁移
-        minMinutes: minutes.estMinutes,
-        prerequisites: [{ kind: 'EVIDENCE_EXISTS', evidenceId: row.parentEvidenceId }],
-        validationStatus: 'VERIFIED',
-        meta: minutes.meta,
-      }),
-    );
+  return rows.flatMap((row) => {
+    const draft = retestDraftOf(row, sink);
+    return draft ? [draft] : [];
+  });
+}
+
+function retestDraftOf(row: RetestRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('RETEST', row.id);
+  const skill = row.parent?.skill ?? '';
+  if (!isAxesSkill(skill)) {
+    sink({ sourceKind: 'RETEST', sourceRef, why: `父证据 ${row.parentEvidenceId} 的技能 ${skill} 无法映射到模块` });
+    return null;
   }
-  return out;
+  const minutes = sourceMinutesOf('RETEST', row.estMinutes);
+  return makeDraft({
+    sourceKind: 'RETEST',
+    sourceRef,
+    axes: AXES_BY_SKILL[skill],
+    // `EvidenceRecord` 没有 subskill 列 → 技能级缺口（空串是**显式**表达，不是缺省）
+    skillGapKey: gapKeyOf(dimensionKindOf(skill), skill, ''),
+    title: `${SKILL_LABEL_ZH[AXES_BY_SKILL[skill].skill]}复测：${row.retestType}`,
+    estMinutes: minutes.estMinutes,
+    // v2.1 语义：复测不可拆 —— 做半截的复测无法判定是否迁移
+    minMinutes: minutes.estMinutes,
+    prerequisites: [{ kind: 'EVIDENCE_EXISTS', evidenceId: row.parentEvidenceId }],
+    validationStatus: 'VERIFIED',
+    meta: minutes.meta,
+  });
 }
 
 // ───────────────────────── 3. PROBE ─────────────────────────
@@ -435,49 +518,54 @@ export async function collectProbeCandidates(
 ): Promise<TaskCandidateDraft[]> {
   const gaps = (input.gaps ?? []).filter((gap) => gap.kind === 'UNCERTAINTY');
   if (gaps.length === 0) return [];
+  const itemIdsByKey = await diagnosticItemIdsByKey();
+  return gaps.flatMap((gap) => {
+    const draft = probeDraftOf(gap, itemIdsByKey, sink);
+    return draft ? [draft] : [];
+  });
+}
 
+/** `skill|subskill` → 可用诊断题 id。一次查回建索引：逐缺口查会变 N+1。 */
+async function diagnosticItemIdsByKey(): Promise<Map<string, string[]>> {
   const items = await prisma.diagnosticItem.findMany({
     where: { active: true, validationStatus: 'VERIFIED' },
     select: { id: true, skill: true, subskill: true },
   });
-  // 一次查回、内存里建索引：按缺口逐条查会变成 N+1，而缺口最多几十个
-  const itemIdsByKey = new Map<string, string[]>();
+  const index = new Map<string, string[]>();
   for (const item of items) {
     const key = `${item.skill}|${item.subskill}`;
-    const bucket = itemIdsByKey.get(key) ?? [];
-    bucket.push(item.id);
-    itemIdsByKey.set(key, bucket);
+    index.set(key, [...(index.get(key) ?? []), item.id]);
   }
+  return index;
+}
 
-  const out: TaskCandidateDraft[] = [];
-  for (const gap of gaps) {
-    const sourceRef = sourceRefOf('PROBE', gap.skill, gap.subskill);
-    if (!isAxesSkill(gap.skill)) {
-      sink({ sourceKind: 'PROBE', sourceRef, why: `缺口技能 ${gap.skill} 无法映射到模块` });
-      continue;
-    }
-    const matched = itemIdsByKey.get(`${gap.skill}|${gap.subskill}`) ?? [];
-    const firstItem = matched[0];
-    if (!firstItem) {
-      sink({ sourceKind: 'PROBE', sourceRef, why: `缺口 ${gap.skill}/${gap.subskill} 没有对应的已验证诊断题` });
-      continue;
-    }
-    const minutes = estMinutesOf({ probe: true });
-    out.push(
-      makeDraft({
-        sourceKind: 'PROBE',
-        sourceRef,
-        axes: AXES_BY_SKILL[gap.skill],
-        skillGapKey: gapKeyOf(gap.dimensionKind || dimensionKindOf(gap.skill), gap.skill, gap.subskill),
-        title: `补测：${SKILL_LABEL_ZH[AXES_BY_SKILL[gap.skill].skill]}${gap.subskill ? ` · ${gap.subskill}` : ''}`,
-        estMinutes: minutes.estMinutes,
-        minMinutes: minutes.estMinutes,
-        validationStatus: 'VERIFIED',
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
+function probeDraftOf(
+  gap: CandidateGap,
+  itemIdsByKey: ReadonlyMap<string, string[]>,
+  sink: SkipSink,
+): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('PROBE', gap.skill, gap.subskill);
+  if (!isAxesSkill(gap.skill)) {
+    sink({ sourceKind: 'PROBE', sourceRef, why: `缺口技能 ${gap.skill} 无法映射到模块` });
+    return null;
   }
-  return out;
+  if ((itemIdsByKey.get(`${gap.skill}|${gap.subskill}`) ?? []).length === 0) {
+    sink({ sourceKind: 'PROBE', sourceRef, why: `缺口 ${gap.skill}/${gap.subskill} 没有对应的已验证诊断题` });
+    return null;
+  }
+  const minutes = estMinutesOf({ probe: true });
+  const axes = AXES_BY_SKILL[gap.skill];
+  return makeDraft({
+    sourceKind: 'PROBE',
+    sourceRef,
+    axes,
+    skillGapKey: gapKeyOf(gap.dimensionKind || dimensionKindOf(gap.skill), gap.skill, gap.subskill),
+    title: `补测：${SKILL_LABEL_ZH[axes.skill]}${gap.subskill ? ` · ${gap.subskill}` : ''}`,
+    estMinutes: minutes.estMinutes,
+    minMinutes: minutes.estMinutes,
+    validationStatus: 'VERIFIED',
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
 }
 
 // ───────────────────────── 4. VOCAB ─────────────────────────
@@ -489,33 +577,34 @@ export async function collectVocabCandidates(
 ): Promise<TaskCandidateDraft[]> {
   // 刻意**不**在 `where` 里写 `planTaskId: null`：`@@unique([assignmentDate])` 保证
   // 一个日期最多一行，多取一行不花钱，而这样"已排过"才有分支可写、才能报出原因。
-  const rows = await prisma.vocabularyAssignment.findMany({
+  const rows: VocabRow[] = await prisma.vocabularyAssignment.findMany({
     where: { assignmentDate: input.asOfDate, status: 'PLANNED' },
     orderBy: [{ assignmentDate: 'asc' }, { id: 'asc' }],
   });
-  const out: TaskCandidateDraft[] = [];
-  for (const row of rows) {
-    const sourceRef = sourceRefOf('VOCAB', row.id);
-    if (row.planTaskId) {
-      sink({ sourceKind: 'VOCAB', sourceRef, why: 'already-planned：该词汇任务已落成计划任务' });
-      continue;
-    }
-    const minutes = sourceMinutesOf('VOCAB', row.estimatedMinutes);
-    out.push(
-      makeDraft({
-        sourceKind: 'VOCAB',
-        sourceRef,
-        axes: AXES_BY_SKILL.VOCABULARY,
-        title: `词汇任务：复习 ${row.reviewTarget} + 新词 ${row.newTarget}`,
-        estMinutes: minutes.estMinutes,
-        // 词汇可以只做一部分（新词/复习分开），所以最小单元是全局粒度而不是整包
-        minMinutes: MIN_TASK_MINUTES,
-        validationStatus: 'VERIFIED',
-        meta: minutes.meta,
-      }),
-    );
+  return rows.flatMap((row) => {
+    const draft = vocabDraftOf(row, sink);
+    return draft ? [draft] : [];
+  });
+}
+
+function vocabDraftOf(row: VocabRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('VOCAB', row.id);
+  if (row.planTaskId) {
+    sink({ sourceKind: 'VOCAB', sourceRef, why: 'already-planned：该词汇任务已落成计划任务' });
+    return null;
   }
-  return out;
+  const minutes = sourceMinutesOf('VOCAB', row.estimatedMinutes);
+  return makeDraft({
+    sourceKind: 'VOCAB',
+    sourceRef,
+    axes: AXES_BY_SKILL.VOCABULARY,
+    title: `词汇任务：复习 ${row.reviewTarget} + 新词 ${row.newTarget}`,
+    estMinutes: minutes.estMinutes,
+    // 词汇可以只做一部分（新词/复习分开），所以最小单元是全局粒度而不是整包
+    minMinutes: MIN_TASK_MINUTES,
+    validationStatus: 'VERIFIED',
+    meta: minutes.meta,
+  });
 }
 
 // ───────────────────────── 5. MATERIAL ─────────────────────────
@@ -529,73 +618,83 @@ export async function collectVocabCandidates(
  * 用户就只能猜。
  */
 export async function collectMaterialCandidates(
-  input: CollectCandidatesInput,
+  // 材料候选不受日期限制（草案存在即可排），`input` 只为统一签名而保留
+  _input: CollectCandidatesInput,
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
   const packItems = await prisma.materialPackItem.findMany({
     where: { pack: { material: { status: { in: ['ready', 'partial'] } } } },
     select: { id: true, pack: { select: { id: true } } },
   });
-  const proposals = await prisma.taskProposalItem.findMany({
+  const proposals: ProposalRow[] = await prisma.taskProposalItem.findMany({
     where: { proposal: { status: 'draft' } },
     orderBy: [{ proposalId: 'asc' }, { id: 'asc' }],
     include: { proposal: { select: { packId: true, materialId: true } } },
   });
-  const proposalPacks = new Set(proposals.map((row) => row.proposal.packId).filter((id): id is string => !!id));
+  reportUnproposedPackItems(packItems, proposals, sink);
+  const approvedIds = await approvedExerciseIdsOf(proposals);
+  return proposals.flatMap((row) => {
+    const draft = materialDraftOf(row, approvedIds, sink);
+    return draft ? [draft] : [];
+  });
+}
 
+/** 有包条目、但整包没有任何 draft 草案 → 逐条报 `no-proposal`。 */
+function reportUnproposedPackItems(
+  packItems: readonly { id: string; pack: { id: string } }[],
+  proposals: readonly ProposalRow[],
+  sink: SkipSink,
+): void {
+  const proposed = new Set(proposals.map((row) => row.proposal.packId).filter((id): id is string => !!id));
   for (const packItem of packItems) {
-    if (!proposalPacks.has(packItem.pack.id)) {
-      sink({ sourceKind: 'MATERIAL', sourceRef: null, why: 'no-proposal：该材料条目还没有草案（或被丢弃）' });
-    }
+    if (proposed.has(packItem.pack.id)) continue;
+    sink({ sourceKind: 'MATERIAL', sourceRef: null, why: 'no-proposal：该材料条目还没有草案（或被丢弃）' });
   }
+}
 
+async function approvedExerciseIdsOf(proposals: readonly ProposalRow[]): Promise<Set<string>> {
   const exerciseIds = proposals.flatMap(parseExerciseIds);
-  const approvedIds = new Set(
-    exerciseIds.length === 0
-      ? []
-      : (
-          await prisma.generatedExercise.findMany({
-            where: { id: { in: exerciseIds }, reviewStatus: 'approved' },
-            select: { id: true },
-          })
-        ).map((row) => row.id),
-  );
+  if (exerciseIds.length === 0) return new Set();
+  const rows = await prisma.generatedExercise.findMany({
+    where: { id: { in: exerciseIds }, reviewStatus: 'approved' },
+    select: { id: true },
+  });
+  return new Set(rows.map((row) => row.id));
+}
 
-  const out: TaskCandidateDraft[] = [];
-  for (const row of proposals) {
-    const sourceRef = sourceRefOf('MATERIAL', row.id);
-    if (row.planTaskId) {
-      sink({ sourceKind: 'MATERIAL', sourceRef, why: 'already-planned：该草案条目已落成计划任务' });
-      continue;
-    }
-    const axes = materialAxesOf(row.module, row.targetSkill);
-    if (!axes) {
-      sink({ sourceKind: 'MATERIAL', sourceRef, why: `草案条目的 module=${row.module} / targetSkill=${row.targetSkill} 无法映射` });
-      continue;
-    }
-    const ids = parseExerciseIds(row);
-    const prerequisites: Prerequisite[] = [
+function materialDraftOf(
+  row: ProposalRow,
+  approvedIds: ReadonlySet<string>,
+  sink: SkipSink,
+): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('MATERIAL', row.id);
+  if (row.planTaskId) {
+    sink({ sourceKind: 'MATERIAL', sourceRef, why: 'already-planned：该草案条目已落成计划任务' });
+    return null;
+  }
+  const axes = materialAxesOf(row.module, row.targetSkill);
+  if (!axes) {
+    sink({ sourceKind: 'MATERIAL', sourceRef, why: `草案条目的 module=${row.module} / targetSkill=${row.targetSkill} 无法映射` });
+    return null;
+  }
+  const ids = parseExerciseIds(row);
+  const minutes = sourceMinutesOf('MATERIAL', row.finalMinutes ?? row.suggestedMinutes);
+  const granularity = row.granularity > 0 ? row.granularity : MIN_TASK_MINUTES;
+  return makeDraft({
+    sourceKind: 'MATERIAL',
+    sourceRef,
+    axes,
+    title: row.title,
+    estMinutes: minutes.estMinutes,
+    minMinutes: granularity,
+    maxBlockMinutes: granularity,
+    prerequisites: [
       { kind: 'MATERIAL_READY', materialId: row.proposal.materialId },
       ...ids.map((exerciseId) => ({ kind: 'EXERCISE_APPROVED' as const, exerciseId })),
-    ];
-    const minutes = sourceMinutesOf('MATERIAL', row.finalMinutes ?? row.suggestedMinutes);
-    const granularity = row.granularity > 0 ? row.granularity : MIN_TASK_MINUTES;
-    out.push(
-      makeDraft({
-        sourceKind: 'MATERIAL',
-        sourceRef,
-        axes,
-        title: row.title,
-        estMinutes: minutes.estMinutes,
-        minMinutes: granularity,
-        maxBlockMinutes: granularity,
-        prerequisites,
-        validationStatus: ids.some((id) => approvedIds.has(id)) ? 'VERIFIED' : 'UNVERIFIED',
-        meta: minutes.meta,
-      }),
-    );
-  }
-  return out;
+    ],
+    validationStatus: ids.some((id) => approvedIds.has(id)) ? 'VERIFIED' : 'UNVERIFIED',
+    meta: minutes.meta,
+  });
 }
 
 /** `TaskProposalItem.exerciseIdsJson` → 数组（脏值一律当空，不抛）。 */
@@ -627,70 +726,73 @@ function materialAxesOf(module: string, targetSkill: string): Axes | null {
  * 前置条件留空，并登记到 `docs/47-known-limits.md`。
  */
 export async function collectQuestionCandidates(
-  input: CollectCandidatesInput,
+  // 题库候选不受日期限制（题在库里就能练），`input` 只为统一签名而保留
+  _input: CollectCandidatesInput,
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
-  const items = await prisma.diagnosticItem.findMany({
+  const items: DiagnosticRow[] = await prisma.diagnosticItem.findMany({
     where: { active: true, validationStatus: 'VERIFIED' },
     orderBy: [{ skill: 'asc' }, { sortOrder: 'asc' }, { id: 'asc' }],
   });
-  const exercises = await prisma.generatedExercise.findMany({
+  const exercises: ExerciseRow[] = await prisma.generatedExercise.findMany({
     where: { reviewStatus: 'approved', retiredAt: null },
     orderBy: [{ type: 'asc' }, { id: 'asc' }],
   });
+  return [
+    ...items.flatMap((row) => {
+      const draft = diagnosticDraftOf(row, sink);
+      return draft ? [draft] : [];
+    }),
+    ...exercises.flatMap((row) => {
+      const draft = exerciseDraftOf(row, sink);
+      return draft ? [draft] : [];
+    }),
+  ];
+}
 
-  const out: TaskCandidateDraft[] = [];
-  for (const item of items) {
-    const sourceRef = sourceRefOf('QUESTION', item.id, 'diagnostic');
-    if (!isAxesSkill(item.skill)) {
-      sink({ sourceKind: 'QUESTION', sourceRef, why: `诊断题技能 ${item.skill} 无法映射到模块` });
-      continue;
-    }
-    const minutes = collectQuestionMinutes(item.taskType, AXES_BY_SKILL[item.skill].skill, sourceRef, sink);
-    if (!minutes) continue;
-    const difficulty = Number.isFinite(item.difficulty) ? Math.min(1, Math.max(0, (item.difficulty - 1) / 3)) : null;
-    out.push(
-      makeDraft({
-        sourceKind: 'QUESTION',
-        sourceRef,
-        axes: AXES_BY_SKILL[item.skill],
-        title: `诊断题：${truncate(item.prompt)}`,
-        estMinutes: minutes.estMinutes,
-        // `minMinutes = estMinutes`：开放题走 skill 覆写后最小可执行单元随之变大，
-        // 大作文**不该**再被塞进 15 分钟的应急日
-        minMinutes: minutes.estMinutes,
-        // 三种来源照抄，**不合并**：`AI_PRACTICE` 若被标成 `VERIFIED`，一条 AI 临时
-        // 生成的练习题会和有标准答案的题库题长得一模一样 —— 而"AI 生成的东西被当成
-        // 正式练习"正是本站最容易发生也最难事后解释的一类事故。
-        validationStatus: diagnosticValidationStatusOf(item.sourceType),
-        difficultyScore: difficulty,
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
+function diagnosticDraftOf(row: DiagnosticRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('QUESTION', row.id, 'diagnostic');
+  if (!isAxesSkill(row.skill)) {
+    sink({ sourceKind: 'QUESTION', sourceRef, why: `诊断题技能 ${row.skill} 无法映射到模块` });
+    return null;
   }
+  const minutes = questionMinutesOf(row.taskType, AXES_BY_SKILL[row.skill].skill, sourceRef, sink);
+  if (!minutes) return null;
+  return makeDraft({
+    sourceKind: 'QUESTION',
+    sourceRef,
+    axes: AXES_BY_SKILL[row.skill],
+    title: `诊断题：${truncate(row.prompt)}`,
+    estMinutes: minutes.estMinutes,
+    // `minMinutes = estMinutes`：开放题走 skill 覆写后最小可执行单元随之变大，
+    // 大作文**不该**再被塞进 15 分钟的应急日
+    minMinutes: minutes.estMinutes,
+    // 三种来源照抄，**不合并**：`AI_PRACTICE` 若被标成 `VERIFIED`，一条 AI 临时
+    // 生成的练习题会和有标准答案的题库题长得一模一样
+    validationStatus: diagnosticValidationStatusOf(row.sourceType),
+    difficultyScore: difficultyScoreOf(row.difficulty),
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
+}
 
-  for (const exercise of exercises) {
-    const sourceRef = sourceRefOf('QUESTION', exercise.id, 'material_exercise');
-    if (!isAxesSkill(exercise.targetSkill)) {
-      sink({ sourceKind: 'QUESTION', sourceRef, why: `材料题技能 ${exercise.targetSkill} 无法映射到模块` });
-      continue;
-    }
-    const minutes = collectQuestionMinutes(exercise.type, AXES_BY_SKILL[exercise.targetSkill].skill, sourceRef, sink);
-    if (!minutes) continue;
-    out.push(
-      makeDraft({
-        sourceKind: 'QUESTION',
-        sourceRef,
-        axes: AXES_BY_SKILL[exercise.targetSkill],
-        title: `材料题：${truncate(exercise.prompt)}`,
-        estMinutes: minutes.estMinutes,
-        minMinutes: minutes.estMinutes,
-        validationStatus: 'VERIFIED',
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
+function exerciseDraftOf(row: ExerciseRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('QUESTION', row.id, 'material_exercise');
+  if (!isAxesSkill(row.targetSkill)) {
+    sink({ sourceKind: 'QUESTION', sourceRef, why: `材料题技能 ${row.targetSkill} 无法映射到模块` });
+    return null;
   }
-  return out;
+  const minutes = questionMinutesOf(row.type, AXES_BY_SKILL[row.targetSkill].skill, sourceRef, sink);
+  if (!minutes) return null;
+  return makeDraft({
+    sourceKind: 'QUESTION',
+    sourceRef,
+    axes: AXES_BY_SKILL[row.targetSkill],
+    title: `材料题：${truncate(row.prompt)}`,
+    estMinutes: minutes.estMinutes,
+    minMinutes: minutes.estMinutes,
+    validationStatus: 'VERIFIED',
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
 }
 
 /** `DiagnosticItem.sourceType` → 候选的 `validationStatus`（值域更窄，必须显式映射）。 */
@@ -700,8 +802,14 @@ function diagnosticValidationStatusOf(sourceType: string): TaskCandidateDraft['v
   return 'VERIFIED';
 }
 
+/** 题库难度 1–4 → 0..1；脏值给 null（"不知道"不许落成 0，那会显得最简单）。 */
+function difficultyScoreOf(difficulty: number): number | null {
+  if (!Number.isFinite(difficulty)) return null;
+  return Math.min(1, Math.max(0, (difficulty - 1) / 3));
+}
+
 /** 表外题型在这里被拦下并记一条 skip（**不**用默认值兜）。 */
-function collectQuestionMinutes(
+function questionMinutesOf(
   taskType: string,
   skill: SkillId,
   sourceRef: string,
@@ -728,70 +836,81 @@ function collectQuestionMinutes(
  * 因此不过滤 —— 全部入池。这条差异登记在 `docs/47-known-limits.md`。
  */
 export async function collectLabCandidates(
-  input: CollectCandidatesInput,
+  // 听说候选不受日期限制（练习存在即可排），`input` 只为统一签名而保留
+  _input: CollectCandidatesInput,
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
-  const listening = await prisma.listeningExercise.findMany({
+  const listening: ListeningRow[] = await prisma.listeningExercise.findMany({
     orderBy: [{ mode: 'asc' }, { id: 'asc' }],
-    include: { audioAsset: { select: { id: true, title: true } } },
   });
-  const confirmed = new Set(
-    listening.length === 0
-      ? []
-      : (
-          await prisma.transcript.findMany({
-            where: { audioAssetId: { in: listening.map((row) => row.audioAssetId) }, status: 'CONFIRMED' },
-            select: { audioAssetId: true },
-          })
-        ).flatMap((row) => (row.audioAssetId ? [row.audioAssetId] : [])),
-  );
-
-  const out: TaskCandidateDraft[] = [];
-  for (const row of listening) {
-    const sourceRef = sourceRefOf('LAB', row.id, 'listening');
-    if (!confirmed.has(row.audioAssetId)) {
-      sink({ sourceKind: 'LAB', sourceRef, why: 'no-confirmed-transcript：音频尚无已确认转写' });
-      continue;
-    }
-    const minutes = collectLabMinutes(row.mode, sourceRef, sink);
-    if (!minutes) continue;
-    out.push(
-      makeDraft({
-        sourceKind: 'LAB',
-        sourceRef,
-        axes: AXES_BY_SKILL.LISTENING,
-        title: `听力：${row.title}`,
-        estMinutes: minutes.estMinutes,
-        minMinutes: minutes.estMinutes,
-        prerequisites: [{ kind: 'TRANSCRIPT_CONFIRMED', audioAssetId: row.audioAssetId }],
-        validationStatus: 'UNVERIFIED',
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
-  }
-
-  const prompts = await prisma.speakingPrompt.findMany({ orderBy: [{ taskType: 'asc' }, { id: 'asc' }] });
-  for (const row of prompts) {
-    const sourceRef = sourceRefOf('LAB', row.id, 'speaking');
-    const minutes = collectLabMinutes(row.taskType, sourceRef, sink);
-    if (!minutes) continue;
-    out.push(
-      makeDraft({
-        sourceKind: 'LAB',
-        sourceRef,
-        axes: AXES_BY_SKILL.SPEAKING,
-        title: `口语：${row.title}`,
-        estMinutes: minutes.estMinutes,
-        minMinutes: minutes.estMinutes,
-        validationStatus: 'UNVERIFIED',
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
-  }
-  return out;
+  const confirmed = await confirmedAudioAssetIds(listening);
+  const prompts: SpeakingRow[] = await prisma.speakingPrompt.findMany({
+    orderBy: [{ taskType: 'asc' }, { id: 'asc' }],
+  });
+  return [
+    ...listening.flatMap((row) => {
+      const draft = listeningDraftOf(row, confirmed, sink);
+      return draft ? [draft] : [];
+    }),
+    ...prompts.flatMap((row) => {
+      const draft = speakingDraftOf(row, sink);
+      return draft ? [draft] : [];
+    }),
+  ];
 }
 
-function collectLabMinutes(mode: string, sourceRef: string, sink: SkipSink): DerivedMinutes | null {
+/** 这批音频里哪些已经有 `CONFIRMED` 转写。 */
+async function confirmedAudioAssetIds(listening: readonly ListeningRow[]): Promise<Set<string>> {
+  if (listening.length === 0) return new Set();
+  const rows = await prisma.transcript.findMany({
+    where: { audioAssetId: { in: listening.map((row) => row.audioAssetId) }, status: 'CONFIRMED' },
+    select: { audioAssetId: true },
+  });
+  return new Set(rows.flatMap((row) => (row.audioAssetId ? [row.audioAssetId] : [])));
+}
+
+function listeningDraftOf(
+  row: ListeningRow,
+  confirmed: ReadonlySet<string>,
+  sink: SkipSink,
+): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('LAB', row.id, 'listening');
+  if (!confirmed.has(row.audioAssetId)) {
+    sink({ sourceKind: 'LAB', sourceRef, why: 'no-confirmed-transcript：音频尚无已确认转写' });
+    return null;
+  }
+  const minutes = labMinutesOf(row.mode, sourceRef, sink);
+  if (!minutes) return null;
+  return makeDraft({
+    sourceKind: 'LAB',
+    sourceRef,
+    axes: AXES_BY_SKILL.LISTENING,
+    title: `听力：${row.title}`,
+    estMinutes: minutes.estMinutes,
+    minMinutes: minutes.estMinutes,
+    prerequisites: [{ kind: 'TRANSCRIPT_CONFIRMED', audioAssetId: row.audioAssetId }],
+    validationStatus: 'UNVERIFIED',
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
+}
+
+function speakingDraftOf(row: SpeakingRow, sink: SkipSink): TaskCandidateDraft | null {
+  const sourceRef = sourceRefOf('LAB', row.id, 'speaking');
+  const minutes = labMinutesOf(row.taskType, sourceRef, sink);
+  if (!minutes) return null;
+  return makeDraft({
+    sourceKind: 'LAB',
+    sourceRef,
+    axes: AXES_BY_SKILL.SPEAKING,
+    title: `口语：${row.title}`,
+    estMinutes: minutes.estMinutes,
+    minMinutes: minutes.estMinutes,
+    validationStatus: 'UNVERIFIED',
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
+}
+
+function labMinutesOf(mode: string, sourceRef: string, sink: SkipSink): DerivedMinutes | null {
   try {
     return estMinutesOf({ mode });
   } catch (error) {
@@ -816,9 +935,9 @@ function collectLabMinutes(mode: string, sourceRef: string, sink: SkipSink): Der
 export async function collectEgiuCandidates(
   input: CollectCandidatesInput,
   // 本来源当前没有"行存在但不可入池"的分支（过滤全在 `where` 上），签名保持一致即可
-  _sink: SkipSink = NOOP_SINK,
+  sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
-  const lessons = await prisma.egiuLesson.findMany({
+  const lessons: EgiuRow[] = await prisma.egiuLesson.findMany({
     where: {
       archivedAt: null,
       currentColor: { not: 'GREEN' },
@@ -827,42 +946,47 @@ export async function collectEgiuCandidates(
     orderBy: [{ nextReviewDate: 'asc' }, { id: 'asc' }],
   });
   if (lessons.length === 0) return [];
+  const intervalByLesson = await intervalByLessonOf(lessons);
+  const requiresByLesson = await previousUnitsOf(lessons);
+  return lessons.flatMap((row) => {
+    const draft = egiuDraftOf(row, intervalByLesson, requiresByLesson);
+    return draft ? [draft] : [];
+  });
+}
 
-  const lessonIds = lessons.map((row) => row.id);
+/** `targetId` → 最早到期那条 pending 复习点的 `intervalCode`。 */
+async function intervalByLessonOf(lessons: readonly EgiuRow[]): Promise<Map<string, string>> {
   const points = await prisma.reviewTask.findMany({
-    where: { targetType: 'EGIU_LESSON', targetId: { in: lessonIds }, status: 'PENDING' },
+    where: { targetType: 'EGIU_LESSON', targetId: { in: lessons.map((row) => row.id) }, status: 'PENDING' },
     select: { targetId: true, intervalCode: true },
     orderBy: [{ dueDate: 'asc' }, { id: 'asc' }],
   });
-  const intervalByLesson = new Map<string, string>();
+  const index = new Map<string, string>();
   for (const point of points) {
-    if (!intervalByLesson.has(point.targetId)) intervalByLesson.set(point.targetId, point.intervalCode);
+    if (!index.has(point.targetId)) index.set(point.targetId, point.intervalCode);
   }
-  const requiresByLesson = await previousUnitsOf(lessons);
+  return index;
+}
 
-  const out: TaskCandidateDraft[] = [];
-  for (const row of lessons) {
-    const sourceRef = sourceRefOf('EGIU', row.id);
-    const minutes = egiuMinutesOf(intervalByLesson.get(row.id) ?? null);
-    const requiresLessonId = requiresByLesson.get(row.id);
-    out.push(
-      makeDraft({
-        sourceKind: 'EGIU',
-        sourceRef,
-        axes: AXES_BY_SKILL.GRAMMAR,
-        skillGapKey: gapKeyOf('AUXILIARY', 'GRAMMAR', ''),
-        title: `EGIU ${row.unitNo}：${row.knowledgePoint}`,
-        estMinutes: minutes.estMinutes,
-        minMinutes: minutes.estMinutes,
-        prerequisites: requiresLessonId
-          ? [{ kind: 'UNIT_ORDER', lessonId: row.id, requiresLessonId }]
-          : [],
-        validationStatus: 'VERIFIED',
-        meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
-      }),
-    );
-  }
-  return out;
+function egiuDraftOf(
+  row: EgiuRow,
+  intervalByLesson: ReadonlyMap<string, string>,
+  requiresByLesson: ReadonlyMap<string, string>,
+): TaskCandidateDraft | null {
+  const minutes = egiuMinutesOf(intervalByLesson.get(row.id) ?? null);
+  const requiresLessonId = requiresByLesson.get(row.id);
+  return makeDraft({
+    sourceKind: 'EGIU',
+    sourceRef: sourceRefOf('EGIU', row.id),
+    axes: AXES_BY_SKILL.GRAMMAR,
+    skillGapKey: gapKeyOf('AUXILIARY', 'GRAMMAR', ''),
+    title: `EGIU ${row.unitNo}：${row.knowledgePoint}`,
+    estMinutes: minutes.estMinutes,
+    minMinutes: minutes.estMinutes,
+    prerequisites: requiresLessonId ? [{ kind: 'UNIT_ORDER', lessonId: row.id, requiresLessonId }] : [],
+    validationStatus: 'VERIFIED',
+    meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
+  });
 }
 
 /**
@@ -871,9 +995,7 @@ export async function collectEgiuCandidates(
  * 只对挂了 `resourceId` 的单元有意义：没挂资源的单元之间没有声明的先后关系，
  * 硬按 `unitNo` 排序会把不相干的两本书串起来。
  */
-async function previousUnitsOf(
-  lessons: readonly { id: string; resourceId: string | null; unitNo: string }[],
-): Promise<Map<string, string>> {
+async function previousUnitsOf(lessons: readonly EgiuRow[]): Promise<Map<string, string>> {
   const resourceIds = [...new Set(lessons.flatMap((row) => (row.resourceId ? [row.resourceId] : [])))];
   if (resourceIds.length === 0) return new Map();
   const siblings = await prisma.egiuLesson.findMany({
@@ -883,21 +1005,19 @@ async function previousUnitsOf(
   const byResource = new Map<string, { id: string; unitNo: string }[]>();
   for (const row of siblings) {
     if (!row.resourceId) continue;
-    const bucket = byResource.get(row.resourceId) ?? [];
-    bucket.push({ id: row.id, unitNo: row.unitNo });
-    byResource.set(row.resourceId, bucket);
+    byResource.set(row.resourceId, [...(byResource.get(row.resourceId) ?? []), { id: row.id, unitNo: row.unitNo }]);
   }
-  const result = new Map<string, string>();
+  const previous = new Map<string, string>();
   for (const bucket of byResource.values()) {
     // `unitNo` 是字符串（"1"…"12"），按数值排，否则 "10" 会排在 "2" 前面
     bucket.sort((a, b) => Number(a.unitNo) - Number(b.unitNo) || a.unitNo.localeCompare(b.unitNo));
     for (let index = 1; index < bucket.length; index += 1) {
       const current = bucket[index];
-      const previous = bucket[index - 1];
-      if (current && previous) result.set(current.id, previous.id);
+      const before = bucket[index - 1];
+      if (current && before) previous.set(current.id, before.id);
     }
   }
-  return result;
+  return previous;
 }
 
 // ───────────────────────── 汇总 ─────────────────────────
@@ -932,11 +1052,9 @@ export async function collectCandidates(input: CollectCandidatesInput): Promise<
   const skipped: SkippedCandidate[] = [];
   const degraded: CandidateSourceKind[] = [];
   const sink: SkipSink = (skip) => skipped.push(skip);
-
   for (const collector of COLLECTORS) {
     try {
-      const rows = await collector.run(input, sink);
-      candidates.push(...rows);
+      candidates.push(...(await collector.run(input, sink)));
     } catch {
       degraded.push(collector.kind);
     }
