@@ -585,6 +585,15 @@ export const TASK_SOURCE_LABEL_ZH: Record<(typeof TASK_SOURCE_KINDS)[number], st
   RETEST: '证据复测',
 };
 
+/**
+ * 来源标签的唯一读取口。全库禁止直接索引 `TASK_SOURCE_LABEL_ZH[...]`：
+ * 该表是编译期封闭的（漏一个键就编译失败），但运行时仍可能收到脏字符串，
+ * 此时返回原值而不是渲染出空白（G-13 ⑧⑨）。
+ */
+export function taskSourceLabel(kind: string): string {
+  return TASK_SOURCE_LABEL_ZH[kind as (typeof TASK_SOURCE_KINDS)[number]] ?? kind;
+}
+
 // ───────────────────────── EGIU 三色判定 ─────────────────────────
 
 export const EGIU_COLORS: EgiuColor[] = ['PENDING', 'GREEN', 'YELLOW', 'RED'];

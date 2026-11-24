@@ -17,6 +17,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createPlanTaskAction } from '@/lib/actions/plan';
+import { skillOfModule } from '@/lib/domain/planWriteMap';
 import type { BudgetDay, ProposalSeed } from '@/lib/domain/taskProposal';
 import {
   describeBudgetViolations,
@@ -575,24 +576,8 @@ export async function confirmTaskProposalAction(
   });
 }
 
-/**
- * 草案条目 → `PlanTask.skill`。
- *
- * 为什么不直接用 `targetSkill`：`PlanTask.skill` 用的是 v2.x 的 `SkillId`
- * （VOCAB/READING/SENTENCE…），而 `targetSkill` 是官方四项 + VOCABULARY/GRAMMAR。
- * 两者只在 VOCAB 上不同名，但这个映射必须显式写出来，否则模块一改就会悄悄错位。
- */
-function skillOfModule(module: string, targetSkill: string): string {
-  if (module === 'VOCAB_REVIEW') return 'VOCAB';
-  if (module === 'SENTENCE') return 'SENTENCE';
-  if (module === 'GRAMMAR') return 'GRAMMAR';
-  if (module === 'LISTENING') return 'LISTENING';
-  if (module === 'SPEAKING') return 'SPEAKING';
-  if (module === 'WRITING') return 'WRITING';
-  if (targetSkill === 'VOCABULARY') return 'VOCAB';
-  if (targetSkill === 'GRAMMAR') return 'GRAMMAR';
-  return 'READING';
-}
+// `skillOfModule()` 已收编到 `domain/planWriteMap.ts`（v2.7 T06a），
+// 与 `taskAxesOf()` 共用同一份映射；此处直接从 domain 导入，口径逐值不变。
 
 // ───────────────────────── ⑤ 丢弃草案 ─────────────────────────
 

@@ -177,7 +177,9 @@ model PlanTask {
    */
   deferReason           String?
   /**
-   * 任务来源：REVIEW|CORE|WEAKNESS|EXTENDED|MANUAL|LEGACY（v2.0 迁移行 = LEGACY）。
+   * 任务来源：REVIEW|CORE|WEAKNESS|EXTENDED|MANUAL|LEGACY|RETEST（v2.0 迁移行 = LEGACY）。
+   * 唯一真值见 src/lib/constants.ts 的 TASK_SOURCE_KINDS（7 值）；本注释必须与之同步。
+   * 注意与 TaskCandidate.sourceKind（v2.7 候选池 8 源）不是同一枚举。
    */
   sourceKind            String  @default("CORE")
 
