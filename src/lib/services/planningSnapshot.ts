@@ -16,7 +16,7 @@
  */
 
 import type { StageCode } from '@/lib/types';
-import { addDays, listDateRange, diffDays, endOfBusinessDay, toUtcInstant } from '@/lib/date';
+import { addDays, listDateRange, diffDays } from '@/lib/date';
 import { STAGE_CODES, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
 import { DEFAULT_WEIGHTS, rankDecisions, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
 import type { PrerequisiteContext, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
@@ -246,18 +246,26 @@ export async function buildPlanningSnapshot(
   /**
    * 近 28 天的错题（`Mistake`）按技能聚合成 `repeatedErrorCount`（`41 §9.1` C-H 的另一半）。
    *
-   * 三个细节：
+   * 四个细节：
    * 1. **窗口按 `asOfDate` 算，不是按 `Date.now()`**：否则同一 `asOfDate` 在不同时刻
    *    跑出不同 hash，快照幂等与"历史可复算"同时失效。
-   * 2. **只统计能归属到 `StudyRecord` 的错题**：`Mistake` 表没有 skill 列，技能只能从
-   *    `studyRecord.skill` 拿到；手工录入、没挂记录的错题归不了维度，宁可漏计也不错挂。
-   * 3. `?? 0` 在这里是**对的**：窗口内该技能没有错题就是"确认为无重复错误"，
+   * 2. **窗口锚的是 `StudyRecord.recordDate`（发生日期），不是 `Mistake.createdAt`（录入时刻）**
+   *    （`41 §9.1` C-K）。`Mistake` 表**没有业务日期列**，用 `createdAt` 会算偏成"什么时候
+   *    录入的"：补录半年前的错题会让**今天**的重复度突然升高，而历史 `asOfDate` 的快照
+   *    永远看不到补录的那条。`recordDate` 与 `asOfDate` 同为 `YYYY-MM-DD` 字符串，
+   *    字典序即日期序，不需要 `toUtcInstant` 之类的 UTC 换算（v2.3 在那里栽过）。
+   * 3. **只统计能归属到 `StudyRecord` 的错题**：`Mistake` 表没有 skill 列，技能只能从
+   *    `studyRecord.skill` 拿到。按关系过滤**自动**排除了 `studyRecordId IS NULL` 的行
+   *    （没挂记录 = 归不了维度），所以不用再单独判空。
+   * 4. `?? 0` 在这里是**对的**：窗口内该技能没有错题就是"确认为无重复错误"，
    *    而"这个维度根本没练过"由 `evidenceQuestions === 0` 表达，两者在评分层分开处理。
    */
-  const windowStart = toUtcInstant(addDays(input.asOfDate, -(WEAKNESS_WINDOW_DAYS - 1)));
-  const windowEnd = endOfBusinessDay(input.asOfDate);
+  const windowStartDate = addDays(input.asOfDate, -(WEAKNESS_WINDOW_DAYS - 1));
   const mistakeRows = await prisma.mistake.findMany({
-    where: { archivedAt: null, createdAt: { gte: windowStart, lte: windowEnd } },
+    where: {
+      archivedAt: null,
+      studyRecord: { recordDate: { gte: windowStartDate, lte: input.asOfDate } },
+    },
     select: { studyRecord: { select: { skill: true } } },
   });
   const repeatedBySkill = new Map<string, number>();

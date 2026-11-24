@@ -26,6 +26,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
+import { addDays } from '@/lib/date';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
@@ -171,6 +172,95 @@ beforeAll(async () => {
     },
   });
 
+  // ── C-K 两条：窗口看「发生日期」(`StudyRecord.recordDate`)，不看「录入时刻」(`Mistake.createdAt`) ──
+  // ① 发生在 40 天前（窗口外）、**今天才录入** → 不该计入
+  const listeningEvidence = await prisma.evidenceRecord.create({
+    data: {
+      skill: 'LISTENING',
+      evidenceType: 'BASELINE',
+      level: 'QUICK',
+      assistanceLevel: 'A0',
+      score: 1,
+      createdAt: new Date(`${AS_OF}T04:00:00.000Z`),
+    },
+  });
+  const listeningRecord = await prisma.studyRecord.create({
+    data: {
+      stageId,
+      recordDate: addDays(AS_OF, -40),
+      skill: 'LISTENING',
+      content: '40 天前的听力训练（今天补录）',
+      totalQuestions: 10,
+      correctQuestions: 8,
+    },
+  });
+  await prisma.mistake.create({
+    data: {
+      stageId,
+      studyRecordId: listeningRecord.id,
+      sourceType: 'STUDY_RECORD',
+      originalQuestion: '发生太早的一条',
+      correctAnswer: 'x',
+      errorReason: '补录',
+      knowledgePoint: 'OLD',
+      errorCategory: 'CARELESS',
+      createdAt: new Date(`${AS_OF}T05:00:00.000Z`), // 录入 = 今天
+    },
+  });
+  await prisma.retestSchedule.create({
+    data: {
+      parentEvidenceId: listeningEvidence.id,
+      retestType: 'DELAYED',
+      dueDate: AS_OF,
+      estMinutes: 10,
+      idempotencyKey: `chain-listening-${AS_OF}`,
+    },
+  });
+
+  // ② 发生在 3 天前（窗口内）、**60 天前就录入了** → 应当计入
+  const writingEvidence = await prisma.evidenceRecord.create({
+    data: {
+      skill: 'WRITING',
+      evidenceType: 'BASELINE',
+      level: 'QUICK',
+      assistanceLevel: 'A0',
+      score: 1,
+      createdAt: new Date(`${AS_OF}T04:30:00.000Z`),
+    },
+  });
+  const writingRecord = await prisma.studyRecord.create({
+    data: {
+      stageId,
+      recordDate: addDays(AS_OF, -3),
+      skill: 'WRITING',
+      content: '3 天前的写作训练（很早录入）',
+      totalQuestions: 10,
+      correctQuestions: 7,
+    },
+  });
+  await prisma.mistake.create({
+    data: {
+      stageId,
+      studyRecordId: writingRecord.id,
+      sourceType: 'STUDY_RECORD',
+      originalQuestion: '发生得晚、录入得早的一条',
+      correctAnswer: 'y',
+      errorReason: '早录',
+      knowledgePoint: 'RECENT',
+      errorCategory: 'CARELESS',
+      createdAt: new Date(`${addDays(AS_OF, -60)}T05:00:00.000Z`), // 录入 = 60 天前
+    },
+  });
+  await prisma.retestSchedule.create({
+    data: {
+      parentEvidenceId: writingEvidence.id,
+      retestType: 'DELAYED',
+      dueDate: AS_OF,
+      estMinutes: 10,
+      idempotencyKey: `chain-writing-${AS_OF}`,
+    },
+  });
+
   snapshot = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, horizonDays: 7 });
   expect(snapshot.ok).toBe(true);
 });
@@ -179,6 +269,24 @@ afterAll(async () => {
   await prisma.planningSnapshot.deleteMany({});
   await prisma.$disconnect();
 });
+
+/**
+ * 取某个技能那条 RETEST 决策。
+ *
+ * 只找 `RETEST:` 开头且以 `:<skill>` 结尾的：QUESTION 的候选也会以目标技能结尾，
+ * 但那是"这道题考哪一科"，不是我们要验的维度缺口。
+ */
+function decisionOf(skill: string): { factors: { errorRecurrence: number; goalRelevance: number }; meta: { noObservation: boolean; skillGapKey: string | null }; priority: string } {
+  if (!snapshot.ok) throw new Error('快照构建失败');
+  const hit = snapshot.data.context.decisions.find(
+    (row) => row.candidateKey.startsWith('RETEST:') && row.candidateKey.endsWith(`:${skill}`),
+  );
+  if (!hit) {
+    const keys = snapshot.data.context.decisions.map((row) => row.candidateKey).join(', ');
+    throw new Error(`没有 ${skill} 的决策；实际有：${keys}`);
+  }
+  return hit;
+}
 
 describe('⑲ 前提：SkillGap 表确实没有那两个列', () => {
   it('PRAGMA table_info(SkillGap) 里没有 evidenceQuestions / repeatedErrorCount', async () => {
@@ -194,20 +302,6 @@ describe('⑲ 前提：SkillGap 表确实没有那两个列', () => {
 });
 
 describe('⑲ errorRecurrence 从 DTO 通道取到真值', () => {
-  const decisionOf = (skill: string) => {
-    if (!snapshot.ok) throw new Error('快照构建失败');
-    // 只找 RETEST 那条：QUESTION 的种子题也会以 `:READING` 结尾（那是目标技能，
-    // 不是我们要验的维度缺口）
-    const hit = snapshot.data.context.decisions.find(
-      (row) => row.candidateKey.startsWith('RETEST:') && row.candidateKey.endsWith(`:${skill}`),
-    );
-    if (!hit) {
-      const keys = snapshot.data.context.decisions.map((row) => row.candidateKey).join(', ');
-      throw new Error(`没有 ${skill} 的决策；实际有：${keys}`);
-    }
-    return hit;
-  };
-
   it('READING：练过且有 6 条错题 → 因子非零、noObservation=false', () => {
     const decision = decisionOf('READING');
     // 6 / (10 × 2) = 0.30
@@ -256,9 +350,8 @@ describe('⑲ 落库的一侧：候选与决策成对写入', () => {
   it('候选池恰好只剩本文件造的两条 RETEST（读集清干净了，没有种子数据混进来）', async () => {
     if (!snapshot.ok) throw new Error('快照构建失败');
     const keys = snapshot.data.context.decisions.map((row) => row.candidateKey).sort();
-    expect(keys).toHaveLength(2);
-    expect(keys[0]?.startsWith('RETEST:')).toBe(true);
-    expect(keys[1]?.startsWith('RETEST:')).toBe(true);
+    expect(keys).toHaveLength(4);
+    for (const key of keys) expect(key.startsWith('RETEST:'), key).toBe(true);
   });
 
   it('快照不再把候选池报成"缺失输入"', async () => {
@@ -376,5 +469,21 @@ describe('⑳㉑ 调用链：真实 LearningGoal 行 → goalRelevance（不是�
     // 期望值**手算**：2026-03-10 → 2026-06-01 = 83 天，1 − 83/90 = 0.07777…
     // （不写 `1 - 83/90`：那与被测实现是同一个表达式，等于用实现验证实现）
     expect(reading.factors.goalRelevance).toBeCloseTo(0.0778, 4);
+  });
+});
+
+describe('⑲ C-K：28 天窗口锚「发生日期」`recordDate`，不是「录入时刻」`createdAt`', () => {
+  it('① 发生在窗口外、今天才录入 → **不计入**（旧实现会错误计入）', () => {
+    const decision = decisionOf('LISTENING');
+    // 该维度练过（有打分证据）→ `noObservation=false`，所以 0 的意思是"确认为无"
+    expect(decision.meta.noObservation).toBe(false);
+    expect(decision.factors.errorRecurrence).toBe(0);
+  });
+
+  it('② 发生在窗口内、60 天前就录入 → **计入**（旧实现会错误排除）', () => {
+    const decision = decisionOf('WRITING');
+    expect(decision.meta.noObservation).toBe(false);
+    // 1 / (10 × 2) = 0.05
+    expect(decision.factors.errorRecurrence).toBeCloseTo(0.05, 10);
   });
 });
