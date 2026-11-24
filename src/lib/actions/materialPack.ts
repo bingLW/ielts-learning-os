@@ -6,21 +6,22 @@
  * 这一层只做四件事 —— ① 前置断言（材料状态、草案状态）；② 调纯函数/服务拿结论
  * （`splitProposalAcrossDays` / `validateProposalAgainstBudget` / `buildMaterialPack`）；
  * ③ 逐条写库；④ 结算与失效缓存。它**不自己判断**"怎么拆"（纯函数是唯一决策点），
- * 也**不自己建 PlanTask**（F-03 的核心约束：必须复用 `createPlanTaskAction`，
- * 否则计划表会出现第二套创建逻辑，两边的 zod 与默认值迟早分叉）。
+ * 也**不自己建 PlanTask**（Q6：必须走唯一写入者 `appendTaskFromCandidate`，
+ * 否则计划表会出现第二套创建逻辑，预算闸门与版本审计迟早分叉）。
  *
  * 三条硬约束：
- * - **确认前必须校验预算**：草案是"建议"，用户确认时不能因为改了分钟就悄悄超支；
+ * - **预算整批只校验一次**：v2.6 曾在本文件确认入口与写入者各跑一次同一套逻辑，
+ *   双重扣减/双重拒绝；Q6 后两者共用 `planWrite.ts` 的同一纯函数，入口预检整批、
+ *   写入者跳过单条重复校验（spy 断言总共只调用 1 次）；
  * - **只写 `selected` 的条目**：勾选框是承诺，不是装饰；
  * - **丢弃草案不动 PlanTask**：已经确认落地的任务不能因为丢草案被删。
  */
 
 import { revalidatePath } from 'next/cache';
-import { createPlanTaskAction } from '@/lib/actions/plan';
-import { skillOfModule } from '@/lib/domain/planWriteMap';
+import { mapCandidateSourceToPlanTask, taskAxesOf } from '@/lib/domain/planWriteMap';
+import { appendTaskFromCandidate, validateBatchBudget } from '@/lib/services/planWrite';
 import type { BudgetDay, ProposalSeed } from '@/lib/domain/taskProposal';
 import {
-  describeBudgetViolations,
   splitProposalAcrossDays,
   validateProposalAgainstBudget,
   type ProposalGranularity,
@@ -38,7 +39,7 @@ import {
   taskProposalDiscardSchema,
 } from '@/lib/schema/materialPack';
 import { buildMaterialPack } from '@/lib/services/materialPackRepo';
-import type { ActionResult } from '@/lib/types';
+import type { ActionResult, ModuleId } from '@/lib/types';
 import type { MaterialStatus } from '@/lib/constants';
 
 /** 允许建包的材料状态（`review_required` 允许建"半成品包"并在页面标注）。 */
@@ -448,12 +449,14 @@ export interface ConfirmProposalData {
 /**
  * 确认草案：**只对 `selected === true` 的条目**写 PlanTask。
  *
- * 为什么必须复用 `createPlanTaskAction` 而不是自己 `prisma.planTask.create`：
- * PlanTask 的 zod（模块/科目枚举、分钟上下限）与 `track`/`primarySkill` 推导
- * 都在那一处。绕过去写第二套，等于让"草案确认的任务"和"手动加的任务"走进
- * 两条不同的校验路径 —— 这种分叉不会当天报错，会在半年后变成"有些任务没有轨道"。
+ * Q6（v2.7）：本入口不再**自己**算预算、不再直接建任务、不再回填 `planTaskId` ——
+ * 预算预检调 `planWrite.validateBatchBudget()`（与写入者共用同一纯函数，整批只跑一次），
+ * 建任务与回填在唯一写入者 `appendTaskFromCandidate()` 的同一个事务里完成。
+ * 入口只保留前置断言（草案存在/状态/选中项非空）与结算；签名、返回结构、组件 props 不变。
  *
- * 预算校验放在最前面，且有超支就**一条都不写**：确认是承诺，不是试探。
+ * `sourceKind` 经 `mapCandidateSourceToPlanTask('MATERIAL', null) → MANUAL` 映射得到
+ * （材料草案是用户勾选落地，语义为"人工决定"）；`priority` 材料草案没有证据裁决，
+ * 显式取 P1（阶段核心）—— 与 v2.6 材料路径的实际行为一致，避免静默改变用户可见排序。
  *
  * @param raw `{ proposalId }`
  */
@@ -498,18 +501,17 @@ export async function confirmTaskProposalAction(
     return fail('VALIDATION', '至少要勾选一条草案才能确认');
   }
 
-  // ── 预算闸门（确认前必跑） ──
-  const days = await loadBudgetDays(proposal.baseDate);
-  const check = validateProposalAgainstBudget(
+  // Q6：整批预算预检（v2.6「有超支一条都不写」语义）。这里调的是 planWrite 模块
+  // 导出的 validateBatchBudget，与写入者内部闸门共用同一个纯函数；预检通过后
+  // 逐条写入传 budgetPrevalidated:true，整批确认中预算闸门总共只跑一次（spy 可验）。
+  const batchCheck = validateBatchBudget(
     selected.map((item) => ({
       date: item.finalDate ?? item.suggestedDate,
       minutes: item.finalMinutes ?? item.suggestedMinutes,
     })),
-    days,
+    await loadBudgetDays(proposal.baseDate),
   );
-  if (!check.ok) {
-    return fail('PRECONDITION', describeBudgetViolations(check.violations));
-  }
+  if (!batchCheck.ok) return fail(batchCheck.code, batchCheck.error);
 
   const stage = await prisma.stage.findFirst({
     where: { status: 'ACTIVE' },
@@ -531,14 +533,23 @@ export async function confirmTaskProposalAction(
 
     const planDate = item.finalDate ?? item.suggestedDate;
     const plannedMinutes = item.finalMinutes ?? item.suggestedMinutes;
+    const axes = taskAxesOf(item.module as ModuleId, item.targetSkill);
 
-    const result = await createPlanTaskAction({
+    // Q6：唯一写入者。预算闸门、版本、planTaskId 回填全在其一个事务内完成。
+    const result = await appendTaskFromCandidate({
       stageId: stage.id,
       planDate,
-      module: item.module,
-      skill: skillOfModule(item.module, item.targetSkill),
+      module: item.module as ModuleId,
+      skill: axes.skill,
       plannedMinutes,
+      priority: 'P1',
+      sourceKind: mapCandidateSourceToPlanTask('MATERIAL', null),
+      track: axes.track,
+      primarySkill: axes.primarySkill,
       note: `${item.title}（来自材料任务草案${item.reason ? `：${item.reason}` : ''}）`.slice(0, 300),
+      origin: 'MATERIAL_CONFIRM',
+      proposalItemId: item.id, // 幂等键：写入者内部回填 planTaskId
+      budgetPrevalidated: true, // 整批已由 validateBatchBudget 校验，跳过单条重复闸门
     });
 
     if (!result.ok) {
@@ -546,10 +557,7 @@ export async function confirmTaskProposalAction(
       continue;
     }
 
-    await prisma.taskProposalItem.update({
-      where: { id: item.id },
-      data: { planTaskId: result.data.taskId },
-    });
+    // created:false = 写入者命中幂等（本次循环里 planTaskId 刚被回填），仍计为成功
     created += 1;
     totalMinutes += plannedMinutes;
   }

@@ -26,11 +26,19 @@
  * 那正是 v2.1 要废除的「默认 240」假设。
  */
 
+import type { Prisma } from '@prisma/client';
 import { BUDGET_MINUTES_MAX, BUDGET_MINUTES_MIN } from '@/lib/constants';
 import { today } from '@/lib/date';
 import { resolveEffectiveBudget, type EffectiveBudget, type WeekdayProfile } from '@/lib/domain/budget';
 import { prisma } from '@/lib/prisma';
 import type { BudgetTierCode, BudgetType } from '@/lib/types';
+
+/**
+ * 允许传入事务客户端：v2.7 `appendTaskFromCandidate` 在同一事务内跑预算闸门，
+ * 若在事务里调用全局 `prisma` 会另开连接，SQLite 写事务下会死锁。默认仍是全局客户端，
+ * 现有调用方无需改动。
+ */
+type BudgetReader = typeof prisma | Prisma.TransactionClient;
 
 /**
  * 类型转出（**不改既有 import 路径**）。
@@ -43,18 +51,21 @@ import type { BudgetTierCode, BudgetType } from '@/lib/types';
 export type { EffectiveBudget, WeekdayProfile };
 
 /** 读取 PlannerSettings（不存在时返回 null，由迁移或设置页创建）。 */
-export async function getPlannerSettings() {
-  return prisma.plannerSettings.findUnique({ where: { id: 1 } });
+export async function getPlannerSettings(db: BudgetReader = prisma) {
+  return db.plannerSettings.findUnique({ where: { id: 1 } });
 }
 
 /** 解析星期模板（实现已搬到 `domain/budget.ts`，这里只转出）。 */
 export { parseWeekdayProfiles } from '@/lib/domain/budget';
 
 /** 该日期的有效预算（薄壳：读 → `resolveEffectiveBudget` → 返回）。 */
-export async function getEffectiveBudget(date: string = today()): Promise<EffectiveBudget> {
+export async function getEffectiveBudget(
+  date: string = today(),
+  db: BudgetReader = prisma,
+): Promise<EffectiveBudget> {
   const [daily, settings] = await Promise.all([
-    prisma.dailyBudget.findUnique({ where: { date } }),
-    getPlannerSettings(),
+    db.dailyBudget.findUnique({ where: { date } }),
+    getPlannerSettings(db),
   ]);
 
   return resolveEffectiveBudget({ date, daily, settings });

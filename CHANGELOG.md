@@ -21,6 +21,9 @@
 - `getBudgetRange()` 在「配置行不存在 + 周日」：由 `0 分钟 / 休息日 / 非建议` 变为 `60 分钟 / 非休息日 / 建议值`，与 `getEffectiveBudget()` 一致。
 - `getBudgetRange()` 在「配置行不存在 + 工作日」：`isSuggestion` 由 `false` 变为 `true` —— 那个 60 分钟本来就是 `BUDGET_INITIAL_SUGGESTION`，不是用户设定的可用时间。
 - 影响面：周视图 `budget.days[].isRestDay` / `isSuggestion`（页面已有「建议」标记，无需改文案）；H4 的分母（原先周日被静默跳过）；诊断报告里的星期模板解析（第三处自解析已并入 `parseWeekdayProfiles`）。
+- **Q6 唯一写入者**：材料草案确认、候选确认、手工加任务三个入口统一收敛到 `services/planWrite.ts` 的 `appendTaskFromCandidate()`，预算闸门整批只跑一次。材料确认过去走 `createPlanTaskAction` 只写 6 个字段，其余全落默认（`priority=P1`、`sourceKind=CORE`、`planVersion=1`、`splittable=false`）；现在写入 17 字段全量，`sourceKind` 经映射取 `MANUAL`、`planVersion` 由 `nextPlanVersion()` 派生并同事务写 `PlanVersion(MANUAL_ADJUST)`、`splittable` 由分钟派生。`confirmTaskProposalAction` 的签名、返回结构、组件 props 一律不变。重复确认同一个草案条目 → 幂等命中不写第二条（回填 `planTaskId` 在写入者事务内完成）。
+  - 预算闸门守 v2.6「有超支一条都不写」语义：材料确认先调 `planWrite.validateBatchBudget()` 对**整批**条目一次性预检，通过后逐条写入传 `budgetPrevalidated:true` 跳过单条重复校验——入口与写入者共用同一个 `validateProposalAgainstBudget` 纯函数，口径不分叉，spy 断言整批确认只调用 1 次。单条入口（手工/候选）无批次预检，写入者内部照常跑唯一一次。
+  - 回归：`services/__tests__/planWrite.integration.test.ts`（⑧–⑪）、`__tests__/regression/materialPack.q6.test.ts`（⑫–⑮，含「预算闸门只调一次」spy）、`__tests__/regression/noDoubleWrite.test.ts`（⑯⑰）。
 
 ### 内部 DTO 扩展（非行为变更）
 

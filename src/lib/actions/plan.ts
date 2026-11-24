@@ -13,6 +13,7 @@ import { generateDailyPlan } from '@/lib/domain/plan';
 import { generateAdaptivePlan } from '@/lib/domain/adaptivePlan';
 import { ensureVocabularyAssignment } from '@/lib/vocabAssignment';
 import { prisma } from '@/lib/prisma';
+import { appendTaskFromCandidate } from '@/lib/services/planWrite';
 import { fail, failValidation, ok } from '@/lib/result';
 import {
   createPlanTaskSchema,
@@ -103,38 +104,39 @@ export async function generatePlanAction(
   });
 }
 
-/** 新建单个任务。 */
+/**
+ * 新建单个任务（v2.7 Q6：内部走唯一写入者；签名与返回不变）。
+ *
+ * 手工任务没有候选来源，`sourceKind` 直接取 `MANUAL`（已是 `TaskSourceKind`，
+ * 不经候选域映射）；`priority` 取 P1，与 v2.6 的默认值一致。
+ * 预算闸门、版本审计、`splittable` 派生都下沉到 `appendTaskFromCandidate`，
+ * 本入口不再自己算 `sortOrder`（写入者内部按当日最大值 +1）。
+ */
 export async function createPlanTaskAction(
   raw: unknown,
 ): Promise<ActionResult<{ taskId: string }>> {
   const parsed = createPlanTaskSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const maxSort = await prisma.planTask.aggregate({
-    where: { planDate: parsed.data.planDate },
-    _max: { sortOrder: true },
+  const created = await appendTaskFromCandidate({
+    stageId: parsed.data.stageId,
+    planDate: parsed.data.planDate,
+    module: parsed.data.module,
+    skill: parsed.data.skill,
+    plannedMinutes: parsed.data.plannedMinutes,
+    priority: 'P1',
+    sourceKind: 'MANUAL',
+    track: (parsed.data.track ?? MODULE_TRACK[parsed.data.module]) as LearningTrack,
+    primarySkill: (parsed.data.primarySkill ??
+      MODULE_TO_PRIMARY[parsed.data.module]) as PrimarySkill,
+    resourceId: parsed.data.resourceId ?? null,
+    note: parsed.data.note?.trim() ? parsed.data.note.trim() : null,
+    origin: 'MANUAL_ADD',
   });
-  const sortOrder = parsed.data.sortOrder ?? (maxSort._max.sortOrder ?? -1) + 1;
-
-  const created = await prisma.planTask.create({
-    data: {
-      stageId: parsed.data.stageId,
-      planDate: parsed.data.planDate,
-      module: parsed.data.module,
-      skill: parsed.data.skill,
-      plannedMinutes: parsed.data.plannedMinutes,
-      sortOrder,
-      resourceId: parsed.data.resourceId ?? null,
-      note: parsed.data.note?.trim() ? parsed.data.note.trim() : null,
-      // v2.0：未显式指定时按模块推导，保证每条任务落地时轨道/技能快照都非空
-      track: (parsed.data.track ?? MODULE_TRACK[parsed.data.module]) as LearningTrack,
-      primarySkill: (parsed.data.primarySkill ??
-        MODULE_TO_PRIMARY[parsed.data.module]) as PrimarySkill,
-    },
-  });
+  if (!created.ok) return fail(created.code, created.error, created.fieldErrors);
 
   revalidatePath('/plan');
-  return ok({ taskId: created.id });
+  return ok({ taskId: created.data.taskId });
 }
 
 /** 就地改时长 / 换资源 / 改备注。 */
@@ -318,6 +320,9 @@ export async function generateAdaptivePlanAction(
           originalScheduledDate: planDate,
           resourceId: subject ? (resourceMap[subject] ?? null) : null,
           note: item.rationale,
+          // v2.7：与唯一写入者保持同一字段集合（批量路径无候选上下文，显式 null）
+          candidateId: null,
+          decisionJson: null,
         };
       }),
     });

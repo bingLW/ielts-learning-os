@@ -6,6 +6,7 @@
  * 的四技能快照（经 DaySplit 归日），不重复计时。
  */
 
+import type { Prisma } from '@prisma/client';
 import {
   CORE_MIN_RATIO,
   MIN_TASK_MINUTES,
@@ -20,6 +21,9 @@ import type { AdaptivePlanInput, DueRetestInput } from '@/lib/domain/adaptivePla
 import { checkAllocation } from '@/lib/domain/allocation';
 import { prisma } from '@/lib/prisma';
 import type { AllocationSkill, ModuleId, SkillAllocation, StageCode } from '@/lib/types';
+
+/** 可传事务客户端（v2.7 `appendTaskFromCandidate` 在事务内取下一版本号）。 */
+type VersionReader = typeof prisma | Prisma.TransactionClient;
 
 /** 科目 → 资源库 subject 的映射（用于自动挂主材料，代码中无资源名枚举）。 */
 export const SKILL_TO_SUBJECT: Record<string, ResourceSubject | undefined> = {
@@ -296,10 +300,13 @@ export async function loadPlanEngineContext(
 }
 
 /** 该日期下一个可用的计划版本号（同时看版本表与任务行，避免与 v2.0 旧任务的 version=1 相撞）。 */
-export async function nextPlanVersion(planDate: string): Promise<number> {
+export async function nextPlanVersion(
+  planDate: string,
+  db: VersionReader = prisma,
+): Promise<number> {
   const [versionMax, taskMax] = await Promise.all([
-    prisma.planVersion.aggregate({ where: { planDate }, _max: { version: true } }),
-    prisma.planTask.aggregate({ where: { planDate }, _max: { planVersion: true } }),
+    db.planVersion.aggregate({ where: { planDate }, _max: { version: true } }),
+    db.planTask.aggregate({ where: { planDate }, _max: { planVersion: true } }),
   ]);
   return Math.max(versionMax._max.version ?? 0, taskMax._max.planVersion ?? 0) + 1;
 }
