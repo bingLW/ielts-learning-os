@@ -3472,3 +3472,30 @@ export const PRIORITY_NEUTRAL_VALUE = 0.5;
 
 /** 有目标、但该技能不在目标内（**确认为无关系**）时的 `goalRelevance`。 */
 export const PRIORITY_GOAL_UNRELATED = 0.3;
+
+// ───────────────────────── v2.7 readiness（T09） ─────────────────────────
+
+/**
+ * D1 证据覆盖：每个 OFFICIAL 技能的关键子维度覆盖率下限。
+ *
+ * 低于它视为「覆盖不足」。口径见 `domain/readiness.ts`：覆盖率的来源是该技能
+ * 各缺口（`SkillGapDraft.coverageRatio`）的最小值；无缺口视为已完全覆盖（= 1.0）。
+ */
+export const READINESS_COVERAGE_MIN = 0.6;
+
+/** D2 多来源一致：每技能最少来源数（材料/任务去重后）。 */
+export const READINESS_MIN_SOURCES = 2;
+
+/** D3 无辅助完成：每技能最少 A0 无辅助证据条数。 */
+export const READINESS_MIN_INDEPENDENT = 2;
+
+/** D4 延迟保持：`DELAYED` 复测「DONE 且 score ≥ 1」的通过比例下限。 */
+export const READINESS_RETEST_PASS_RATIO = 0.5;
+
+/**
+ * D4/D5：复测内部证据评分达标下限。
+ *
+ * 内部 0–2 证据评分（`EVIDENCE_SCORE_MIN`/`EVIDENCE_SCORE_MAX`）：`≥1` = 至少
+ * 「部分完成或依赖帮助」，`<1`（或 null）不算通过。
+ */
+export const READINESS_RETEST_MIN_SCORE = 1;

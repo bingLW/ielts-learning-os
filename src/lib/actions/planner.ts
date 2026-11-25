@@ -23,15 +23,19 @@ import {
 } from '@/lib/services/planBuild';
 import { buildPlanningSnapshot } from '@/lib/services/planningSnapshot';
 import { nextPlanVersion } from '@/lib/queries/planning';
+import { persistReadinessReview } from '@/lib/services/readiness';
 import { fail, failValidation, ok } from '@/lib/result';
 import type { ActionResult, TaskPriority } from '@/lib/types';
+import type { ReadinessOutcome } from '@/lib/domain/readiness';
 import {
   candidatePromoteSchema,
   planConfirmSchema,
   planDraftSchema,
   planPreviewSchema,
+  readinessReviewSchema,
   replanConfirmSchema,
   replanPreviewSchema,
+  stageTransitionSchema,
   versionRestoreSchema,
 } from '@/lib/schema/planner';
 import { confirmReplan, previewReplan, type ReplanPreviewResult } from '@/lib/services/replanPreview';
@@ -326,4 +330,78 @@ export async function confirmReplanAction(
     revalidatePath('/planner');
   }
   return result;
+}
+
+/**
+ * 生成阶段 readiness 评审（T09）：装配五维证据 → `computeReadiness()` → 落库
+ * `StageReadinessReview`（`criteriaJson` 必存五维明细）。**只建议，不切阶段**。
+ */
+export async function reviewReadinessAction(
+  raw: unknown,
+): Promise<ActionResult<{ reviewId: string; outcome: ReadinessOutcome }>> {
+  const parsed = readinessReviewSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+
+  const result = await persistReadinessReview(parsed.data);
+  if (!result.ok) return fail(result.code, result.error);
+
+  revalidatePath('/planner');
+  revalidatePath('/planner/readiness');
+  return ok({ reviewId: result.data.reviewId, outcome: result.data.outcome });
+}
+
+/**
+ * 用户确认进入下一阶段（T09）：把 `StageReadinessReview` 标成
+ * `USER_APPROVED_TRANSITION` + `userConfirmed`，并写一条 append-only 的
+ * `StageTransitionLog`。
+ *
+ * 注意：本 action **只记录「用户批准了这次 readiness 建议」**，不修改 `Stage.status`。
+ * 真正切换阶段仍走既有的 `transitionStageAction`（`actions/stages.ts`）—— 两处
+ * 都在 `StageTransitionLog` 留痕，但职责不同：一个是"批准证据结论"，一个是"改阶段状态"。
+ */
+export async function confirmStageTransitionAction(
+  raw: unknown,
+): Promise<ActionResult<{ reviewId: string; logId: string }>> {
+  const parsed = stageTransitionSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+
+  const review = await prisma.stageReadinessReview.findUnique({
+    where: { id: parsed.data.reviewId },
+  });
+  if (!review) return fail('NOT_FOUND', 'readiness 评审不存在或已被清理');
+  if (review.userConfirmed) return fail('CONFLICT', '该评审已确认过切换');
+
+  const target = await prisma.stage.findUnique({ where: { code: parsed.data.toStageCode } });
+  if (!target) return fail('NOT_FOUND', '目标阶段不存在');
+
+  const fromStage = await prisma.stage.findUnique({ where: { id: review.stageId } });
+
+  const log = await prisma.$transaction(async (tx) => {
+    await tx.stageReadinessReview.update({
+      where: { id: review.id },
+      data: {
+        outcome: 'USER_APPROVED_TRANSITION',
+        userConfirmed: true,
+        confirmedAt: new Date(),
+        confirmedBy: parsed.data.confirmedBy.trim(),
+        note: parsed.data.note?.trim() || null,
+      },
+    });
+    return tx.stageTransitionLog.create({
+      data: {
+        fromStageCode: fromStage?.code ?? null,
+        toStageCode: target.code,
+        decidedBy: 'USER',
+        reason: parsed.data.reason.trim(),
+        // criteriaJson 就是「当时凭什么说 Ready」的逐维证据快照
+        evidenceSnapshot: review.criteriaJson,
+      },
+    });
+  });
+
+  revalidatePath('/');
+  revalidatePath('/stages');
+  revalidatePath('/planner');
+  revalidatePath('/planner/readiness');
+  return ok({ reviewId: review.id, logId: log.id });
 }

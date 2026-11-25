@@ -15,7 +15,10 @@ import {
   PRIORITY_FACTOR_KEYS,
   PRIORITY_THRESHOLDS,
   PRIORITY_WEIGHTS_VERSION,
+  STAGE_CODES,
+  TRANSITION_REASON_MIN_LENGTH,
 } from '../constants';
+import { enumFrom } from './common';
 import { failValidation } from '../result';
 import type { ActionResult } from '../types';
 import type { PriorityWeights } from '../domain/taskPriority';
@@ -192,3 +195,36 @@ export const replanConfirmSchema = replanPreviewSchema
   .strict();
 
 export type ReplanConfirmSchemaInput = z.infer<typeof replanConfirmSchema>;
+
+// ───────────────────────── T09 readiness / 阶段切换 ─────────────────────────
+
+/** readiness 评审（生成 `StageReadinessReview` 快照，`41 §2.10`）。 */
+export const readinessReviewSchema = z
+  .object({
+    stageId: z.string().min(1, '缺少阶段 ID'),
+    asOfDate: dateString,
+  })
+  .strict();
+
+export type ReadinessReviewInput = z.infer<typeof readinessReviewSchema>;
+
+/**
+ * 用户确认进入下一阶段（`41 §2.10`）：系统只建议，用户才生效。
+ *
+ * `confirmedBy` 必填（PRD §4.9：确认人 = 本人）；`reason` 沿用全局最小长度
+ * `TRANSITION_REASON_MIN_LENGTH`，与既有 `transitionStageAction` 同一条硬约束。
+ */
+export const stageTransitionSchema = z
+  .object({
+    reviewId: z.string().min(1, '缺少 readiness 评审 ID'),
+    toStageCode: enumFrom(STAGE_CODES, '目标阶段编码'),
+    reason: z
+      .string()
+      .trim()
+      .min(TRANSITION_REASON_MIN_LENGTH, `升级原因至少 ${TRANSITION_REASON_MIN_LENGTH} 个字`),
+    confirmedBy: z.string().trim().min(1, '请填写确认人'),
+    note: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export type StageTransitionSchemaInput = z.infer<typeof stageTransitionSchema>;

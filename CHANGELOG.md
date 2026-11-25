@@ -37,6 +37,13 @@
 - **`services/planningSnapshot.ts` 删掉了调用点的 `.filter(([, v]) => typeof v === 'number')`**（`parseSkillTargets` 的入参准备处）。守卫已移到 `parseSkillTargets()` 函数体内（`if (typeof value !== 'number') continue`），语义完全等价；删的理由是 `41 §1.9` **A-4**：一个 `export` 的函数如果去掉调用方的前置过滤就会错，那它自己就错了。留着那道 `.filter` 会让下一个调用点（T04 的 `goalRelevance`）以为"函数需要我这样做"，于是每个新调用点都加一份自己的守卫，而函数真正的边界永远没人管。
 - 变更前后行为一致性有**可执行证明**：把 `parseSkillTargets` 的守卫退回 `Number(value)`（坏实现）——**不加** `.filter` 时夹具报 `{LISTENING: 0, READING: 7, …}`（红）；**加回** `.filter` 时全绿。同一个坏函数两种结果，正是"filter 的存在掩盖了函数本身的缺陷"的实证。夹具见 `services/__tests__/planningSnapshot.integration.test.ts`（`minReading: 7`、其余三项 `null`）。
 
+### 阶段就绪度（T09）
+
+- 新增 `domain/readiness.ts` 的 `computeReadiness()`：五维（证据覆盖 / 多来源一致 / 无辅助完成 / 延迟保持 / 迁移证据）→ 5 结论。**晋级判定改由 `computeReadiness` 独家负责**；`stageGate` 只作「人工验收清单完成度」，两者互不引用结论（`importBoundary.test.ts` 断言互不 import）。结论映射顺序固定：`readErrors` → `NEED_MORE_EVIDENCE` → 任一维 `INSUFFICIENT` → `NEED_MORE_EVIDENCE` → `D4/D5 FAIL` → `NEED_TARGETED_PRACTICE` → 五维全 PASS → `READY_FOR_REVIEW` → 其余 `CONTINUE_CURRENT`。
+- **F-2 类型级保障**：`ReadinessInput` 故意不含 `daysCompleted` / `completionRate` / `aiScore`，任何「靠时长或完成率晋级」的实现都拿不到输入；`@ts-expect-error` 三连 + `notConsidered`（学习天数 / 完成率 / 单次 AI 分数，只用于展示）作为反例区。
+- 新增 `services/readiness.ts` 的 `persistReadinessReview()`：复用 `buildPlanningSnapshot({ purpose: 'READINESS' })` 装配缺口/不确定，聚合 `EvidenceRecord` / `RetestSchedule`，`criteriaJson` 必存五维明细（History 页可回溯「当时凭什么说 Ready」）。
+- 新增 actions `reviewReadinessAction`（只建议，不切阶段）与 `confirmStageTransitionAction`（写 `StageReadinessReview.outcome=USER_APPROVED_TRANSITION` + `userConfirmed` + append-only `StageTransitionLog`）。`USER_APPROVED_TRANSITION` **不由 `computeReadiness` 返回**。
+
 ### 测试
 
 - 新增 `domain/__tests__/budgetResolve.test.ts`：五段分支各一条 + 「批量 vs 逐日」逐字段等价性（30 天 × 3 种配置状态）——后者是防止两条实现再次分叉的唯一防线。
