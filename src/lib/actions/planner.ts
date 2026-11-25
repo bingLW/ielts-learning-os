@@ -30,8 +30,11 @@ import {
   planConfirmSchema,
   planDraftSchema,
   planPreviewSchema,
+  replanConfirmSchema,
+  replanPreviewSchema,
   versionRestoreSchema,
 } from '@/lib/schema/planner';
+import { confirmReplan, previewReplan, type ReplanPreviewResult } from '@/lib/services/replanPreview';
 
 /** 预览返回值：`BuildPlanResult` + 无状态预览令牌。 */
 export type BuildPlanPreviewResult = Awaited<ReturnType<typeof buildPlan>> extends ActionResult<infer R>
@@ -292,4 +295,35 @@ export async function restorePlanVersionAction(
 
   revalidatePath('/planner');
   return ok({ version });
+}
+
+/**
+ * 重排预览（T08）：零写库，直接调用 `previewReplan()`（内部复用 `replanDailyTasks`）。
+ * 返回 diff + 无状态 `previewToken`，确认时校验「预览 == 实际」。
+ */
+export async function previewReplanAction(
+  raw: unknown,
+): Promise<ActionResult<ReplanPreviewResult>> {
+  const parsed = replanPreviewSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+  return previewReplan(parsed.data);
+}
+
+/**
+ * 确认重排（T08）：token 校验 → 空版本/幂等拦截 → 一次事务落库。
+ * 成功后写 1 条 `PlanVersion(changeSource='REPLAN', idempotencyKey)`。
+ */
+export async function confirmReplanAction(
+  raw: unknown,
+): Promise<Awaited<ReturnType<typeof confirmReplan>>> {
+  const parsed = replanConfirmSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+
+  const result = await confirmReplan(parsed.data);
+  if (result.ok) {
+    revalidatePath('/');
+    revalidatePath('/plan');
+    revalidatePath('/planner');
+  }
+  return result;
 }

@@ -167,3 +167,28 @@ export const versionRestoreSchema = z
   .strict();
 
 export type VersionRestoreInput = z.infer<typeof versionRestoreSchema>;
+
+// ───────────────────────── T08 重排预览 / 确认 ─────────────────────────
+
+/** 重排预览（dry-run，`41 §2.7`）。 */
+export const replanPreviewSchema = z
+  .object({
+    planDate: dateString,
+    newBudgetMinutes: z.number().int().min(0).max(600),
+    isRestDay: z.boolean().optional(),
+    reason: z.string().max(500).optional(),
+    lockedTaskIds: z.array(z.string().min(1)).max(200).optional(),
+  })
+  .strict();
+
+export type ReplanPreviewSchemaInput = z.infer<typeof replanPreviewSchema>;
+
+/** 确认重排（含预览令牌与幂等键，`41 §2.7`）。 */
+export const replanConfirmSchema = replanPreviewSchema
+  .extend({
+    previewToken: z.string().min(1, '缺少预览令牌'),
+    idempotencyKey: z.string().min(1).max(120),
+  })
+  .strict();
+
+export type ReplanConfirmSchemaInput = z.infer<typeof replanConfirmSchema>;
