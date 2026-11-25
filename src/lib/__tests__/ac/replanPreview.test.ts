@@ -8,6 +8,7 @@
  * - ④ 预览后手动改一条任务 → `confirmReplan` 返回 `fail('CONFLICT')`（token 失效）
  * - ⑤ 确认后恰好 1 条 `PlanVersion(changeSource='REPLAN', idempotencyKey)`
  * - ⑥ `hasChanges=false` → action 返回 `fail('PRECONDITION')`（禁止空版本）
+ * - ⑦ `idempotencyKey` 已被占用 → `fail('CONFLICT')`（第 3 重幂等闸门，直接种记录验证）
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -72,6 +73,7 @@ const STAGE_ID = 'stage-replan';
 const AS_OF_A = '2026-11-25';
 const AS_OF_B = '2026-11-26';
 const AS_OF_EMPTY = '2026-11-27';
+const AS_OF_IDEM = '2026-11-28';
 
 interface TaskSeed {
   id: string;
@@ -130,6 +132,7 @@ beforeAll(async () => {
       { date: AS_OF_A, plannedAvailableMinutes: 90, isRestDay: false, source: 'USER' },
       { date: AS_OF_B, plannedAvailableMinutes: 30, isRestDay: false, source: 'USER' },
       { date: AS_OF_EMPTY, plannedAvailableMinutes: 0, isRestDay: true, source: 'USER' },
+      { date: AS_OF_IDEM, plannedAvailableMinutes: 90, isRestDay: false, source: 'USER' },
     ],
   });
 
@@ -144,6 +147,10 @@ beforeAll(async () => {
 
   // 场景 C：hasChanges=false（仅一个已完成任务 + 零预算休息日）
   await createTask({ id: 'task-done-only', planDate: AS_OF_EMPTY, module: 'LISTENING', skill: 'LISTENING', plannedMinutes: 20, actualMinutes: 20, status: 'DONE', sortOrder: 0 });
+
+  // 场景 D：幂等闸门（token 一致 + hasChanges=true，但 idempotencyKey 已被占用）
+  await createTask({ id: 'task-idem-done', planDate: AS_OF_IDEM, module: 'LISTENING', skill: 'LISTENING', plannedMinutes: 20, actualMinutes: 20, status: 'DONE', sortOrder: 0 });
+  await createTask({ id: 'task-idem-todo', planDate: AS_OF_IDEM, module: 'WRITING', skill: 'WRITING', plannedMinutes: 30, actualMinutes: 0, status: 'TODO', sortOrder: 1 });
 });
 
 afterAll(async () => {
@@ -256,5 +263,42 @@ describe('T08 重排预览/确认（AC-10）', () => {
     });
     expect(confirm.ok).toBe(false);
     if (!confirm.ok) expect(confirm.code).toBe('PRECONDITION');
+  });
+
+  it('⑦ idempotencyKey 已被占用 → confirmReplan 返回 CONFLICT 且不再落库', async () => {
+    // 1. 先取一个与当前库状态一致的 token（token 闸门会通过）
+    const preview = await previewReplanAction({ planDate: AS_OF_IDEM, newBudgetMinutes: 60 });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    // 该场景有 REMOVE + ADD，hasChanges=true（PRECONDITION 闸门会通过）
+    expect(preview.data.diff.hasChanges).toBe(true);
+
+    // 2. 直接种一条占用幂等键的 PlanVersion（PlanVersion.idempotencyKey 为 @unique），
+    //    模拟「同一 key 已被并发/重复提交写过」。
+    await prisma.planVersion.create({
+      data: {
+        planDate: AS_OF_IDEM,
+        version: 999,
+        changeSource: 'REPLAN',
+        idempotencyKey: 'idem-gate-key',
+      },
+    });
+
+    const tasksBefore = await prisma.planTask.count({ where: { planDate: AS_OF_IDEM } });
+    const versionsBefore = await prisma.planVersion.count({ where: { planDate: AS_OF_IDEM } });
+
+    // 3. 同一个 key + 有效 token + hasChanges=true → 应被第 3 重幂等闸门拦截。
+    const confirm = await confirmReplanAction({
+      planDate: AS_OF_IDEM,
+      newBudgetMinutes: 60,
+      previewToken: preview.data.previewToken,
+      idempotencyKey: 'idem-gate-key',
+    });
+    expect(confirm.ok).toBe(false);
+    if (!confirm.ok) expect(confirm.code).toBe('CONFLICT');
+
+    // 幂等拦截发生在任何写事务之前：PlanTask / PlanVersion 行数不得增加。
+    expect(await prisma.planTask.count({ where: { planDate: AS_OF_IDEM } })).toBe(tasksBefore);
+    expect(await prisma.planVersion.count({ where: { planDate: AS_OF_IDEM } })).toBe(versionsBefore);
   });
 });
