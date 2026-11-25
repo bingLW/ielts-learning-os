@@ -54,7 +54,7 @@ export async function generatePlanPreviewAction(
 
   return ok({
     ...built.data,
-    previewToken: previewTokenOf(built.data.snapshotId, built.data.inputHash),
+    previewToken: previewTokenOf(built.data.snapshotId, built.data.inputHash, parsed.data.budgetOverrideMinutes),
   });
 }
 
@@ -93,7 +93,7 @@ export async function confirmPlanVersionAction(
   });
   if (!snapshot) return fail('NOT_FOUND', '预览快照不存在或已被清理');
 
-  if (previewTokenOf(snapshotId, snapshot.inputHash) !== previewToken) {
+  if (previewTokenOf(snapshotId, snapshot.inputHash, buildInput.budgetOverrideMinutes) !== previewToken) {
     return fail('CONFLICT', '计划在预览后已变化，请刷新预览再确认');
   }
 

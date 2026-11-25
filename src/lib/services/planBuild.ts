@@ -203,12 +203,16 @@ export interface BuildPlanResult {
 }
 
 /**
- * 预览令牌（无状态）：`sha256(['plan', snapshotId, inputHash]).slice(0, 24)`。
+ * 预览令牌（无状态）：`sha256(['plan', snapshotId, inputHash, budgetOverride ?? '']).slice(0, 24)`。
  * 确认时用同一个 `snapshotId` 反查 `inputHash` 重算，不等 → `CONFLICT`。
+ *
+ * `budgetOverrideMinutes` 必须进签名：它不进 `PlanningSnapshot.inputHash`（快照装配时
+ * 没有这个入参），但会改变落库计划分钟 —— 不签它，preview 传 override=60、confirm 传 90
+ * 会命中同一 token 却写出不同计划（「预览 == 实际」被打破）。
  */
-export function previewTokenOf(snapshotId: string, inputHash: string): string {
+export function previewTokenOf(snapshotId: string, inputHash: string, budgetOverrideMinutes?: number): string {
   return createHash('sha256')
-    .update(['plan', snapshotId, inputHash].join('|'), 'utf8')
+    .update(['plan', snapshotId, inputHash, budgetOverrideMinutes ?? ''].join('|'), 'utf8')
     .digest('hex')
     .slice(0, 24);
 }
@@ -325,44 +329,6 @@ function assembleDraft(
     byAi: false,
     aiCallLogId: null,
   };
-}
-
-/**
- * 单日：跑一次 `generateAdaptivePlan`，把 item 映射回草稿。
- * 候选 item 的 `candidateKey` 通过 `rationale` 反查（引擎把 candidate.rationale 原样写入 item）。
- */
-function buildOneDay(
-  context: PlanEngineContextV27,
-  date: string,
-  budgetMinutes: number,
-  isRestDay: boolean,
-  bufferRatio: number,
-  candidates: RankedCandidateInput[],
-  uncertainties: UncertaintyProbeInput[],
-  skillGaps: SkillGapHint[],
-  pairByRationale: Map<string, CandidateDecisionPair>,
-): BuildPlanResult['days'][number] {
-  const tierCode = tierCodeOf(budgetMinutes);
-  const result = generateAdaptivePlan({
-    ...context.legacy,
-    budgetMinutes,
-    isRestDay,
-    tierCode,
-    bufferRatio,
-    candidates,
-    uncertainties,
-    skillGaps,
-  });
-
-  if (!result.ok) {
-    // 预算非法/负分钟：不产出任务，计为休息日（引擎保证 Σ≤预算，这里只是防御）。
-    return { date, budgetMinutes, isRestDay, tasks: [] };
-  }
-
-  const tasks = result.items.map((item) =>
-    assembleDraft(item, date, context.goal, pairByRationale.get(item.rationale) ?? null),
-  );
-  return { date, budgetMinutes, isRestDay, tasks };
 }
 
 /** 汇总多天的取舍区（比例用「已安排总分钟」做分母，保证三比例之和 ≈ 1）。 */
@@ -497,10 +463,12 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
 
   // ── 候选 → RankedCandidateInput[]（candidates 与 decisions 同序，§3.1） ──
   const kindByKey = gapKindByKey([...context.gaps, ...context.uncertainties, ...context.unknowns]);
-  const pairByRationale = new Map<string, CandidateDecisionPair>();
+  // 身份键反查 decision（**不是 rationale**）：rationale 是文案，同主导因子 + 同 estMinutes
+  // 的候选会产出相同字符串 → Map 覆盖 → 解释字段张冠李戴（缺陷 #1）。
+  const pairByCandidateKey = new Map<string, CandidateDecisionPair>();
   const candidates: RankedCandidateInput[] = context.candidates.map((candidate, index) => {
     const decision = context.decisions[index];
-    if (decision) pairByRationale.set(decision.rationale, { candidate, decision });
+    if (decision) pairByCandidateKey.set(candidate.candidateKey, { candidate, decision });
     return {
       candidateKey: candidate.candidateKey,
       module: candidate.module,
@@ -575,7 +543,7 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
           budgetMinutes: day.minutes,
           isRestDay: day.isRestDay,
           tasks: result.items.map((item) =>
-            assembleDraft(item, day.date, context.goal, pairByRationale.get(item.rationale) ?? null),
+            assembleDraft(item, day.date, context.goal, pairByCandidateKey.get(item.candidateKey ?? '') ?? null),
           ),
         });
         warnings.push(...result.warnings);

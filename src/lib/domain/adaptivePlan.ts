@@ -60,6 +60,12 @@ export interface AdaptivePlanItem {
   minChunkMinutes: number;
   /** 给用户看的一句安排理由（UI 原样展示，不编造数据）。 */
   rationale: string;
+  /**
+   * v2.7：候选装箱路径透传候选身份键；模块级/泛听/复测等引擎自产任务不写（undefined）。
+   * 装箱层（`planBuild.assembleDraft`）用它反查 decision，**不用 rationale 反查**
+   * —— rationale 是文案，两个同主导因子同 estMinutes 的候选会产出相同字符串（碰撞）。
+   */
+  candidateKey?: string | null;
 }
 
 /** 未能排入当天的部分（含原因），进入 backlog 或转周轮换。 */
@@ -593,6 +599,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
         splittable: candidate.splittable,
         minChunkMinutes: minMinutes,
         rationale: candidate.rationale,
+        candidateKey: candidate.candidateKey,
       });
     }
   } else if (skillPool > 0) {
