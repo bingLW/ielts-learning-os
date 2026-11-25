@@ -92,3 +92,78 @@ export const DEFAULT_PRIORITY_THRESHOLDS = PRIORITY_THRESHOLDS;
 
 /** 默认权重版本。 */
 export const DEFAULT_WEIGHTS_VERSION = PRIORITY_WEIGHTS_VERSION;
+
+// ───────────────────────── T07 计划构建 / 确认 / 草稿 ─────────────────────────
+
+const dateString = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, '日期必须是 YYYY-MM-DD');
+
+const horizonDays = z.union([z.literal(1), z.literal(7), z.literal(30), z.literal(90)]);
+
+/** 生成计划预览（`41 §2.10`）。 */
+export const planPreviewSchema = z
+  .object({
+    purpose: z.enum(['GENERATE', 'REPLAN']),
+    asOfDate: dateString,
+    horizonDays,
+    stageId: z.string().min(1).optional(),
+    planDate: dateString.optional(),
+    budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
+    allowAi: z.boolean().optional(),
+    draftId: z.string().nullable().optional(),
+  })
+  .strict();
+
+export type PlanPreviewInput = z.infer<typeof planPreviewSchema>;
+
+/** 确认计划版本（含预览令牌，保证「预览 == 实际」，`41 §2.10`）。 */
+export const planConfirmSchema = z
+  .object({
+    snapshotId: z.string().min(1, '缺少快照 ID'),
+    previewToken: z.string().min(1, '缺少预览令牌'),
+    purpose: z.enum(['GENERATE', 'REPLAN']),
+    asOfDate: dateString,
+    horizonDays,
+    stageId: z.string().min(1).optional(),
+    planDate: dateString.optional(),
+    budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
+    allowAi: z.boolean().optional(),
+  })
+  .strict();
+
+export type PlanConfirmInput = z.infer<typeof planConfirmSchema>;
+
+/** 保存草稿（T07 复用 PlanningSnapshot 作为草稿锚点）。 */
+export const planDraftSchema = z
+  .object({
+    purpose: z.enum(['GENERATE', 'REPLAN']),
+    asOfDate: dateString,
+    horizonDays,
+    stageId: z.string().min(1).optional(),
+    planDate: dateString.optional(),
+    budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
+    allowAi: z.boolean().optional(),
+  })
+  .strict();
+
+export type PlanDraftInput = z.infer<typeof planDraftSchema>;
+
+/** 提升候选优先级（只改决策，不写 PlanTask，`41 §2.10`）。 */
+export const candidatePromoteSchema = z
+  .object({
+    candidateId: z.string().min(1),
+    priority: z.enum(['P0', 'P1', 'P2', 'P3']),
+  })
+  .strict();
+
+export type CandidatePromoteInput = z.infer<typeof candidatePromoteSchema>;
+
+/** 恢复历史版本（生成新版本，`41 §5.5`）。 */
+export const versionRestoreSchema = z
+  .object({
+    versionId: z.string().min(1),
+  })
+  .strict();
+
+export type VersionRestoreInput = z.infer<typeof versionRestoreSchema>;
