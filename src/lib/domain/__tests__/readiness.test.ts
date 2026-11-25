@@ -188,6 +188,17 @@ describe('T09 computeReadiness（AC-14 核心）', () => {
     const result = computeReadiness(input);
     expect(dimension(result, 'D2_CROSS_SOURCE_CONSISTENCY')?.status).toBe('PASS');
   });
+
+  it('D2 方向未知（coverageRatio=null）→ INSUFFICIENT，不是 PASS', () => {
+    // 回归锁：null 是「方向未知」不是「覆盖不足」。若把 null 并进 COVERAGE，
+    // directions 恒单元素 → D2 恒 PASS，这是假绿灯。必须显式 INSUFFICIENT。
+    const input = readyInput();
+    input.officialGaps = [{ ...gapDraft('LISTENING'), coverageRatio: null }];
+
+    const result = computeReadiness(input);
+    expect(dimension(result, 'D2_CROSS_SOURCE_CONSISTENCY')?.status).toBe('INSUFFICIENT');
+    expect(result.outcome).toBe('NEED_MORE_EVIDENCE');
+  });
 });
 
 /** 构造一条最小可用缺口（其余字段只保证类型与 D1/D2 需要的取值）。 */

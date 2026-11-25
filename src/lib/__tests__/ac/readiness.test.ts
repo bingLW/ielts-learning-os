@@ -7,7 +7,7 @@
  * - ⑨ notConsidered 必含「学习天数 / 完成率 / 单次 AI 分数」三项，只用于展示。
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 import { computeReadiness, type EvidenceDistribution, type ReadinessInput } from '@/lib/domain/readiness';
@@ -169,6 +169,20 @@ describe('T09 AC-14 业务口径（纯 computeReadiness）', () => {
 });
 
 describe('T09 评审 / 切换 action 生命周期', () => {
+  beforeEach(async () => {
+    // 复位阶段状态：`confirmStageTransitionAction` 会翻转全局 ACTIVE，
+    // 每个 action 测试都从「stage-readiness ACTIVE、stage-target NOT_STARTED」出发。
+    await prisma.stage.updateMany({ data: { status: 'NOT_STARTED', completedAt: null } });
+    await prisma.stage.update({
+      where: { id: STAGE_ID },
+      data: { status: 'ACTIVE', startedAt: '2026-01-01' },
+    });
+    await prisma.stage.update({
+      where: { id: 'stage-target' },
+      data: { status: 'NOT_STARTED', startedAt: null },
+    });
+  });
+
   it('reviewReadinessAction 落库 StageReadinessReview，criteriaJson 含五维明细', async () => {
     const result = await reviewReadinessAction({ stageId: STAGE_ID, asOfDate: AS_OF });
     expect(result.ok).toBe(true);
@@ -222,6 +236,12 @@ describe('T09 评审 / 切换 action 生命周期', () => {
     expect(log!.toStageCode).toBe('S2_A2_B1');
     expect(log!.decidedBy).toBe('USER');
     expect(log!.evidenceSnapshot).toBe(updated!.criteriaJson);
+
+    // 口径 2：确认后阶段状态真的切过去了（旧 COMPLETED、目标 ACTIVE）
+    const from = await prisma.stage.findUnique({ where: { id: STAGE_ID } });
+    expect(from?.status).toBe('COMPLETED');
+    const to = await prisma.stage.findUnique({ where: { code: 'S2_A2_B1' } });
+    expect(to?.status).toBe('ACTIVE');
   });
 
   it('重复确认同一 review → CONFLICT（幂等拦截）', async () => {

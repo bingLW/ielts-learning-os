@@ -24,6 +24,7 @@ import {
 import { buildPlanningSnapshot } from '@/lib/services/planningSnapshot';
 import { nextPlanVersion } from '@/lib/queries/planning';
 import { persistReadinessReview } from '@/lib/services/readiness';
+import { applyStageTransition } from '@/lib/services/stageTransition';
 import { fail, failValidation, ok } from '@/lib/result';
 import type { ActionResult, TaskPriority } from '@/lib/types';
 import type { ReadinessOutcome } from '@/lib/domain/readiness';
@@ -351,13 +352,12 @@ export async function reviewReadinessAction(
 }
 
 /**
- * 用户确认进入下一阶段（T09）：把 `StageReadinessReview` 标成
- * `USER_APPROVED_TRANSITION` + `userConfirmed`，并写一条 append-only 的
- * `StageTransitionLog`。
+ * 用户确认进入下一阶段（T09）：同一事务里 ① 把 `StageReadinessReview` 标成
+ * `USER_APPROVED_TRANSITION` + `userConfirmed`；② 调共享核心 `applyStageTransition`
+ * 真正翻转 `Stage.status` 并写 append-only `StageTransitionLog`。
  *
- * 注意：本 action **只记录「用户批准了这次 readiness 建议」**，不修改 `Stage.status`。
- * 真正切换阶段仍走既有的 `transitionStageAction`（`actions/stages.ts`）—— 两处
- * 都在 `StageTransitionLog` 留痕，但职责不同：一个是"批准证据结论"，一个是"改阶段状态"。
+ * 幂等仍由 `review.userConfirmed` 挡：重复确认 → `CONFLICT`，不会二次翻转阶段。
+ * guard：目标阶段已是当前 ACTIVE → `PRECONDITION`（对齐 `transitionStageAction`）。
  */
 export async function confirmStageTransitionAction(
   raw: unknown,
@@ -374,7 +374,10 @@ export async function confirmStageTransitionAction(
   const target = await prisma.stage.findUnique({ where: { code: parsed.data.toStageCode } });
   if (!target) return fail('NOT_FOUND', '目标阶段不存在');
 
-  const fromStage = await prisma.stage.findUnique({ where: { id: review.stageId } });
+  const current = await prisma.stage.findFirst({ where: { status: 'ACTIVE' } });
+  if (current && current.id === target.id) {
+    return fail('PRECONDITION', '目标阶段已经是当前进行中的阶段');
+  }
 
   const log = await prisma.$transaction(async (tx) => {
     await tx.stageReadinessReview.update({
@@ -387,15 +390,12 @@ export async function confirmStageTransitionAction(
         note: parsed.data.note?.trim() || null,
       },
     });
-    return tx.stageTransitionLog.create({
-      data: {
-        fromStageCode: fromStage?.code ?? null,
-        toStageCode: target.code,
-        decidedBy: 'USER',
-        reason: parsed.data.reason.trim(),
-        // criteriaJson 就是「当时凭什么说 Ready」的逐维证据快照
-        evidenceSnapshot: review.criteriaJson,
-      },
+    return applyStageTransition(tx, {
+      fromStageCode: current?.code ?? null,
+      toStageCode: target.code,
+      reason: parsed.data.reason.trim(),
+      // criteriaJson 就是「当时凭什么说 Ready」的逐维证据快照
+      evidenceSnapshot: review.criteriaJson,
     });
   });
 

@@ -171,11 +171,16 @@ function uncertaintiesOf(input: ReadinessInput, skill: string): SkillGapDraft[] 
   return input.officialUncertainties.filter((gap) => gap.skill === skill);
 }
 
-/** 缺口方向：覆盖型（证据没铺开） vs 严重型（覆盖已达标但仍判弱）。 */
-function gapDirection(gap: SkillGapDraft): 'COVERAGE' | 'SEVERITY' {
-  return gap.coverageRatio === null || gap.coverageRatio < READINESS_COVERAGE_MIN
-    ? 'COVERAGE'
-    : 'SEVERITY';
+/**
+ * 缺口方向三态。
+ *
+ * `coverageRatio === null` 是「方向未知」，**不是「覆盖不足」**：把它并进 COVERAGE 会让
+ * 当前数据（coverageRatio 恒 null）下所有缺口同向 → D2「方向一致」恒 PASS，变成假绿灯
+ * 空转。方向未知必须显式暴露，交给 D2 判 INSUFFICIENT（「不知道方向 → 证据不足」）。
+ */
+function gapDirection(gap: SkillGapDraft): 'COVERAGE' | 'SEVERITY' | 'UNKNOWN' {
+  if (gap.coverageRatio === null) return 'UNKNOWN';
+  return gap.coverageRatio < READINESS_COVERAGE_MIN ? 'COVERAGE' : 'SEVERITY';
 }
 
 function formatPct(ratio: number): string {
@@ -243,6 +248,7 @@ function evaluateCoverage(input: ReadinessInput): ReadinessDimension {
 /** D2 多来源一致。 */
 function evaluateConsistency(input: ReadinessInput): ReadinessDimension {
   const singleSource: string[] = [];
+  const unknownDirection: string[] = [];
   const mixed: string[] = [];
 
   for (const skill of OFFICIAL_SKILLS) {
@@ -253,7 +259,10 @@ function evaluateConsistency(input: ReadinessInput): ReadinessDimension {
     }
     const gaps = gapsOf(input, skill);
     const directions = new Set(gaps.map(gapDirection));
-    if (directions.size > 1) {
+    // 优先级：方向未知（不知道 → 证据不足）先于方向冲突（知道但互相矛盾）。
+    if (directions.has('UNKNOWN')) {
+      unknownDirection.push(skill);
+    } else if (directions.size > 1) {
       mixed.push(skill);
     }
   }
@@ -265,6 +274,15 @@ function evaluateConsistency(input: ReadinessInput): ReadinessDimension {
       label: DIMENSION_LABELS.D2_CROSS_SOURCE_CONSISTENCY,
       status: 'INSUFFICIENT',
       detail: `以下技能来源不足 ${READINESS_MIN_SOURCES} 个：${singleSource.join('；')}`,
+      evidenceRefs: refs,
+    };
+  }
+  if (unknownDirection.length > 0) {
+    return {
+      code: 'D2_CROSS_SOURCE_CONSISTENCY',
+      label: DIMENSION_LABELS.D2_CROSS_SOURCE_CONSISTENCY,
+      status: 'INSUFFICIENT',
+      detail: `以下技能的缺口方向未知（coverageRatio 缺失）：${unknownDirection.join('、')}`,
       evidenceRefs: refs,
     };
   }

@@ -9,12 +9,12 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { today } from '@/lib/date';
 import { stringify } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
 import { nullIfEmpty } from '@/lib/schema/common';
 import { transitionStageSchema, updateAcceptanceItemSchema } from '@/lib/schema/stage';
+import { applyStageTransition } from '@/lib/services/stageTransition';
 import type { ActionResult } from '@/lib/types';
 
 /** 更新一条验收项。 */
@@ -69,40 +69,20 @@ export async function transitionStageAction(
   }
 
   const now = new Date();
-  // 业务日期必须走 date lib（固定 +08:00），不能用 `Date#toISOString` 的 UTC 日期
-  const todayStr = today(now);
 
-  const log = await prisma.$transaction(async (tx) => {
-    if (current) {
-      await tx.stage.update({
-        where: { id: current.id },
-        data: { status: 'COMPLETED', completedAt: todayStr },
-      });
-    }
-    await tx.stage.updateMany({
-      where: { status: 'ACTIVE' },
-      data: { status: 'COMPLETED', completedAt: todayStr },
-    });
-    await tx.stage.update({
-      where: { id: target.id },
-      data: { status: 'ACTIVE', startedAt: target.startedAt ?? todayStr },
-    });
-
-    return tx.stageTransitionLog.create({
-      data: {
-        fromStageCode: current?.code ?? null,
-        toStageCode: target.code,
-        decidedBy: 'USER',
-        reason: parsed.data.reason.trim(),
-        evidenceSnapshot: stringify({
-          at: now.toISOString(),
-          fromStage: current?.code ?? null,
-          toStage: target.code,
-          note: '由用户手动确认；系统仅提供建议，未自动切换',
-        }),
-      },
-    });
-  });
+  const log = await prisma.$transaction((tx) =>
+    applyStageTransition(tx, {
+      fromStageCode: current?.code ?? null,
+      toStageCode: target.code,
+      reason: parsed.data.reason.trim(),
+      evidenceSnapshot: stringify({
+        at: now.toISOString(),
+        fromStage: current?.code ?? null,
+        toStage: target.code,
+        note: '由用户手动确认；系统仅提供建议，未自动切换',
+      }),
+    }),
+  );
 
   revalidatePath('/');
   revalidatePath('/stages');
