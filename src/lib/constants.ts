@@ -748,6 +748,26 @@ export const WEAKNESS_WINDOW_DAYS = 28;
 export const WEAKNESS_MIN_QUESTIONS = 10;
 export const WEAKNESS_TOP_N = 3;
 
+// ───────────────────────── 周复盘变化（v2.7 T13） ─────────────────────────
+
+/**
+ * 有效学习天数门槛：低于此值（=2）只记录、不给结论、不生成建议。
+ *
+ * 两天以下的学习样本不足以区分「真的变好」与「这周恰好做了两套熟题」，
+ * 基于噪声改计划比不改更糟（PRD §4.8 空态）。
+ */
+export const WEEKLY_DELTA_MIN_ACTIVE_DAYS = 2;
+
+/** 趋势阈值：指标相对变化 ≥15% 才算「有方向」；低于此值视为持平（PRD §4.8⑥）。 */
+export const WEEKLY_DELTA_TREND_THRESHOLD = 0.15;
+
+/**
+ * 「样本 ≥N」中的 N：沿用薄弱点判定阈值，不另设第二套样本口径。
+ *
+ * 见 `docs/38-v2.7-prd.md` §「复用优先」：同一类「样本够不够」问题只允许一个常量。
+ */
+export const WEEKLY_DELTA_SAMPLE_N = WEAKNESS_MIN_QUESTIONS;
+
 // ───────────────────────── 阶段门禁 ─────────────────────────
 
 export const GATE_H3_WINDOW_DAYS = 14;
@@ -1033,14 +1053,14 @@ export const RESOURCE_TYPE_LABEL_ZH: Record<ResourceType, string> = {
   EXAM_PAPER: '真题',
 };
 
-// ───────────────────────── 导航（11 个一级入口） ─────────────────────────
+// ───────────────────────── 导航 ─────────────────────────
 
 export interface NavItem {
   href: string;
   labelZh: string;
   /** 简写用于移动端底部导航。 */
   shortZh: string;
-  group: 'CORE' | 'MATERIALS' | 'DIAGNOSE' | 'TRACKS' | 'ANALYZE';
+  group: 'CORE' | 'PLANNER' | 'MATERIALS' | 'DIAGNOSE' | 'TRACKS' | 'ANALYZE';
   /**
    * 阶段 C/D 已全部落地，当前没有「待开放」入口。
    * 字段保留：后续若再引入分期能力，UI 用同一套机制标注而不是隐藏入口。
@@ -1067,6 +1087,11 @@ export const NAV_ITEMS: NavItem[] = [
   { href: '/', labelZh: 'Dashboard 总览', shortZh: '总览', group: 'CORE' },
   { href: '/plan', labelZh: '学习计划', shortZh: '计划', group: 'CORE' },
   { href: '/records', labelZh: '学习记录', shortZh: '记录', group: 'CORE' },
+  // v2.7 自适应计划（决策层 / 构建层 / 治理层共 10 页，导航只放 4 个主入口）
+  { href: '/planner', labelZh: '自适应计划', shortZh: '计划器', group: 'PLANNER' },
+  { href: '/planner/build', labelZh: '计划构建（7/30/90）', shortZh: '构建', group: 'PLANNER' },
+  { href: '/planner/candidates', labelZh: '候选队列', shortZh: '候选', group: 'PLANNER' },
+  { href: '/planner/readiness', labelZh: '阶段就绪', shortZh: '就绪', group: 'PLANNER' },
   // v2.6 学习材料（Smart Materials）：材料库 + 导入失败与重试
   { href: '/materials', labelZh: '材料库（Smart Materials）', shortZh: '材料', group: 'MATERIALS' },
   { href: '/materials/failed', labelZh: '导入失败与重试', shortZh: '失败', group: 'MATERIALS' },
@@ -1249,6 +1274,7 @@ export const AI_ROADMAP_NOTE = 'AI 建议为本地规则引擎生成，每条都
 
 export const NAV_GROUP_LABEL_ZH: Record<NavItem['group'], string> = {
   CORE: '每日执行',
+  PLANNER: '自适应计划',
   MATERIALS: '学习材料',
   DIAGNOSE: '诊断与复习',
   TRACKS: '三轨道',
@@ -3439,6 +3465,32 @@ export const PRIORITY_WEIGHTS_VERSION = 'w1';
  * 同时进 `configJson` → 进 `inputHash`；改阈值必须换 hash + 递增 `weightsVersion`。
  */
 export const PRIORITY_THRESHOLDS = { p1: 0.6, p2: 0.42 } as const;
+
+// ───────────────────────── v2.7 规划器页面文案 ─────────────────────────
+
+/** 缺口类型（`SkillGap.kind`）。UNCERTAINTY 是「证据不够」，不是「弱项」。 */
+export const GAP_KIND_LABEL_ZH: Record<string, string> = {
+  GAP: '已证实缺口',
+  UNCERTAINTY: '证据不足（待补测）',
+  UNKNOWN: '无基线',
+};
+
+/** 候选资格（`TaskPriorityDecision.eligibility`，6 值）。 */
+export const ELIGIBILITY_LABEL_ZH: Record<string, string> = {
+  ELIGIBLE: '可排入',
+  BLOCKED_PREREQUISITE: '前置条件未满足',
+  OVER_BUDGET: '超出当日预算',
+  DUPLICATE: '与更优先候选重复',
+  REJECTED_NOT_IN_POOL: 'AI 建议不在候选池',
+  REJECTED_AI_OVER_BUDGET: 'AI 建议超出预算',
+};
+
+/** AI 三态（`buildPlan` 的 aiMode）。`failed` 必须显示「已回落规则」，不能装成功。 */
+export const AI_MODE_LABEL_ZH: Record<'off' | 'on' | 'failed', string> = {
+  off: 'AI 未参与',
+  on: 'AI 已参与',
+  failed: 'AI 调用失败（已回落规则）',
+};
 
 /** `goalRelevance` 的周期视野（天）：剩余 90 天 → 0.00，今天到期 → 1.00。 */
 export const PRIORITY_GOAL_HORIZON_DAYS = 90;

@@ -88,6 +88,7 @@ export async function setBudgetAction(
 
   revalidatePath('/plan');
   revalidatePath('/settings');
+  revalidatePath('/planner/budget');
   return ok({ budgetId, replanNeeded });
 }
 
@@ -185,5 +186,6 @@ export async function setWeeklyTargetAction(
 
   revalidatePath('/plan');
   revalidatePath('/weekly');
+  revalidatePath('/planner/budget');
   return ok({ weeklyTargetId });
 }

@@ -323,3 +323,57 @@ export function evaluatePrerequisites(
   });
   return { ready: unmet.length === 0, unmet };
 }
+
+/** AI 返回的一条挑选建议（只允许这两个字段参与裁决）。 */
+export interface AiPick {
+  candidateKey: string;
+  why: string;
+  order: number;
+}
+
+/** 池外建议：`REJECTED_NOT_IN_POOL`，**不落 `TaskCandidate`**（F-3）。 */
+export interface RejectedAiPick {
+  candidateKey: string;
+  order: number;
+  why: string;
+  code: 'REJECTED_NOT_IN_POOL';
+  reason: string;
+}
+
+/**
+ * 把 AI 的挑选建议收敛到候选池内（Q2 / F-3）。
+ *
+ * AI 不得新增池外任务：凭空接受一条 AI 造的任务等于绕过「候选池」这个唯一入口。
+ * 池外建议只记录、不建行；池内建议按 `order` 升序返回，重复 key 只保留第一条。
+ *
+ * @param pool 候选池（快照里的同一批候选）
+ * @param picks AI 返回的建议
+ */
+export function resolveAiPicks(
+  pool: readonly TaskCandidateDraft[],
+  picks: readonly AiPick[],
+): { accepted: AiPick[]; rejected: RejectedAiPick[] } {
+  const inPool = new Set(pool.map((row) => row.candidateKey));
+  const accepted: AiPick[] = [];
+  const rejected: RejectedAiPick[] = [];
+  const seen = new Set<string>();
+
+  for (const pick of picks) {
+    if (seen.has(pick.candidateKey)) continue;
+    seen.add(pick.candidateKey);
+    if (!inPool.has(pick.candidateKey)) {
+      rejected.push({
+        candidateKey: pick.candidateKey,
+        order: pick.order,
+        why: pick.why,
+        code: 'REJECTED_NOT_IN_POOL',
+        reason: 'AI 建议的 candidateKey 不在候选池（未新建候选）',
+      });
+      continue;
+    }
+    accepted.push(pick);
+  }
+
+  accepted.sort((a, b) => a.order - b.order);
+  return { accepted, rejected };
+}

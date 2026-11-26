@@ -147,6 +147,9 @@ describe('⑪ G-7：READY_FOR_REVIEW 字面量只出现在白名单文件', () =
     'src/lib/domain/readiness.ts',
     'src/lib/domain/__tests__/readiness.test.ts',
     'src/lib/__tests__/ac/readiness.test.ts',
+    // 查询层测试把结论当作**夹具数据**写入 `StageReadinessReview`，用于断言
+    // 「查询只回放评审快照、不重算结论」；它不是产出该结论的实现文件。
+    'src/lib/queries/__tests__/plannerQueries.test.ts',
     // 本文件自身断言该字面量，必然包含它；与「哪些实现文件能产出结论」是两回事。
     'src/lib/__tests__/invariants/importBoundary.test.ts',
   ]);

@@ -20,9 +20,22 @@
  * `learningGoal` / `goalMilestone` / `stage` / `stageAcceptanceItem` / `resource` /
  * `skillAllocationProfile` / `userProfile` / `vocabularySource`。
  * 测试若依赖其中任何一张的**具体行**，必须自己 `deleteMany` + 显式建 fixture。
+ *
+ * **绝不自动补全成「清空所有表」**：有些测试合法依赖种子数据；若默认清全库，
+ * 这些测试会红，然后有人加个逃逸口 —— 又退化成「可以不用的约定」。
+ *
+ * 迁移口径：存量 15 个集成测试仍是「各自 copyFileSync」，未逐个审计，初始状态
+ * 取决于本机 `dev.db`。自检命令（数字应随迁移递减，不降说明有人绕过了本助手）：
+ *
+ * ```bash
+ * grep -rln copyFileSync src/lib --include=*.test.ts | wc -l
+ * ```
+ *
+ * 一个测试文件只建一次库（`DATABASE_URL` 变了但 Prisma 客户端是模块单例，
+ * 第二次调用不会换连接）。vitest 按文件隔离 worker，因此这条足够。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
+import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PrismaClient } from '@prisma/client';
@@ -33,6 +46,8 @@ export interface TestDb {
   prisma: PrismaClient;
   /** 临时库文件路径（排查时可直接 `sqlite3` 打开）。 */
   path: string;
+  /** 删除临时库文件（测试结束调用；重复调用安全）。 */
+  cleanup: () => void;
 }
 
 const copiedPaths = new Set<string>();
@@ -69,7 +84,22 @@ export async function createTestDb(delegates: readonly string[]): Promise<TestDb
     if (!delegate || typeof delegate.deleteMany !== 'function') {
       throw new Error(`createTestDb: prisma.${name}.deleteMany 不存在（delegate 名写错？表名是 PascalCase，这里要 camelCase）`);
     }
-    await (delegate.deleteMany as (args: Record<string, never>) => Promise<unknown>)({});
+    try {
+      await (delegate.deleteMany as (args: Record<string, never>) => Promise<unknown>)({});
+    } catch (error) {
+      // SQLite 的外键报错不带表名（只给 "FOREIGN KEY constraint failed"），
+      // 这里把「哪张表挡住了」补进消息，否则调用方只能猜。
+      throw new Error(
+        `createTestDb: 清空 ${name} 失败（可能有子表未声明）：${(error as Error).message}`,
+      );
+    }
   }
-  return { prisma, path: work };
+  return {
+    prisma,
+    path: work,
+    cleanup: () => {
+      copiedPaths.delete(work);
+      if (existsSync(work)) rmSync(work, { force: true });
+    },
+  };
 }

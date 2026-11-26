@@ -18,13 +18,17 @@
 
 ## 1. 页面功能地图
 
-一级入口共 23 个，清单的唯一来源是 `src/lib/constants.ts` 的 `NAV_ITEMS`。v2.2 在 v2.1 的基础上新增 10 个证据驱动入口，v2.4 新增 1 个 AI Learning Coach 入口，v2.4.1 再新增 1 个 AI 初始诊断入口（下表「诊断与复盘」分组）。
+下表共 27 个入口（与 `src/lib/constants.ts` 的 `NAV_ITEMS` 对齐；含 Dashboard 与 `/materials/failed`）。v2.2 在 v2.1 的基础上新增 10 个证据驱动入口，v2.4 新增 1 个 AI Learning Coach 入口，v2.4.1 再新增 1 个 AI 初始诊断入口，v2.6 新增材料库与失败重试 2 个入口，v2.7 新增 `PLANNER` 组 4 个入口（决策层 / 构建层 / 治理层共 10 页，导航只放 4 个主入口）。
 
 | 分组 | 路径 | 页面 | 核心能力 |
 | --- | --- | --- | --- |
 | 每日执行 | `/` | Dashboard 总览 | 今日计划完成率（按时长加权）、本周净时长、四科投入、Top3 薄弱点、复习负载预警、阶段进度 |
 | 每日执行 | `/plan` | 学习计划 | 按 9 模块生成每日计划；单任务计时/暂停/完成；未完成任务顺延（≤2 次）；v2.2 到期复测先占预算 |
 | 每日执行 | `/records` | 学习记录 | 学习记录增删改查；正确率（Σ正确/Σ总数）、有效产出判定、跨零点时长归属、修订留痕 |
+| 规划（v2.7） | `/planner` | 自适应计划 | 今日决策、优先级与七因子解释来源、AI 三态徽章、待确认计划；未诊断时只给「先做一轮诊断」单卡 |
+| 规划（v2.7） | `/planner/build` | 计划构建（7/30/90） | 预览零写计划、确认才建版本；`previewToken` 保证「预览==实际」；AI 只能挑候选与润色措辞 |
+| 规划（v2.7） | `/planner/candidates` | 候选队列 | 8 来源候选池、7 因子决策轨迹、逐条排除原因、AI 建议区（关闭时也显示「AI 未参与本次排序」） |
+| 规划（v2.7） | `/planner/readiness` | 阶段就绪 | 五维证据就绪度、`notConsidered` 面板、阶段门清单；系统只建议，切换需用户确认 |
 | 诊断与复盘 | `/grammar` | 语法诊断（EGIU） | 单元管理、练习录入、三色判定（GREEN/YELLOW/RED/PENDING）、append-only 复测、自动排复习点 |
 | 诊断与复盘 | `/mistakes` | 错题与复习 | 错题本与错误类别、四类复习目标（EGIU 单元/错题/单词/语法点）、逾期分桶、批量完成与推迟 |
 | 诊断与复盘 | `/vocabulary` | 词汇 | 词表管理、三档掌握度（认识/理解/主动用）、50–100 词抽测加权正确率、下周新词量建议 |
@@ -46,7 +50,7 @@
 | 复盘与配置 | `/stages` | 阶段与验收 | 4 阶段、28 条验收项结果录入；H1–H5 门禁评估（**只给建议，绝不自动升级**）；升级留痕 |
 | 复盘与配置 | `/settings` | 系统设置 | 每日可用分钟（15–240/自定义）、薄弱项权重微调、五类领域数据导出（CSV/JSON）、危险操作 |
 
-除 23 个一级入口外，还有二级页面 `/review`（复习中心）、`/diagnostics/[id]`（诊断会话）与 `/diagnostics/report/[id]`（诊断报告），以及详情页 `/records/[id]`、`/grammar/[id]`、`/ai-coach/[id]`，AI 子页 `/ai-coach/review`、`/ai-coach/usage`、`/ai-coach/admin`。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
+除上述 27 个入口外，还有二级页面 `/review`（复习中心）、`/diagnostics/[id]`（诊断会话）与 `/diagnostics/report/[id]`（诊断报告），以及详情页 `/records/[id]`、`/grammar/[id]`、`/ai-coach/[id]`，AI 子页 `/ai-coach/review`、`/ai-coach/usage`、`/ai-coach/admin`。v2.7 的其余 6 个规划页（`/planner/evidence`、`/planner/explain/[versionId]`、`/planner/replan`、`/planner/budget`、`/planner/history` 等）从 `/planner` 与 `/planner/build` 页内链接进入，不占导航位。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
 
 ## 2. 技术栈
 
@@ -55,10 +59,10 @@
 | 框架 | Next.js 15 App Router + React 19 | 全站 Server Component，写操作走 Server Action，不暴露 REST 层 |
 | 语言 | TypeScript 5（strict） | 路径别名 `@/*` → `./src/*` |
 | 样式 | Tailwind CSS v3 | 三色 GREEN/YELLOW/RED 由 CSS 变量承载，`mobile:600px` / `md:768px` / `tablet:1024px` |
-| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，80 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表；v2.4.2 新增 1 张 Provider 凭据表） |
+| 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，115 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表；v2.4.2 新增 1 张 Provider 凭据表；v2.5 新增听力口语 9 张表；v2.7 新增规划域 5 张表） |
 | 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误；AI 结构化输出同样过 zod Schema |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | 50 个文件 / 724 个用例；纯函数单测 + 2 个数据库副本上的 Server Action 集成测试（v2.4 AI Coach 含 v2.4.2 凭据、v2.4.1 初始诊断） |
+| 测试 | Vitest 3 | **133 个文件 / 1571 条用例**（v2.7 收尾实测）；纯函数单测 + 基于数据库副本的 Server Action 集成测试（v2.4 AI Coach 含 v2.4.2 凭据、v2.4.1 初始诊断、v2.7 规划链路） |
 
 ## 3. 环境要求
 
@@ -121,7 +125,7 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/**/__tests__/` 下全部测试（50 文件 / 724 用例） |
+| `npm test` | 跑 `src/lib/**/__tests__/` 与 `src/components/planner/__tests__/` 下全部测试（133 文件 / 1571 用例） |
 | `npm run test:watch` | 监听模式 |
 | `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4（含 v2.4.2 凭据）+ v2.4.1 端到端验收（均使用数据库副本，不改真实库） |
 | `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
@@ -146,7 +150,7 @@ node -v    # 应显示 v22.x
 
 | 项目 | 说明 |
 | --- | --- |
-| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，68 张表。历史增量：v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表：`AIModelConfig`/`PromptTemplate`/`PromptVersion`/`AIEngineSetting`/`AILearningSession`/`AILearningTurn`/`LearningTaskInstance`/`AICallLog`/`AISessionFeedback`） |
+| 唯一数据文件 | `prisma/dev.db`（SQLite 单文件，115 张表。历史增量：v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表：`AIModelConfig`/`PromptTemplate`/`PromptVersion`/`AIEngineSetting`/`AILearningSession`/`AILearningTurn`/`LearningTaskInstance`/`AICallLog`/`AISessionFeedback`；v2.4.1 新增 11 张诊断域表；v2.4.2 新增 1 张 Provider 凭据表；v2.5 新增 9 张听力口语表；v2.7 新增 5 张规划域表） |
 | 备份 | **不要**直接 `cp` 正在运行的 `dev.db`；用 `bash scripts/backup.sh` 生成一致性快照，详见 **§11 数据备份与恢复** |
 | 恢复 | `bash scripts/restore.sh <备份文件>`，脚本会在覆盖前自动留一份安全网，详见 §11 |
 | 定时备份 | `scripts/backup-launchd.plist.template`（macOS launchd 模板，只交付模板不自动安装），详见 §11.6 |
@@ -190,7 +194,7 @@ node -v    # 应显示 v22.x
 
 ## 9. 测试说明
 
-`npm test` 会跑 `src/lib/**/__tests__/` 下的 **50 个文件、724 条用例**。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；例外是 v2.4 的 `tutor.integration.test.ts` 与 v2.4.1 的 `diagnostics.integration.test.ts`，它们把 `prisma/dev.db` 复制到临时目录后再对副本执行 Server Action 全链路，不触碰真实库。
+`npm test` 会跑 `src/lib/**/__tests__/` 与 `src/components/planner/__tests__/` 下的 **133 个文件、1571 条用例**（v2.7 收尾实测）。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；集成测试则先 `createTestDb(delegates)` 把 `prisma/dev.db` 复制到临时文件、清空声明表后再跑全链路，不触碰真实库。v2.7 的 AI 层测试用 `vi.spyOn(OpenAICompatibleProvider.prototype, 'complete')` 注入假响应，不发外部请求。
 
 下表保留 v2.0 时期的领域纯函数用例分布（当时 14 文件 / 306 用例），后续版本的新增用例见 §13–§15。
 
@@ -845,3 +849,54 @@ npx prisma generate                                  # 重新生成 Prisma Clien
 | L34 | 未接入真实 ASR/TTS/发音分析 | 语音转写当前走手动降级；口语不产出自动评分 |
 | L35 | 口语 AI 反馈依赖外部 AI 通道 | 未启用外部 AI 时只保存录音与作答 |
 | L36 | 听力训练交互表单为增量 | 九种模式的完整编辑表单逐步补齐 |
+
+## 19. v2.5 → v2.7 规划内核
+
+v2.7 让「为什么今天排了这些」可复现、可解释、可审计：计划先生成快照与候选池，再按七因子评分，最后装箱；每一次优先级都有落库的决策可查。
+
+### 19.1 新增入口
+
+| 入口 | 路径 | 说明 |
+| --- | --- | --- |
+| 自适应计划 | `/planner` | 今日决策、P0–P3、AI 三态徽章、待确认计划 |
+| 计划构建 | `/planner/build` | 7/30/90 天预览；确认才写版本 |
+| 候选队列 | `/planner/candidates` | 8 来源候选池 + 七因子决策轨迹 + 逐条排除原因 |
+| 阶段就绪 | `/planner/readiness` | 五维证据就绪度；系统只建议，切换需确认 |
+
+其余页面从上述入口页内链接进入：`/planner/evidence`、`/planner/explain/[versionId]`、`/planner/replan`、`/planner/budget`、`/planner/history`。
+
+### 19.2 迁移（v2.6 → v2.7）
+
+```bash
+bash scripts/backup.sh                              # 升级前一致性备份（脚本会强制检查当日备份）
+node scripts/migrations/v2.7.mjs --dry-run           # 只看 DDL，不写库
+node scripts/migrations/v2.7.mjs                     # 正式迁移
+npx prisma generate                                  # 重新生成 Prisma Client
+```
+
+纯加法：新增 5 张规划域表 + 10 个可空列 + 10 个索引；单事务 `BEGIN IMMEDIATE`；checksum `8563a351ba6ba475`（脚本会登记进 `AppMigration`，同版本不同校验和拒绝执行）。回滚方式：`bash scripts/restore.sh backups/<升级前备份>`（无 `down` 脚本，理由见 `docs/48-v2.7-migration-guide.md` §5）。
+
+### 19.3 测试
+
+133 文件 / 1571 用例；`typecheck` / `typecheck:test` / `build` 通过；4 个一级规划页（`/planner`、`/planner/build`、`/planner/candidates`、`/planner/readiness`）冒烟 200。浏览器端到端本次未执行（v2.7 未改 v2.1–v2.5 既有链路）。详见 `docs/45-v2.7-test-report.md`。
+
+### 19.4 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| `docs/43-v2.7-api-contracts.md` | ActionResult、错误码、action zod 契约、`previewToken`、查询 DTO、AI 层函数表 |
+| `docs/44-v2.7-scheduler-spec.md` | 七因子、五个回落值、P0–P3、阈值与装箱比例、`weightsVersion` |
+| `docs/45-v2.7-test-report.md` | 真实门禁结果、T14 测试明细、偏差与未覆盖项 |
+| `docs/46-v2.7-user-guide.md` | 新页面用法、AI 三态、空态/降级、预算与重排 |
+| `docs/47-v2.7-known-limits.md` | 采集/评分/查询/AI 的已知限制与休眠风险 |
+| `docs/48-v2.7-migration-guide.md` | 备份、预演、执行、校验、回滚 |
+| `docs/49-v2.7-prompt-changelog.md` | 3 个 prompt kind 的版本、变量、schema、拒绝条件 |
+
+### 19.5 已知限制
+
+| 编号 | 限制 | 影响 |
+| --- | --- | --- |
+| L37 | `OPEN_TASK` 写作 20 分钟 / 口语 10 分钟为粗估 | 40 分钟级大作文仍会被排在很后面；覆写只改善不解决 |
+| L38 | `carryoverApply` 尚未接线 | 用户当前用不到「昨日未完成自动滚入今天」；挂载点已裁决在生成新一天计划时 |
+| L39 | D1 覆盖率依赖的 `coverageRatio` 当前恒 `null` | 阶段就绪度偏保守，几乎到不了 `READY_FOR_REVIEW`（需后续装配分题型正确率） |
+| L40 | 快照/候选/决策无自动清理 | 长期使用 `dev.db` 持续变大；需人工按 `asOfDate` 归档，归档前先确认无 `PlanVersion` 引用 |

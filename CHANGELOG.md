@@ -49,6 +49,27 @@
 - 新增 `domain/__tests__/budgetResolve.test.ts`：五段分支各一条 + 「批量 vs 逐日」逐字段等价性（30 天 × 3 种配置状态）——后者是防止两条实现再次分叉的唯一防线。
 - 新增 `src/lib/__tests__/helpers/testDb.ts`：集成测试建库助手，**强制调用方声明读集**（`delegates` 为空直接抛错、delegate 名写错直接抛错）。此前的做法是每个测试自己 `copyFileSync(dev.db)` + `deleteMany` 几张**它想得起来的**表，于是"读了但没清"的表把本机开发库的现状带进了断言。新建的两个集成测试已迁移；旧文件不动，碰到再迁。
 
+### 计划链路（T05 / T07 / T08）
+
+- **T05 装箱引擎扩展：行为不变的兼容承诺。** `domain/adaptivePlan.ts` 只为 `generateAdaptivePlan` 增加可选输入（候选与 carryover 相关字段），**不传这些字段时输出与 v2.1 逐字相同**；由 `adaptivePlanGolden.test.ts` 的 18 组黄金对照锁定。这不是行为变更，而是「新链路可以加、旧调用点结果不会被动到」的证明。
+- **T07 计划构建：预览零写、确认才落库。** 新增 `services/planBuild.ts` 的 `buildPlan()`：任何调用都只返回 `BuildPlanResult`（`preview: true` 恒成立），**从不写 `PlanTask` / `PlanVersion`**；确认时用 `previewTokenOf(snapshotId, inputHash, budgetOverrideMinutes)` 重算令牌，不一致返回 `CONFLICT`，通过后在**同一事务**写版本、任务、候选与决策。`budgetOverrideMinutes` 刻意进签名：它不在快照 `inputHash` 里，但会改变落库分钟，不入签就会出现「预览 60 分钟、确认写出 90 分钟」。
+- **T07 评分与排序口径。** 七因子加权（`urgency 0.22` / `goalRelevance 0.18` / `evidenceStrength 0.20` / `errorRecurrence 0.12` / `prerequisiteReady 0.10` / `timeCost 0.10` / `preferenceFit 0.08`，合计 1.000），阈值 `P1 ≥ 0.60`、`P2 ≥ 0.42`；**到期复习/复测一律 P0，不看分数**；P0 之外先按优先级、再按分数降序、最后按 `candidateKey` 升序，保证同样输入得到同样排列。`weightsVersion` 当前 `w1`，改权重或阈值必须递增。
+- **T08 重排与滚存。** `domain/replan.ts` 的 `replanDailyTasks()` 产出 `KEEP` / `SHRINK` / `DEFER` 三类处置（未开始任务才会被 `DEFER`），`services/replanPreview.ts` 提供 `previewReplan()`（零写）与 `confirmReplan()`（幂等键 + 事务）。`domain/carryover.ts` 的 `carryoverPolicy()` 产出 `PROMOTE` / `DEMOTE` / `BACKLOG` / `ABANDON` 四类裁决（单日条数/分钟上限、顺延次数上限）。`services/carryoverApply.ts` 已实现但**尚未接线**，挂载点裁决为 T07 的 GENERATE 路径，见 `docs/47` §6。
+
+### AI 建议层（T14）
+
+- 新增 3 个规划类 prompt kind（`ai.plan.*` 命名空间，首次注册即 `v1`）：`plan_explain`（逐条理由，最多 60 条）、`plan_suggest_candidates`（从候选池挑最多 10 条，可为空）、`plan_weekly_theme`（恰好 3 个主题选项）。输出 schema 全部 `.strict()`，任何越界字段直接判 `INVALID_OUTPUT`。
+- `aiMode` 三态：`off`（`allowAi` 非 true 或 Provider 不是外部模式 → **零调用**）、`on`（全部成功或仅单条被拒）、`failed`（任一调用失败/输出非法 → **丢弃全部 AI 效果**，计划仍 `ok:true`，`aiNote` 带错误码）。不存在「一半任务带 AI 标记、一半不带」的中间态。
+- 拒绝分三类且都**不落半截数据**：池外 key → `REJECTED_NOT_IN_POOL`（不新建 `TaskCandidate`）；超预算 → `REJECTED_AI_OVER_BUDGET`（整条拒绝，**不按比例裁剪**）、改动决策字段 → `REJECTED_AI_MUTATED_DECISION`（`assertReasonOnlyChanged()` 逐字段深比较，只放行 `rationale`）。
+- `byAi` 在 `assembleDraft` 中**只赋值一处**：`aiMode==='on' && isAiSuggested && eligibility==='ELIGIBLE' && ai.picks.has(key)` 四条件同时成立。由 `byAi.test.ts` ⑪ 的文本扫描锁定（赋值点数量、无二次赋值、四条件齐全）。
+- 新增测试 13 条：`ac/aiFallback.test.ts`（4）、`ac/aiRejection.test.ts`（6）、`byAi.test.ts`（3），全部用 `vi.spyOn(OpenAICompatibleProvider.prototype, 'complete')` 注入假响应，不发外部请求。
+
+### 文档与版本收尾（T14b）
+
+- 新增 `docs/43-v2.7-api-contracts.md`、`docs/45-v2.7-test-report.md`、`docs/46-v2.7-user-guide.md`、`docs/49-v2.7-prompt-changelog.md`；补充 `docs/44-v2.7-scheduler-spec.md`（§4.1 可复算依据）与 `docs/47-v2.7-known-limits.md`（§9 数据/查询遗留、§10 AI 边界）。`docs/48-v2.7-migration-guide.md` 已含备份/校验/回滚，未改。
+- `.env.example` 核对结果：**v2.7 规划域不引入任何新环境变量**，AI 相关沿用 v2.4 的 `AI_PROVIDER_API_KEY` / `AI_PROVIDER_BASE_URL` / `AI_PROVIDER_MODEL`（均已标注可选），并注明 v2.7 默认 `allowAi` 关闭。
+- README 更新：页面地图 23 → 27 个入口（新增 `PLANNER` 组 4 个入口）、数据库表数 80 → 115、测试数改为 133 文件 / 1571 用例，文末新增 §19 v2.7 升级指引。
+
 ## v2.6 — 2026-11-23
 
 Smart Learning Materials：把用户授权材料导入为可追溯、可编辑、可训练的「智能学习材料」，接入词汇 / 阅读 / 练习 / 证据链路。

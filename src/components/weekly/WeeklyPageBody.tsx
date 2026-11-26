@@ -25,6 +25,7 @@ import type {
   WeeklyTop3Dto,
   WeeklyWeekOptionDto,
 } from '@/lib/types';
+import type { WeeklyDeltaResult } from '@/lib/domain/weeklyDelta';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -32,6 +33,8 @@ import { FormField, inputClass, textareaClass } from '@/components/ui/FormField'
 import { StatTile } from '@/components/ui/StatTile';
 import { TagBadge } from '@/components/ui/StatusBadge';
 import { Toast, useToastState } from '@/components/ui/Toast';
+import { WeeklyDeltaPanel } from './WeeklyDeltaPanel';
+import { WeeklyThemePicker } from './WeeklyThemePicker';
 
 export interface WeeklyPageBodyProps {
   review: WeeklyReviewDto;
@@ -42,6 +45,8 @@ export interface WeeklyPageBodyProps {
   trackStats: TrackStatDto[];
   /** v2.1：本周预算 / 实际 / 重排记录。 */
   budget: WeeklyBudgetDto;
+  /** v2.7：本周变化（改善 / 未解决 / 需诊断 / 阈值说明）。 */
+  delta: WeeklyDeltaResult;
 }
 
 /** 指标 → 是否属于「长期趋势」类（用于分组展示）。 */
@@ -59,10 +64,12 @@ export function WeeklyPageBody({
   isCurrentWeek,
   trackStats,
   budget,
+  delta,
 }: WeeklyPageBodyProps) {
   const router = useRouter();
   const { toast, show, dismiss } = useToastState();
   const [pending, startTransition] = useTransition();
+  const [theme, setTheme] = useState('');
 
   const [overrides, setOverrides] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = {};
@@ -212,6 +219,28 @@ export function WeeklyPageBody({
           hint="必须填满才能保存"
         />
       </div>
+
+      <WeeklyDeltaPanel
+        delta={delta}
+        isoYear={review.isoYear}
+        isoWeek={review.isoWeek}
+        themeSlot={
+          <WeeklyThemePicker
+            suggestions={[]}
+            value={theme}
+            onChange={setTheme}
+            aiNote="AI 未参与"
+            onFillNote={() =>
+              setNote((current) => {
+                const line = `下周主要突破目标：${theme.trim()}`;
+                if (current.trim().length === 0) return line;
+                if (current.includes(line)) return current;
+                return `${current}\n${line}`;
+              })
+            }
+          />
+        }
+      />
 
       <Card
         title="时间预算 vs 实际"

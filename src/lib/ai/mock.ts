@@ -377,6 +377,72 @@ function buildMaterialExercise(meta: AiPromptMeta): StructuredByKind['material_e
   };
 }
 
+/**
+ * 规划块里的 `key=...` 解析。
+ *
+ * 规划域的 mock 必须**回显输入块里的真实 key**：若恒定返回固定 key，
+ * 调用方会把它当成「不在池中」全部拒绝，测试就变成「跑通但零采纳」。
+ */
+function planKeys(block: string | undefined): string[] {
+  const keys: string[] = [];
+  const re = /(?:^|\n)\s*-\s*key=([^|\n]+)/g;
+  let match = re.exec(block ?? '');
+  while (match) {
+    const key = match[1].trim();
+    if (key.length > 0 && !keys.includes(key)) keys.push(key);
+    match = re.exec(block ?? '');
+  }
+  return keys;
+}
+
+/** 取某行 `reason=` 之后的内容（规划块逐行摘要用）。 */
+function planField(block: string | undefined, key: string, field: string): string {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`key=${escaped}\\b[^\\n]*?\\b${field}=([^|\\n]*)`);
+  const match = re.exec(block ?? '');
+  return match ? match[1].trim() : '';
+}
+
+/** 规划域 Mock：润色理由（保留原理由文本，只加模拟前缀）。 */
+function buildPlanExplain(meta: AiPromptMeta): StructuredByKind['plan_explain'] {
+  const keys = planKeys(meta.planDayBlock);
+  if (keys.length === 0) {
+    return { tasks: [{ candidate_key: 'mock:no-task', reason: '无任务可润色（模拟）' }] };
+  }
+  return {
+    tasks: keys.slice(0, 60).map((key) => {
+      const template = planField(meta.planDayBlock, key, 'reason');
+      const reason = template ? `（模拟润色）${template}` : `（模拟润色）按证据优先安排「${key}」`;
+      return { candidate_key: key, reason: reason.slice(0, 200) };
+    }),
+  };
+}
+
+/** 规划域 Mock：从池中挑前 3 条（确定性顺序）。 */
+function buildPlanSuggest(meta: AiPromptMeta): StructuredByKind['plan_suggest_candidates'] {
+  const keys = planKeys(meta.candidatePoolBlock);
+  return {
+    picks: keys.slice(0, 3).map((key, index) => ({
+      candidate_key: key,
+      why: '（模拟建议）该候选与当前证据缺口直接相关，建议优先安排',
+      suggested_order: index + 1,
+    })),
+  };
+}
+
+/** 规划域 Mock：3 个固定主题（引用缺口摘要，不编造指标）。 */
+function buildPlanWeeklyTheme(meta: AiPromptMeta): StructuredByKind['plan_weekly_theme'] {
+  const gap = (meta.gapSummaryBlock ?? '').trim().slice(0, 120) || '当前没有新增缺口';
+  const themes = ['巩固最弱一项官方技能', '保持四技能配比、稳定执行', '针对延迟复测补强'];
+  return {
+    options: themes.map((theme, index) => ({
+      theme,
+      rationale: `（模拟主题）依据缺口摘要：${gap}`,
+      evidence_refs: [`gap-summary:${index + 1}`],
+    })),
+  };
+}
+
 export function buildMockPayload<K extends AiPromptKind>(
   kind: K,
   meta: AiPromptMeta,
@@ -437,6 +503,12 @@ export function buildMockPayload<K extends AiPromptKind>(
       return buildMaterialSummary(meta) as StructuredByKind[K];
     case 'material_exercise':
       return buildMaterialExercise(meta) as StructuredByKind[K];
+    case 'plan_explain':
+      return buildPlanExplain(meta) as StructuredByKind[K];
+    case 'plan_suggest_candidates':
+      return buildPlanSuggest(meta) as StructuredByKind[K];
+    case 'plan_weekly_theme':
+      return buildPlanWeeklyTheme(meta) as StructuredByKind[K];
     default:
       throw new Error(`未知提示词种类：${String(kind)}`);
   }

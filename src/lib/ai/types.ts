@@ -30,6 +30,10 @@ export const AI_PROMPT_KINDS = [
   'material_extract',
   'material_summary',
   'material_exercise',
+  // v2.7 规划域（T14：只润色措辞 / 从池中挑候选 / 建议周主题，不碰调度）
+  'plan_explain',
+  'plan_suggest_candidates',
+  'plan_weekly_theme',
 ] as const;
 export type AiPromptKind = (typeof AI_PROMPT_KINDS)[number];
 
@@ -50,7 +54,18 @@ export const AI_PROMPT_KEY_BY_KIND: Record<AiPromptKind, string> = {
   material_extract: 'ai.material.extract.v1',
   material_summary: 'ai.material.summary.v1',
   material_exercise: 'ai.material.exercise.v1',
+  plan_explain: 'ai.plan.explain.v1',
+  plan_suggest_candidates: 'ai.plan.suggest.v1',
+  plan_weekly_theme: 'ai.plan.weekly.v1',
 };
+
+/** 规划域 prompt kind（`src/lib/ai/planner.ts` 只允许这几个）。 */
+export const PLAN_PROMPT_KINDS = [
+  'plan_explain',
+  'plan_suggest_candidates',
+  'plan_weekly_theme',
+] as const satisfies readonly AiPromptKind[];
+export type PlanPromptKind = (typeof PLAN_PROMPT_KINDS)[number];
 
 /** 材料域 prompt kind（T09 的 `src/lib/ai/material.ts` 只允许这几个）。 */
 export const MATERIAL_PROMPT_KINDS = [
@@ -77,7 +92,11 @@ export type AiCallStatus = (typeof AI_CALL_STATUSES)[number];
  * 不包含完整历史；Context Builder 负责先裁剪再填进来。
  */
 export interface AiPromptMeta {
-  mode: AiCoachMode;
+  /**
+   * `'PLAN'` 是 v2.7 规划域专用的非教学模式：它不创建会话、不写 `AILearningTurn`，
+   * 只用来把「润色 / 挑选 / 周主题」三类请求送进同一套 provider 与日志。
+   */
+  mode: AiCoachMode | 'PLAN';
   skill: AiTaskSkill;
   objective: string;
   targetLevel: string;
@@ -111,6 +130,19 @@ export interface AiPromptMeta {
   questionBudget?: number;
   allowedKinds?: string;
   learnerLevel?: string;
+  /**
+   * v2.7 规划域专用变量。
+   *
+   * `candidatePoolBlock` 只放候选摘要（key/来源/技能/分钟），**不放**任务正文；
+   * 时间、预算、装箱结果由调度器决定，AI 无权修改（`41 §6.1`）。
+   */
+  planDayBlock?: string;
+  candidatePoolBlock?: string;
+  budgetMinutes?: number;
+  dailyBudgetBlock?: string;
+  weeklyMetricsBlock?: string;
+  gapSummaryBlock?: string;
+  recentDeltaBlock?: string;
 }
 
 export interface AiCompletionRequest {

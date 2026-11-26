@@ -13,6 +13,9 @@
 
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/prisma';
+import { addDays, listDateRange } from '@/lib/date';
+import { getBudgetRange } from '@/lib/queries/budget';
+import { isoWeekStart } from '@/lib/queries/weekly';
 import { appendTaskFromCandidate } from '@/lib/services/planWrite';
 import {
   buildPlan,
@@ -30,6 +33,7 @@ import type { ActionResult, TaskPriority } from '@/lib/types';
 import type { ReadinessOutcome } from '@/lib/domain/readiness';
 import {
   candidatePromoteSchema,
+  cycleRecalibrateSchema,
   planConfirmSchema,
   planDraftSchema,
   planPreviewSchema,
@@ -38,6 +42,7 @@ import {
   replanPreviewSchema,
   stageTransitionSchema,
   versionRestoreSchema,
+  weeklySuggestionSchema,
 } from '@/lib/schema/planner';
 import { confirmReplan, previewReplan, type ReplanPreviewResult } from '@/lib/services/replanPreview';
 
@@ -404,4 +409,137 @@ export async function confirmStageTransitionAction(
   revalidatePath('/planner');
   revalidatePath('/planner/readiness');
   return ok({ reviewId: review.id, logId: log.id });
+}
+
+/**
+ * 90 天周期中途重新校准（AC-13）：**只产生新的周期版本，不改历史**。
+ *
+ * - 不修改任何既有 `PlanVersion`（含旧 CYCLE 版本）：历史是 append-only；
+ * - 不改写既有 `PlanTask`：校准只更新「这 90 天练什么」的结构展望；
+ * - 同一份证据（同一 snapshotId）已经产出过有效 CYCLE 版本 → `CONFLICT`，
+ *   避免重复点击把同一主题写成一串版本。
+ */
+export async function recalibrateCycleAction(
+  raw: unknown,
+): Promise<ActionResult<{ cycleId: string; version: number; versionId: string }>> {
+  const parsed = cycleRecalibrateSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+
+  const cycle = await prisma.learningCycle.findFirst({
+    where: { archivedAt: null, status: { not: 'COMPLETED' } },
+    orderBy: [{ startDate: 'desc' }, { id: 'asc' }],
+  });
+  if (!cycle) return fail('PRECONDITION', '没有进行中的 90 天周期，无法重新校准');
+
+  if (parsed.data.cycleVersionId) {
+    const previous = await prisma.planVersion.findUnique({
+      where: { id: parsed.data.cycleVersionId },
+      select: { layer: true },
+    });
+    if (!previous) return fail('NOT_FOUND', '要校准的周期版本不存在');
+    if (previous.layer !== 'CYCLE') {
+      return fail('VALIDATION', '只有 90 天周期版本可以重新校准');
+    }
+  }
+
+  const built = await buildPlan({
+    purpose: 'GENERATE',
+    asOfDate: parsed.data.asOfDate,
+    horizonDays: 90,
+    allowAi: false,
+  });
+  if (!built.ok) return fail(built.code, built.error);
+
+  const sameSnapshot = await prisma.planVersion.findFirst({
+    where: { layer: 'CYCLE', snapshotId: built.data.snapshotId, staleAt: null },
+    select: { id: true },
+  });
+  if (sameSnapshot) {
+    return fail('CONFLICT', '本次证据与上一周期版本一致，无需重新校准');
+  }
+
+  const version = await nextPlanVersion(parsed.data.asOfDate);
+  const created = await prisma.planVersion.create({
+    data: {
+      planDate: parsed.data.asOfDate,
+      version,
+      changeSource: 'GENERATE',
+      reason: `周期重新校准：${parsed.data.reason.trim()}`,
+      budgetMinutes: 0,
+      actualMinutesAtChange: 0,
+      beforeSnapshot: JSON.stringify({
+        cycleId: cycle.id,
+        previousVersionId: parsed.data.cycleVersionId ?? null,
+        primaryTheme: cycle.primaryTheme,
+        secondaryThemesJson: cycle.secondaryThemesJson,
+      }),
+      afterSnapshot: JSON.stringify(built.data.layerStructure ?? {}),
+      snapshotId: built.data.snapshotId,
+      layer: 'CYCLE',
+      parentVersionId: null,
+    },
+    select: { id: true },
+  });
+
+  revalidatePath('/planner');
+  revalidatePath('/planner/build');
+  revalidatePath('/planner/history');
+  return ok({ cycleId: cycle.id, version, versionId: created.id });
+}
+
+// ───────────────────────── T13 周复盘：采纳周度建议 ─────────────────────────
+
+const WEEKLY_SUGGESTION_KIND_LABEL: Record<'ADJUST_TIME' | 'ADJUST_FOCUS' | 'KEEP', string> = {
+  ADJUST_TIME: '调整时间',
+  ADJUST_FOCUS: '调整重点',
+  KEEP: '保持不变',
+};
+
+/**
+ * 采纳一条周度建议 → 写入**下一周**的 `WeeklyTarget`（`source=SUGGESTION_ACCEPTED`）。
+ *
+ * 三条边界：
+ * 1. 只写下一周，不改本周已发生的预算与计划（append-only 语义）；
+ * 2. 建议本身不自动生效 —— 这个 action 只有用户显式点击才会被调用；
+ * 3. 未给 `targetMinutes` 时按下一周已生效的日预算求和兜底，绝不凭空造数字。
+ */
+export async function acceptWeeklySuggestionAction(
+  raw: unknown,
+): Promise<ActionResult<{ weeklyTargetId: string; weekStart: string; targetMinutes: number }>> {
+  const parsed = weeklySuggestionSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+  const { isoYear, isoWeek, suggestion } = parsed.data;
+
+  const nextWeekStart = addDays(isoWeekStart(isoYear, isoWeek), 7);
+  const nextWeekEnd = addDays(nextWeekStart, 6);
+
+  let targetMinutes = suggestion.targetMinutes ?? null;
+  if (targetMinutes === null) {
+    const budgets = await getBudgetRange(listDateRange(nextWeekStart, nextWeekEnd));
+    const sum = [...budgets.values()]
+      .filter((budget) => !budget.isRestDay)
+      .reduce((total, budget) => total + budget.minutes, 0);
+    targetMinutes = sum > 0 ? sum : null;
+  }
+  if (targetMinutes === null || targetMinutes <= 0) {
+    return fail('VALIDATION', '下一周没有可用预算，请先设置日预算或直接填写周目标分钟');
+  }
+
+  const note = `[${WEEKLY_SUGGESTION_KIND_LABEL[suggestion.kind]}] ${suggestion.note}`;
+  const existing = await prisma.weeklyTarget.findUnique({ where: { weekStart: nextWeekStart } });
+  const row = existing
+    ? await prisma.weeklyTarget.update({
+        where: { id: existing.id },
+        data: { targetMinutes, source: 'SUGGESTION_ACCEPTED', status: 'ADJUSTED', note },
+        select: { id: true },
+      })
+    : await prisma.weeklyTarget.create({
+        data: { weekStart: nextWeekStart, targetMinutes, source: 'SUGGESTION_ACCEPTED', note },
+        select: { id: true },
+      });
+
+  revalidatePath('/weekly');
+  revalidatePath('/plan');
+  revalidatePath('/planner/budget');
+  return ok({ weeklyTargetId: row.id, weekStart: nextWeekStart, targetMinutes });
 }

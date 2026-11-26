@@ -490,3 +490,41 @@ function unmetReason(unmet: readonly { kind: string }[]): string {
 export function toFactorsJson(decision: TaskPriorityDecisionDraft): { factors: FactorTrace; meta: DecisionMeta } {
   return { factors: decision.factors, meta: decision.meta };
 }
+
+/** AI 建议复核结果：只允许 `rationale` 变化。 */
+export type ReasonOnlyCheck =
+  | { ok: true }
+  | { ok: false; code: 'REJECTED_AI_MUTATED_DECISION'; fields: string[] };
+
+/**
+ * 检查 AI 处理前后是否**只**改了措辞（`rationale`）。
+ *
+ * 必须做**结构化字段比对**：比对新旧 JSON 字符串会把换行/空格差异误判成篡改，
+ * 而真正危险的改动（`priority` 从 P3 变 P0、`eligibility` 从 BLOCKED 变 ELIGIBLE）
+ * 只需要一个字段不同就足以绕过调度器。
+ *
+ * @param before 调度器产出的决策
+ * @param after AI 处理后的决策（只应 `rationale` 不同）
+ */
+export function assertReasonOnlyChanged(
+  before: TaskPriorityDecisionDraft,
+  after: TaskPriorityDecisionDraft,
+): ReasonOnlyCheck {
+  const fields: string[] = [];
+  const compare = (name: string, a: unknown, b: unknown) => {
+    if (JSON.stringify(a) !== JSON.stringify(b)) fields.push(name);
+  };
+  compare('candidateKey', before.candidateKey, after.candidateKey);
+  compare('weightsVersion', before.weightsVersion, after.weightsVersion);
+  compare('factors', before.factors, after.factors);
+  compare('score', before.score, after.score);
+  compare('priority', before.priority, after.priority);
+  compare('consequenceIfSkipped', before.consequenceIfSkipped, after.consequenceIfSkipped);
+  compare('eligibility', before.eligibility, after.eligibility);
+  compare('blockedReason', before.blockedReason, after.blockedReason);
+  compare('meta', before.meta, after.meta);
+  if (fields.length > 0) {
+    return { ok: false, code: 'REJECTED_AI_MUTATED_DECISION', fields };
+  }
+  return { ok: true };
+}

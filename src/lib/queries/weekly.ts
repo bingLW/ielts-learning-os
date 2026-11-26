@@ -32,6 +32,11 @@ import {
   type StoredWeeklyMetrics,
   type WeeklyRawInput,
 } from '@/lib/domain/weekly';
+import {
+  buildWeeklyDelta,
+  type WeeklyDeltaResult,
+  type WeeklyDeltaSnapshot,
+} from '@/lib/domain/weeklyDelta';
 import { parseJson } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import { getBudgetRange } from './budget';
@@ -470,5 +475,95 @@ export async function getWeeklyBudget(isoYear: number, weekNo: number): Promise<
     target: target
       ? { targetMinutes: target.targetMinutes, status: target.status, source: target.source }
       : null,
+  };
+}
+
+// ───────────────────────── v2.7 T13 周复盘变化（AC-12 数据侧） ─────────────────────────
+
+export interface WeeklyDeltaDto {
+  isoYear: number;
+  isoWeek: number;
+  weekStart: string;
+  weekEnd: string;
+  /** 本周对比的上一周周一；无上周数据也返回日期，仅用于展示。 */
+  previousWeekStart: string;
+  delta: WeeklyDeltaResult;
+}
+
+/** 三色判定 + 复测 → 一周指标快照；口径与周复盘 13 项指标同源（同一份 raw）。 */
+function snapshotFromRaw(raw: WeeklyRawInput, uncertaintyCount: number): WeeklyDeltaSnapshot {
+  const judged = raw.egiu.green + raw.egiu.yellow + raw.egiu.red;
+  const retestSample = raw.review.done + raw.review.failed;
+  return {
+    weekStart: raw.weekStart,
+    activeDays: raw.dataDays,
+    accuracy: judged > 0 ? raw.egiu.green / judged : null,
+    accuracySample: judged,
+    retestKeepRate: retestSample > 0 ? raw.review.done / retestSample : null,
+    retestSample,
+    evidenceCount: judged + retestSample,
+    uncertaintyCount,
+  };
+}
+
+/**
+ * 「截至某周末」的待确认维度数（UNCERTAINTY + UNKNOWN）。
+ *
+ * 用 `asOfDate <= weekEnd` 的最近一次诊断快照：周中做过诊断也算「截至周末已知」，
+ * 绝不为了凑对比而在周复盘里现场重算缺口（G-7：解释/诊断不在页面层重算）。
+ */
+async function uncertaintyCountAsOf(weekEnd: string): Promise<number> {
+  const snapshot = await prisma.planningSnapshot.findFirst({
+    where: { asOfDate: { lte: weekEnd } },
+    orderBy: [{ asOfDate: 'desc' }, { createdAt: 'desc' }],
+    select: { id: true },
+  });
+  if (!snapshot) return 0;
+  return prisma.skillGap.count({
+    where: { snapshotId: snapshot.id, kind: { in: ['UNCERTAINTY', 'UNKNOWN'] } },
+  });
+}
+
+/**
+ * 周复盘变化：当前周、上周、上上周各取一份指标快照，交给
+ * `buildWeeklyDelta()` 产出改善/未解决/需诊断三类结论。
+ *
+ * 取三周是因为「连续 2 周 ≥15%」需要两次相邻比较；缺任何一周都由纯函数
+ * 自己降级（无基线 / 只能按单周+样本门槛判定），不在这里补假数据。
+ */
+export async function getWeeklyDelta(
+  isoYear: number,
+  weekNo: number,
+  nowDate: string = today(),
+): Promise<WeeklyDeltaDto> {
+  const weekStart = isoWeekStart(isoYear, weekNo);
+  const weekEnd = addDays(weekStart, 6);
+  const previousStart = addDays(weekStart, -7);
+  const priorStart = addDays(weekStart, -14);
+
+  const [currentRaw, previousRaw, priorRaw] = await Promise.all([
+    getWeeklyRawInput(weekStart, weekEnd, nowDate),
+    getWeeklyRawInput(previousStart, addDays(previousStart, 6), nowDate),
+    getWeeklyRawInput(priorStart, addDays(priorStart, 6), nowDate),
+  ]);
+  const [currentUncertainty, previousUncertainty, priorUncertainty] = await Promise.all([
+    uncertaintyCountAsOf(weekEnd),
+    uncertaintyCountAsOf(addDays(previousStart, 6)),
+    uncertaintyCountAsOf(addDays(priorStart, 6)),
+  ]);
+
+  const delta = buildWeeklyDelta({
+    current: snapshotFromRaw(currentRaw, currentUncertainty),
+    previous: snapshotFromRaw(previousRaw, previousUncertainty),
+    prior: snapshotFromRaw(priorRaw, priorUncertainty),
+  });
+
+  return {
+    isoYear,
+    isoWeek: weekNo,
+    weekStart,
+    weekEnd,
+    previousWeekStart: previousStart,
+    delta,
   };
 }

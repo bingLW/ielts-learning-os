@@ -13,17 +13,26 @@
  * `context.decisions` 原样透传进 `RankedCandidateInput`，再由引擎写进 `AdaptivePlanItem.rationale`，
  * 最后装进 `explanation.reason`。
  *
- * `aiMode` 三态里，T07 只实现 `off` 路径（AI 层在 T14 接真）：`allowAi=false` 或引擎未配置时
- * 直接返回规则结果，`aiNote='本次由规则生成，AI 未参与'`。`on`/`failed` 留桩，但**不 import**
- * `@/lib/ai/*`（F-1 守门：T07 不得把 AI 依赖拉进服务层）。
+ * `aiMode` 三态（`41 §2.6`）：`allowAi !== true` 或 provider 未配置 → `off`；
+ * 配置可用时调 `ai/planner.ts` 的三个入口（**只润色措辞 / 从池中挑候选 / 周主题**），
+ * 任一失败 → `failed` 并整条回落规则输出（AC-17），AI 输出不能改任何调度字段。
  *
  * 预览**零写库**：本函数只调用 `buildPlanningSnapshot`（落 `PlanningSnapshot`，那是复算依据），
  * **绝不**写 `PlanTask` / `PlanVersion`。确认动作在 `actions/planner.ts::confirmPlanVersionAction`
  * 里做，且复用同一个 `snapshotId`。
+ *
+ * AI 采纳时会更新快照内的 `TaskCandidate.isAiSuggested` / `TaskPriorityDecision.eligibility`，
+ * 这是快照元数据而非计划行，仍满足「预览不写计划」。
  */
 
 import { createHash } from 'node:crypto';
-import { CANDIDATE_DEFAULT_MINUTES, tierCodeOf } from '@/lib/constants';
+import {
+  planAiAvailable,
+  polishExplanations,
+  suggestCandidateOrder,
+  type TaskExplanationSeed,
+} from '@/lib/ai/planner';
+import { CANDIDATE_DEFAULT_MINUTES, PRIORITY_FACTOR_KEYS, tierCodeOf } from '@/lib/constants';
 import { checkAllocation } from '@/lib/domain/allocation';
 import {
   generateAdaptivePlan,
@@ -32,7 +41,9 @@ import {
   type UncertaintyProbeInput,
 } from '@/lib/domain/adaptivePlan';
 import { mapCandidateSourceToPlanTask, type GapKindForMapping } from '@/lib/domain/planWriteMap';
-import type { Prerequisite } from '@/lib/domain/taskCandidate';
+import type { Prerequisite, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
+import { resolveAiPicks } from '@/lib/domain/taskCandidate';
+import { assertReasonOnlyChanged, FACTOR_LABEL_ZH } from '@/lib/domain/taskPriority';
 import { prisma } from '@/lib/prisma';
 import {
   buildPlanningSnapshot,
@@ -130,7 +141,7 @@ export interface PlannedTaskDraft {
   priority: TaskPriority;
   sourceKind: TaskSourceKind;
   explanation: TaskExplanation;
-  /** 仅 AI 层可置 true；T07 恒 false。 */
+  /** 仅 AI 层可置 true；赋值点唯一（`assembleDraft` 内，见 `41 §6.5`）。 */
   byAi: boolean;
   aiCallLogId: string | null;
 }
@@ -285,19 +296,34 @@ interface CandidateDecisionPair {
   decision: PlanEngineContextV27['decisions'][number];
 }
 
+/** AI 层在一次预览内可施加的效果（`off`/`failed` 时为空集）。 */
+interface AiApplication {
+  mode: AiMode;
+  note: string | null;
+  /** 通过调度器复核的 AI 挑选（`byAi` 的唯一来源之一）。 */
+  picks: ReadonlySet<string>;
+  /** 通过校验的润色措辞（key → reason）。 */
+  polished: ReadonlyMap<string, string>;
+  suggestLogId: string | null;
+  explainLogId: string | null;
+}
+
 /** 把引擎产出的一项计划映射回草稿（含解释面板所需的 candidate/decision 上下文）。 */
 function assembleDraft(
   item: { module: ModuleId; skill: SkillId; minutes: number; track: LearningTrack; primarySkill: PrimarySkill; priority: TaskPriority; sourceKind: TaskSourceKind; splittable: boolean; minChunkMinutes: number; rationale: string },
   planDate: string,
   goal: PlanEngineContextV27['goal'],
   pair: CandidateDecisionPair | null,
+  ai: AiApplication,
 ): PlannedTaskDraft {
   const decision = pair?.decision ?? null;
   const candidate = pair?.candidate ?? null;
   const met = decision ? decision.eligibility !== 'BLOCKED_PREREQUISITE' : true;
+  const key = candidate?.candidateKey ?? null;
+  const polishedReason = key ? ai.polished.get(key) ?? null : null;
 
   return {
-    candidateKey: candidate?.candidateKey ?? null,
+    candidateKey: key,
     module: item.module,
     skill: item.skill,
     primarySkill: item.primarySkill,
@@ -309,7 +335,7 @@ function assembleDraft(
     priority: item.priority,
     sourceKind: item.sourceKind,
     explanation: {
-      reason: item.rationale,
+      reason: polishedReason ?? item.rationale,
       goalRef: goal?.targetValue ?? null,
       gapRef: decision?.meta.skillGapKey
         ? { skillGapKey: decision.meta.skillGapKey, evidenceRefs: decision.meta.evidenceRefs }
@@ -324,10 +350,21 @@ function assembleDraft(
       expectedOutput: candidate?.expectedOutput ?? null,
       consequenceIfSkipped: decision?.consequenceIfSkipped ?? null,
       origin: 'RULE',
-      wordingSource: 'TEMPLATE',
+      wordingSource: polishedReason ? 'AI_POLISHED' : 'TEMPLATE',
     },
-    byAi: false,
-    aiCallLogId: null,
+    // `byAi` 的唯一赋值点（`41 §6.5`）：四个条件必须同时成立。
+    byAi:
+      ai.mode === 'on' &&
+      candidate?.isAiSuggested === true &&
+      decision?.eligibility === 'ELIGIBLE' &&
+      key !== null &&
+      ai.picks.has(key),
+    aiCallLogId:
+      key !== null && ai.picks.has(key)
+        ? ai.suggestLogId
+        : polishedReason
+          ? ai.explainLogId
+          : null,
   };
 }
 
@@ -409,6 +446,235 @@ function addDaysForMilestone(date: string, days: number): string {
   return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
 }
 
+/** 规则层的一日结果（`assembleDraft` 之前），AI 需要它来判断「哪些候选真的进了计划」。 */
+interface RuleDayPlan {
+  date: string;
+  budgetMinutes: number;
+  isRestDay: boolean;
+  result: ReturnType<typeof generateAdaptivePlan>;
+}
+
+const AI_OFF: AiApplication = {
+  mode: 'off',
+  note: '本次由规则生成，AI 未参与',
+  picks: new Set(),
+  polished: new Map(),
+  suggestLogId: null,
+  explainLogId: null,
+};
+
+interface AiLayerResult extends AiApplication {
+  rejected: BuildPlanResult['rejectedAiSuggestions'];
+}
+
+function aiFailureNote(code: string, message: string): string {
+  if (code === 'INVALID_OUTPUT') return 'AI 输出未通过校验，已回落规则输出（INVALID_OUTPUT）';
+  if (code === 'BUDGET_EXCEEDED') return 'AI 调用被预算拦截（BUDGET_EXCEEDED），已回落规则输出';
+  return `AI 调用失败（${code}），已回落规则输出：${message}`;
+}
+
+function factorSummaryOf(decision: CandidateDecisionPair['decision']): string {
+  return PRIORITY_FACTOR_KEYS.map(
+    (key) => `${FACTOR_LABEL_ZH[key]} ${decision.factors[key].toFixed(2)}`,
+  ).join(' / ');
+}
+
+/**
+ * AI 层（`41 §6`）：只润色措辞、从池中挑候选、记周主题（本函数不调周主题）。
+ *
+ * 状态机不可逆：任一调用失败 → `failed`，**丢弃全部 AI 效果**（不保留半截润色），
+ * 计划照常返回（AC-17）。单条建议被拒（池外 / 超预算）**不降级**，只记录。
+ */
+async function applyAiLayer(args: {
+  allowAi: boolean | undefined;
+  snapshotId: string;
+  asOfDate: string;
+  pool: TaskCandidateDraft[];
+  pairByKey: Map<string, CandidateDecisionPair>;
+  ruleDays: RuleDayPlan[];
+  budgetDays: { date: string; minutes: number; isRestDay: boolean }[];
+}): Promise<AiLayerResult> {
+  if (args.allowAi !== true) return { ...AI_OFF, rejected: [] };
+  if (!(await planAiAvailable(prisma))) return { ...AI_OFF, rejected: [] };
+
+  const scheduledKeys = new Set<string>();
+  for (const day of args.ruleDays) {
+    if (!day.result.ok) continue;
+    for (const item of day.result.items) {
+      if (item.candidateKey) scheduledKeys.add(item.candidateKey);
+    }
+  }
+
+  const dayBudget =
+    args.budgetDays.find((day) => day.date === args.asOfDate) ?? args.budgetDays[0] ?? null;
+  const plannedToday = args.ruleDays
+    .filter((day) => day.date === (dayBudget?.date ?? ''))
+    .reduce(
+      (total, day) =>
+        total + (day.result.ok ? day.result.items.reduce((sum, item) => sum + item.minutes, 0) : 0),
+      0,
+    );
+  const remaining = dayBudget ? Math.max(0, dayBudget.minutes - plannedToday) : 0;
+
+  const suggest = await suggestCandidateOrder({
+    prisma,
+    snapshotId: args.snapshotId,
+    pool: args.pool,
+    budgetMinutes: dayBudget?.minutes ?? 0,
+    dailyBudgets: args.budgetDays,
+  });
+  if (!suggest.ok) {
+    return {
+      ...AI_OFF,
+      mode: 'failed',
+      note: aiFailureNote(suggest.code, suggest.message),
+      rejected: [],
+    };
+  }
+
+  const resolved = resolveAiPicks(args.pool, suggest.picks);
+  const rejected: BuildPlanResult['rejectedAiSuggestions'] = [];
+  for (const pick of resolved.rejected) {
+    const pair = args.pairByKey.get(pick.candidateKey);
+    rejected.push({
+      title: pair?.candidate.title ?? pick.candidateKey,
+      reason: `${pick.code}：${pick.reason}`,
+      aiCallLogId: suggest.callLogId,
+    });
+  }
+
+  const acceptedScheduled: string[] = [];
+  const overBudgetReason = new Map<string, string>();
+  for (const pick of resolved.accepted) {
+    if (scheduledKeys.has(pick.candidateKey)) {
+      acceptedScheduled.push(pick.candidateKey);
+      continue;
+    }
+    const pair = args.pairByKey.get(pick.candidateKey);
+    if (!pair) continue;
+    const { candidate, decision } = pair;
+    if (decision.eligibility === 'BLOCKED_PREREQUISITE') {
+      rejected.push({
+        title: candidate.title,
+        reason: `${decision.blockedReason ?? '前置条件未满足'}（AI 建议被调度器拒绝，不降级）`,
+        aiCallLogId: suggest.callLogId,
+      });
+      continue;
+    }
+    const reason =
+      candidate.estMinutes > remaining
+        ? `OVER_BUDGET：AI 建议需要 ${candidate.estMinutes} 分钟，当日剩余 ${remaining} 分钟（整条拒绝，不按比例裁剪）`
+        : '调度器未安排该候选（当日已排满或与更高优先级任务冲突），AI 建议不生效（不按比例裁剪）';
+    overBudgetReason.set(candidate.candidateKey, reason);
+    rejected.push({ title: candidate.title, reason, aiCallLogId: suggest.callLogId });
+  }
+
+  // ── 润色：失败即整条回落，已采纳的 picks 也一并丢弃（failed 不保留半截结果） ──
+  const seeds: TaskExplanationSeed[] = [];
+  for (const day of args.ruleDays) {
+    if (!day.result.ok) continue;
+    for (const item of day.result.items) {
+      if (!item.candidateKey) continue;
+      const pair = args.pairByKey.get(item.candidateKey);
+      if (!pair) continue;
+      seeds.push({
+        candidateKey: item.candidateKey,
+        module: item.module,
+        skill: item.skill,
+        priority: item.priority,
+        factorSummary: factorSummaryOf(pair.decision),
+        templateReason: item.rationale,
+        evidenceSummary:
+          pair.decision.meta.evidenceRefs.length > 0
+            ? pair.decision.meta.evidenceRefs.slice(0, 3).join(', ')
+            : pair.decision.meta.noObservation
+              ? '近 28 天无观察'
+              : '无关联证据',
+      });
+    }
+  }
+
+  const polished = new Map<string, string>();
+  let explainLogId: string | null = null;
+  if (seeds.length > 0) {
+    const explain = await polishExplanations({
+      prisma,
+      snapshotId: args.snapshotId,
+      tasks: seeds,
+    });
+    if (!explain.ok) {
+      return {
+        ...AI_OFF,
+        mode: 'failed',
+        note: aiFailureNote(explain.code, explain.message),
+        rejected: [],
+      };
+    }
+    explainLogId = explain.callLogId;
+    for (const [key, reason] of explain.polished) {
+      const pair = args.pairByKey.get(key);
+      if (!pair) continue;
+      const check = assertReasonOnlyChanged(pair.decision, { ...pair.decision, rationale: reason });
+      if (!check.ok) {
+        rejected.push({
+          title: pair.candidate.title,
+          reason: `${check.code}：AI 改动了 ${check.fields.join('、')}`,
+          aiCallLogId: explainLogId,
+        });
+        continue;
+      }
+      polished.set(key, reason);
+    }
+  }
+
+  // ── 记账：采纳写回快照元数据（不是计划行）；超预算写回决策资格 ──
+  if (acceptedScheduled.length > 0) {
+    await prisma.taskCandidate.updateMany({
+      where: { snapshotId: args.snapshotId, candidateKey: { in: acceptedScheduled } },
+      data: { isAiSuggested: true, aiCallLogId: suggest.callLogId },
+    });
+    const accepted = new Set(acceptedScheduled);
+    for (const candidate of args.pool) {
+      if (!accepted.has(candidate.candidateKey)) continue;
+      candidate.isAiSuggested = true;
+      candidate.aiCallLogId = suggest.callLogId;
+    }
+  }
+  if (overBudgetReason.size > 0) {
+    const rows = await prisma.taskCandidate.findMany({
+      where: { snapshotId: args.snapshotId, candidateKey: { in: [...overBudgetReason.keys()] } },
+      select: { id: true, candidateKey: true },
+    });
+    for (const row of rows) {
+      await prisma.taskPriorityDecision.updateMany({
+        where: { snapshotId: args.snapshotId, candidateId: row.id },
+        data: {
+          eligibility: 'REJECTED_AI_OVER_BUDGET',
+          blockedReason: overBudgetReason.get(row.candidateKey) ?? 'AI 建议被调度器拒绝',
+        },
+      });
+    }
+  }
+
+  const picks = new Set(acceptedScheduled);
+  const note =
+    suggest.picks.length === 0
+      ? 'AI 未给出候选建议'
+      : picks.size === 0
+        ? 'AI 建议全部被调度器拒绝'
+        : `AI 已参与：采纳 ${picks.size} 条候选建议，润色 ${polished.size} 条理由`;
+
+  return {
+    mode: 'on',
+    note,
+    picks,
+    polished,
+    suggestLogId: suggest.callLogId,
+    explainLogId,
+    rejected,
+  };
+}
+
 /**
  * 编排一次计划预览（**零写 PlanTask/PlanVersion**）。
  *
@@ -452,10 +718,6 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
       }
     }
   }
-
-  // ── aiMode（T07 只实现 off） ──
-  const aiMode: AiMode = 'off';
-  const aiNote = '本次由规则生成，AI 未参与';
 
   // ── bufferRatio 来自 PlannerSettings.priorityPolicy（缺失回落 0） ──
   const settings = await getPlannerSettings();
@@ -517,9 +779,8 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
       : day,
   );
 
-  let days: BuildPlanResult['days'] = [];
   let layerStructure: PlanLayerStructure | null = null;
-  const dayResults: { result: ReturnType<typeof generateAdaptivePlan> }[] = [];
+  const ruleDays: RuleDayPlan[] = [];
 
   if (layer === 'MONTH' || layer === 'CYCLE') {
     // MONTH/CYCLE 只产结构、不排明细任务（PRD P2-05）
@@ -536,36 +797,52 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
         uncertainties,
         skillGaps,
       });
-      dayResults.push({ result });
-      if (result.ok) {
-        days.push({
-          date: day.date,
-          budgetMinutes: day.minutes,
-          isRestDay: day.isRestDay,
-          tasks: result.items.map((item) =>
-            assembleDraft(item, day.date, context.goal, pairByCandidateKey.get(item.candidateKey ?? '') ?? null),
-          ),
-        });
-        warnings.push(...result.warnings);
-      } else {
-        days.push({ date: day.date, budgetMinutes: day.minutes, isRestDay: day.isRestDay, tasks: [] });
-      }
+      ruleDays.push({ date: day.date, budgetMinutes: day.minutes, isRestDay: day.isRestDay, result });
+      if (result.ok) warnings.push(...result.warnings);
     }
   }
 
-  const tradeoffs = aggregateTradeoffs(dayResults);
+  // ── aiMode 三态：规则结果先算完，AI 只能润色措辞/挑候选，不能改调度字段 ──
+  const ai = await applyAiLayer({
+    allowAi: input.allowAi,
+    snapshotId,
+    asOfDate: input.asOfDate,
+    pool: context.candidates,
+    pairByKey: pairByCandidateKey,
+    ruleDays,
+    budgetDays,
+  });
+
+  const days: BuildPlanResult['days'] = ruleDays.map((day) => ({
+    date: day.date,
+    budgetMinutes: day.budgetMinutes,
+    isRestDay: day.isRestDay,
+    tasks: day.result.ok
+      ? day.result.items.map((item) =>
+          assembleDraft(
+            item,
+            day.date,
+            context.goal,
+            pairByCandidateKey.get(item.candidateKey ?? '') ?? null,
+            ai,
+          ),
+        )
+      : [],
+  }));
+
+  const tradeoffs = aggregateTradeoffs(ruleDays.map((day) => ({ result: day.result })));
 
   return ok({
     snapshotId,
     inputHash,
     ruleVersion,
     weightsVersion,
-    aiMode,
-    aiNote,
+    aiMode: ai.mode,
+    aiNote: ai.note,
     horizonDays: input.horizonDays,
     days,
     tradeoffs,
-    rejectedAiSuggestions: [],
+    rejectedAiSuggestions: ai.rejected,
     warnings,
     preview: true,
     layerStructure,

@@ -151,6 +151,44 @@ const HEADLINES: Record<ReadinessOutcome, string> = {
   USER_APPROVED_TRANSITION: '用户已确认进入下一阶段',
 };
 
+const OUTCOME_LABELS: Record<ReadinessOutcome, string> = {
+  READY_FOR_REVIEW: 'Ready for review',
+  CONTINUE_CURRENT: 'Continue current stage',
+  NEED_TARGETED_PRACTICE: 'Need targeted practice',
+  NEED_MORE_EVIDENCE: 'Need more evidence',
+  USER_APPROVED_TRANSITION: 'User-approved transition',
+};
+
+/** UI 判定「是否 Ready」必须走这里，不得在组件里写结论字面量（G-7）。 */
+export const READY_OUTCOME: ReadinessOutcome = 'READY_FOR_REVIEW';
+
+export function isReadyOutcome(outcome: string | null): boolean {
+  return outcome === READY_OUTCOME;
+}
+
+export function readinessOutcomeLabel(outcome: string): string {
+  return OUTCOME_LABELS[outcome as ReadinessOutcome] ?? outcome;
+}
+
+export function readinessOutcomeHeadline(outcome: string): string | null {
+  return HEADLINES[outcome as ReadinessOutcome] ?? null;
+}
+
+/**
+ * 展示层不变量：任一维 `READ_ERROR` → 整体结论降级为 `NEED_MORE_EVIDENCE`。
+ *
+ * 与 `computeReadiness` 的产出一致，但这里用于「回放已落库结论」的展示防线：
+ * 即使库里存的是 Ready，只要明细里有读取失败，页面也不得显示 Ready。
+ */
+export function effectiveReadinessOutcome(
+  outcome: string | null,
+  dimensions: ReadonlyArray<{ status: string }>,
+): string | null {
+  if (!outcome) return null;
+  if (dimensions.some((row) => row.status === 'READ_ERROR')) return 'NEED_MORE_EVIDENCE';
+  return outcome;
+}
+
 function emptyEvidence(): EvidenceDistribution {
   return { baseline: 0, immediate: 0, delayed: 0, applied: 0, transfer: 0, independent: 0 };
 }

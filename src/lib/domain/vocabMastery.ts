@@ -132,6 +132,9 @@ export function evidencePromotesDimension(
   level: 'E0' | 'E1' | 'E2' | 'E3' | 'E4' | 'E5',
 ): boolean {
   const index = Number(level.slice(1));
+  // 脏等级（如 'X'）的 slice 结果是 ''，Number('') === 0 会伪装成 E0；
+  // 显式拦掉非有限值，避免「无法识别」被当成「最低一级」。
+  if (!Number.isFinite(index)) return false;
   if (dimension === 'PRODUCTIVE_USE') return index >= 4;
   if (dimension === 'CONTEXT_UNDERSTANDING') return index >= 2;
   return index >= 1;
@@ -146,6 +149,7 @@ export function statusForEvidence(
   if (dimension === 'PRODUCTIVE_USE') return 'PRODUCTIVE_USE_VERIFIED';
   if (dimension === 'CONTEXT_UNDERSTANDING') return 'CONTEXT_UNDERSTOOD';
   const index = Number(level.slice(1));
+  if (!Number.isFinite(index)) return 'INTRODUCED';
   if (index >= 3) return 'RECALLED';
   if (index >= 1) return 'RECOGNIZED';
   return 'INTRODUCED';

@@ -13,6 +13,10 @@ const ICON_BY_HREF: Record<string, IconName> = {
   '/': 'home',
   '/plan': 'calendar',
   '/records': 'list',
+  '/planner': 'target',
+  '/planner/build': 'calendar',
+  '/planner/candidates': 'list',
+  '/planner/readiness': 'flag',
   '/materials': 'bookOpen',
   '/materials/failed': 'alert',
   '/grammar': 'book',
@@ -43,7 +47,7 @@ export function isActivePath(href: string, pathname: string): boolean {
 }
 
 export function Sidebar({ pathname }: { pathname: string }) {
-  const groups: NavItem['group'][] = ['CORE', 'MATERIALS', 'DIAGNOSE', 'TRACKS', 'ANALYZE'];
+  const groups: NavItem['group'][] = ['CORE', 'PLANNER', 'MATERIALS', 'DIAGNOSE', 'TRACKS', 'ANALYZE'];
 
   return (
     <nav aria-label="主导航" className="flex h-full flex-col gap-4 overflow-y-auto px-3 py-4">

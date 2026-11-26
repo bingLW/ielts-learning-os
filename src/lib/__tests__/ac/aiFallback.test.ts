@@ -1,18 +1,28 @@
 /**
- * T07 AC-17 第一段 —— 验收 ⑫：`aiMode` 三态里只实现 `off` 路径（AI 桩阶段）。
+ * AC-17：AI 关闭与失败时，规则计划照常返回（T07 ⑫ + T14 ①–④）。
  *
- * - ⑫ `allowAi=false` → `ok:true`、`aiMode='off'`、**所有** `byAi=false`、`aiNote` 非空。
+ * - ④ `allowAi=false` → `ok:true`、`aiMode='off'`、**所有** `byAi=false`、**零次** provider 调用；
+ * - ① provider 抛错 / ② 超时 → `ok:true`、`aiMode='failed'`、全部 `byAi=false`、`aiNote` 含错误码；
+ * - ③ 返回非法 JSON → `INVALID_OUTPUT` → `failed`（提示词未发布也算 PRECONDITION，不阻断）。
  *
- * 为什么这算一条"验收"而不是摆设：T14 接真 AI 之前，服务层**不得** import `@/lib/ai/*`
- * （F-1 守门）。这条用例钉死「关掉 AI 时，规则结果原样返回、措辞来源恒为 TEMPLATE、
- * 没有任何任务被打上 AI 标记」，避免未来有人在 `buildPlan` 里偷接 AI 却没人抓。
+ * 用 `vi.spyOn(OpenAICompatibleProvider.prototype, 'complete')` 注入可控返回：
+ * 不改模块图，也不发真实网络请求。
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
+process.env.AI_PROVIDER_API_KEY ??= 'test-plan-ai-key-123456';
+process.env.AI_PROVIDER_BASE_URL ??= 'https://plan.test.invalid/v1';
+
 const { prisma, path } = await createTestDb([
+  'aICallLog',
+  'promptVersion',
+  'promptTemplate',
+  'aIEngineSetting',
+  'aIProviderCredential',
+  'aIModelConfig',
   'exerciseAttempt',
   'diagnosticAttempt',
   'generatedExercise',
@@ -63,9 +73,41 @@ const { prisma, path } = await createTestDb([
 ]);
 
 const { buildPlan } = await import('@/lib/services/planBuild');
+const { ensurePromptRegistry } = await import('@/lib/ai/registry');
+const { OpenAICompatibleProvider } = await import('@/lib/ai/provider');
 
 const AS_OF = '2026-11-25';
 const STAGE_ID = 'stage-ai';
+
+const completeSpy = vi.spyOn(OpenAICompatibleProvider.prototype, 'complete');
+
+function completionOk(json: unknown) {
+  const rawText = JSON.stringify(json);
+  return {
+    ok: true as const,
+    rawText,
+    json,
+    inputTokens: 10,
+    outputTokens: 10,
+    latencyMs: 1,
+  };
+}
+
+function completionFailure(code: 'TIMEOUT' | 'NETWORK' | 'PROVIDER_ERROR', message: string) {
+  return {
+    ok: false as const,
+    code,
+    message,
+    latencyMs: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+  };
+}
+
+/** 从 `planDayBlock` 里取 key（fake provider 的 explain 需要回显真实 key）。 */
+function keysOf(block: string | undefined): string[] {
+  return [...(block ?? '').matchAll(/(?:^|\n)\s*-\s*key=([^|\n]+)/g)].map((m) => m[1].trim());
+}
 
 beforeAll(async () => {
   await prisma.stage.create({
@@ -98,16 +140,30 @@ beforeAll(async () => {
   await prisma.learningGoal.create({
     data: { goalType: 'GENERAL_ENGLISH', name: '通用英语', status: 'ACTIVE', targetValue: 'B2' },
   });
+  await prisma.aIEngineSetting.create({
+    data: {
+      id: 'default',
+      externalAiEnabled: true,
+      dailyBudgetUsd: 1,
+      monthlyBudgetUsd: 20,
+      warnPercent: 80,
+      directTeachingDefault: false,
+      explainLanguage: 'ZH_MIXED',
+    },
+  });
+  await ensurePromptRegistry(prisma);
 });
 
 afterAll(async () => {
+  completeSpy.mockRestore();
   await prisma.$disconnect();
   const { unlinkSync, existsSync } = await import('node:fs');
   if (existsSync(path)) unlinkSync(path);
 });
 
-describe('T07 aiMode=off 回退（AC-17 第一段）', () => {
-  it('⑫ allowAi=false → ok + off + 全部 byAi=false + aiNote 非空', async () => {
+describe('T07 aiMode=off 回退（④）', () => {
+  it('④ allowAi=false → ok + off + 全部 byAi=false + 零次 provider 调用', async () => {
+    completeSpy.mockClear();
     const result = await buildPlan({
       purpose: 'GENERATE',
       asOfDate: AS_OF,
@@ -121,6 +177,7 @@ describe('T07 aiMode=off 回退（AC-17 第一段）', () => {
     expect(result.data.aiMode).toBe('off');
     expect(typeof result.data.aiNote).toBe('string');
     expect((result.data.aiNote as string).length).toBeGreaterThan(0);
+    expect(completeSpy).not.toHaveBeenCalled();
 
     const tasks = result.data.days.flatMap((day) => day.tasks);
     // 关掉 AI 时规则路径必须产出任务（否则"全部 byAi=false"退化成空断言）
@@ -128,6 +185,72 @@ describe('T07 aiMode=off 回退（AC-17 第一段）', () => {
     for (const task of tasks) {
       expect(task.byAi).toBe(false);
       expect(task.aiCallLogId).toBeNull();
+      expect(task.explanation.wordingSource).toBe('TEMPLATE');
+    }
+  });
+});
+
+describe('T14 aiMode=failed 回退（①–③）', () => {
+  it('① provider 抛错 → ok + failed + 全 byAi=false + aiNote 含 PROVIDER_ERROR', async () => {
+    completeSpy.mockReset();
+    completeSpy.mockResolvedValue(completionFailure('PROVIDER_ERROR', 'provider down'));
+    const result = await buildPlan({
+      purpose: 'GENERATE',
+      asOfDate: AS_OF,
+      horizonDays: 1,
+      stageId: STAGE_ID,
+      allowAi: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.aiMode).toBe('failed');
+    expect(result.data.aiNote).toContain('PROVIDER_ERROR');
+    for (const task of result.data.days.flatMap((day) => day.tasks)) {
+      expect(task.byAi).toBe(false);
+      expect(task.explanation.wordingSource).toBe('TEMPLATE');
+    }
+  });
+
+  it('② 超时 → ok + failed + aiNote 含 TIMEOUT', async () => {
+    completeSpy.mockReset();
+    completeSpy.mockResolvedValue(completionFailure('TIMEOUT', '请求超时'));
+    const result = await buildPlan({
+      purpose: 'GENERATE',
+      asOfDate: AS_OF,
+      horizonDays: 1,
+      stageId: STAGE_ID,
+      allowAi: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.aiMode).toBe('failed');
+    expect(result.data.aiNote).toContain('TIMEOUT');
+    for (const task of result.data.days.flatMap((day) => day.tasks)) {
+      expect(task.byAi).toBe(false);
+    }
+  });
+
+  it('③ 非法 JSON（schema 不过）→ INVALID_OUTPUT → failed', async () => {
+    completeSpy.mockReset();
+    completeSpy.mockImplementation(async (request) => {
+      if (request.kind === 'plan_suggest_candidates') {
+        return completionOk({ picks: [{ candidate_key: 'only-key' }] });
+      }
+      return completionOk({ tasks: keysOf(request.meta.planDayBlock).map((key) => ({ candidate_key: key, reason: '润色' })) });
+    });
+    const result = await buildPlan({
+      purpose: 'GENERATE',
+      asOfDate: AS_OF,
+      horizonDays: 1,
+      stageId: STAGE_ID,
+      allowAi: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.aiMode).toBe('failed');
+    expect(result.data.aiNote).toContain('INVALID_OUTPUT');
+    for (const task of result.data.days.flatMap((day) => day.tasks)) {
+      expect(task.byAi).toBe(false);
       expect(task.explanation.wordingSource).toBe('TEMPLATE');
     }
   });

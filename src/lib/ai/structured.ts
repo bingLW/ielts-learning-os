@@ -384,6 +384,62 @@ export type MaterialExerciseResult = z.infer<typeof materialExerciseSchema>;
 export type MaterialExerciseItem = z.infer<typeof materialExerciseItemSchema>;
 export type MaterialExerciseOption = z.infer<typeof materialExerciseOptionSchema>;
 
+// ── v2.7 规划域（T14）：全部 `.strict()`，多一个键即整条非法 ──
+
+export const planExplainSchema = z
+  .object({
+    tasks: z
+      .array(
+        z
+          .object({
+            candidate_key: z.string().min(1).max(200),
+            reason: z.string().min(1).max(200),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(60),
+  })
+  .strict();
+export type PlanExplainResult = z.infer<typeof planExplainSchema>;
+export type PlanExplainTask = z.infer<typeof planExplainSchema>['tasks'][number];
+
+export const planSuggestSchema = z
+  .object({
+    picks: z
+      .array(
+        z
+          .object({
+            candidate_key: z.string().min(1).max(200),
+            why: z.string().min(1).max(200),
+            suggested_order: z.number().int().min(1).max(50),
+          })
+          .strict(),
+      )
+      .max(10),
+  })
+  .strict();
+export type PlanSuggestResult = z.infer<typeof planSuggestSchema>;
+export type PlanSuggestPick = z.infer<typeof planSuggestSchema>['picks'][number];
+
+export const planWeeklyThemeSchema = z
+  .object({
+    options: z
+      .array(
+        z
+          .object({
+            theme: z.string().min(1).max(80),
+            rationale: z.string().min(1).max(300),
+            evidence_refs: z.array(z.string().min(1).max(200)).max(6),
+          })
+          .strict(),
+      )
+      .length(3),
+  })
+  .strict();
+export type PlanWeeklyThemeResult = z.infer<typeof planWeeklyThemeSchema>;
+export type PlanWeeklyThemeOption = z.infer<typeof planWeeklyThemeSchema>['options'][number];
+
 export const SCHEMA_BY_KIND = {
   task: taskSpecSchema,
   diagnosis: diagnosisResultSchema,
@@ -401,6 +457,9 @@ export const SCHEMA_BY_KIND = {
   material_extract: materialExtractSchema,
   material_summary: materialSummarySchema,
   material_exercise: materialExerciseSchema,
+  plan_explain: planExplainSchema,
+  plan_suggest_candidates: planSuggestSchema,
+  plan_weekly_theme: planWeeklyThemeSchema,
 } as const;
 
 export type StructuredByKind = {
@@ -420,6 +479,9 @@ export type StructuredByKind = {
   material_extract: MaterialExtractResult;
   material_summary: MaterialSummaryResult;
   material_exercise: MaterialExerciseResult;
+  plan_explain: PlanExplainResult;
+  plan_suggest_candidates: PlanSuggestResult;
+  plan_weekly_theme: PlanWeeklyThemeResult;
 };
 
 export type StructuredParseResult<K extends AiPromptKind> =

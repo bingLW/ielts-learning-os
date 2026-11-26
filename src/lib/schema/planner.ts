@@ -15,9 +15,12 @@ import {
   PRIORITY_FACTOR_KEYS,
   PRIORITY_THRESHOLDS,
   PRIORITY_WEIGHTS_VERSION,
+  SKILL_IDS,
   STAGE_CODES,
+  TASK_PRIORITIES,
   TRANSITION_REASON_MIN_LENGTH,
 } from '../constants';
+import { CANDIDATE_SOURCE_KINDS } from '../domain/taskCandidate';
 import { enumFrom } from './common';
 import { failValidation } from '../result';
 import type { ActionResult } from '../types';
@@ -228,3 +231,73 @@ export const stageTransitionSchema = z
   .strict();
 
 export type StageTransitionSchemaInput = z.infer<typeof stageTransitionSchema>;
+
+// ───────────────────────── T10 查询筛选 / T13 周度与周期 ─────────────────────────
+
+/**
+ * 候选队列筛选（`/planner/candidates`）。
+ *
+ * `minMinutes` / `maxMinutes` 过滤的是**候选预计分钟**（`TaskCandidate.estMinutes`），
+ * 只用于「挑一条合适的候选」，不得当成计划分钟展示（I-2）。
+ * 不设默认值：未传 = 不筛，避免「默认 30 分钟」把长任务静默藏掉。
+ */
+export const candidateFilterSchema = z
+  .object({
+    sourceKind: enumFrom(CANDIDATE_SOURCE_KINDS, '候选来源').optional(),
+    skill: enumFrom(SKILL_IDS, '技能').optional(),
+    priority: enumFrom(TASK_PRIORITIES, '优先级').optional(),
+    minMinutes: z.number().int().min(0).max(600).optional(),
+    maxMinutes: z.number().int().min(0).max(600).optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.minMinutes === undefined ||
+      value.maxMinutes === undefined ||
+      value.minMinutes <= value.maxMinutes,
+    { message: '分钟下限不能大于上限' },
+  );
+
+export type CandidateFilterInput = z.infer<typeof candidateFilterSchema>;
+
+export const WEEKLY_SUGGESTION_KINDS = ['ADJUST_TIME', 'ADJUST_FOCUS', 'KEEP'] as const;
+
+/**
+ * 接受周度建议（PRD §4.7）：建议是「记录 + 可选采纳」，不是自动改计划。
+ * `kind` 闭合到三值 —— 自由文本会让「采纳了什么」无法回读统计。
+ *
+ * `targetMinutes` 只在采纳「调整时间」类建议时使用；缺省由调用方按
+ * 下一周已有预算（或日预算之和）补齐，绝不凭空造一个数字。
+ */
+export const weeklySuggestionSchema = z
+  .object({
+    isoYear: z.number().int().min(2000).max(2100),
+    isoWeek: z.number().int().min(1).max(53),
+    suggestion: z
+      .object({
+        kind: enumFrom(WEEKLY_SUGGESTION_KINDS, '周度建议类型'),
+        note: z.string().trim().min(1, '请填写建议内容').max(500),
+        targetMinutes: z.number().int().min(1).max(10000).optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export type WeeklySuggestionInput = z.infer<typeof weeklySuggestionSchema>;
+
+/**
+ * 90 天周期重新校准（PRD §4.8）：只允许「基于新证据重算下一周期」，
+ * 不允许改写已发生的周期历史。原因沿用全局最小长度，与阶段切换同一硬约束。
+ */
+export const cycleRecalibrateSchema = z
+  .object({
+    asOfDate: dateString,
+    cycleVersionId: z.string().min(1).optional(),
+    reason: z
+      .string()
+      .trim()
+      .min(TRANSITION_REASON_MIN_LENGTH, `重新校准原因至少 ${TRANSITION_REASON_MIN_LENGTH} 个字`),
+  })
+  .strict();
+
+export type CycleRecalibrateInput = z.infer<typeof cycleRecalibrateSchema>;

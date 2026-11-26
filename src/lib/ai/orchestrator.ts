@@ -71,6 +71,13 @@ export interface RunAiCompletionInput {
   attribution?: { materialId?: string; materialJobId?: string };
   /** 教学回合归属；材料域不传。 */
   sessionId?: string;
+  /**
+   * 追加日志元数据（v2.7 规划域用它记 `snapshotId`）。
+   *
+   * 只写进 `redactedMetadataJson`，**不改 `AICallLog` 结构**（Phase A schema 冻结）；
+   * 代价是按规划批次查费用要走 JSON 提取，已写入已知限制。
+   */
+  logMetadata?: Record<string, unknown>;
 }
 
 /** 核心调用结果（字段与 ADR-06 表格一致）。 */
@@ -257,7 +264,7 @@ export async function runAiCompletion(
         status: 'BLOCKED',
         errorCode: 'BUDGET_EXCEEDED',
         redactedMetadataJson: JSON.stringify(
-          redactMetadata({ kind: promptKind, dailyPercent: budget.dailyPercent }),
+          redactMetadata({ ...input.logMetadata, kind: promptKind, dailyPercent: budget.dailyPercent }),
         ),
       },
       select: { id: true },
@@ -310,6 +317,7 @@ export async function runAiCompletion(
         errorCode: completion.code,
         redactedMetadataJson: JSON.stringify(
           redactMetadata({
+            ...input.logMetadata,
             kind: promptKind,
             attempts,
             message: completion.message,
@@ -351,7 +359,7 @@ export async function runAiCompletion(
         status: 'INVALID_OUTPUT',
         errorCode: 'SCHEMA_VALIDATION',
         redactedMetadataJson: JSON.stringify(
-          redactMetadata({ kind: promptKind, error: parsed.error }),
+          redactMetadata({ ...input.logMetadata, kind: promptKind, error: parsed.error }),
         ),
       },
       select: { id: true },
@@ -375,6 +383,7 @@ export async function runAiCompletion(
       errorCode: null,
       redactedMetadataJson: JSON.stringify(
         redactMetadata({
+          ...input.logMetadata,
           kind: promptKind,
           mode: meta.mode,
           skill: meta.skill,

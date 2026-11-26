@@ -17,6 +17,7 @@ import { getMistakeStats } from '@/lib/queries/mistakes';
 import {
   currentIsoWeek,
   getWeeklyBudget,
+  getWeeklyDelta,
   getWeeklyReview,
   getWeeklyTrackStats,
   listWeekOptions,
@@ -83,12 +84,13 @@ export default async function WeeklyPage({ searchParams }: PageProps) {
   }
 
   const current = currentIsoWeek();
-  const [review, options, mistakeStats, trackStats, budget] = await Promise.all([
+  const [review, options, mistakeStats, trackStats, budget, delta] = await Promise.all([
     getWeeklyReview(isoYear, isoWeek),
     listWeekOptions(10),
     getMistakeStats(),
     getWeeklyTrackStats(isoYear, isoWeek),
     getWeeklyBudget(isoYear, isoWeek),
+    getWeeklyDelta(isoYear, isoWeek),
   ]);
 
   return (
@@ -101,6 +103,7 @@ export default async function WeeklyPage({ searchParams }: PageProps) {
         isCurrentWeek={isoYear === current.isoYear && isoWeek === current.isoWeek}
         trackStats={trackStats.stats}
         budget={budget}
+        delta={delta.delta}
       />
     </div>
   );
