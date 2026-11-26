@@ -2,7 +2,7 @@
  * `/records` 学习记录列表页。
  */
 
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { listRecords, countRecords } from '@/lib/queries/records';
 import { listResourceOptions } from '@/lib/queries/plan';
 import { listStagesRaw, getActiveStage } from '@/lib/queries/stages';
@@ -48,7 +48,7 @@ export default async function RecordsPage({
       stages={stages}
       resources={resources}
       defaultStageId={activeStage?.id ?? stages[0]?.id ?? ''}
-      defaultRecordDate={today()}
+      defaultRecordDate={await businessToday()}
       showForm={params.new === '1'}
       totalCount={totalCount}
     />

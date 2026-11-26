@@ -153,9 +153,9 @@ export function TaskRow({
                 {task.priority}
               </span>
             )}
-            {!task.splittable && (
-              <span className="rounded bg-surfaceAlt px-1 py-0.5 text-[10px] text-inkMuted" title="需一次完成，不能拆分">
-                不可拆
+            {task.splittable && (
+              <span className="rounded bg-surfaceAlt px-1 py-0.5 text-[10px] text-inkMuted">
+                可拆 · 最小 {task.minChunkMinutes} 分钟
               </span>
             )}
             <span className="rounded bg-surfaceAlt px-1 py-0.5 text-[10px] text-inkMuted">
@@ -166,6 +166,16 @@ export function TaskRow({
             </span>
           </div>
           {task.note && <p className="mt-0.5 text-[11px] text-inkMuted">{task.note}</p>}
+          {task.estimate && (
+            <p className="mt-0.5 text-[11px] text-inkMuted">
+              估时 {task.estimate.minMinutes}–{task.estimate.maxMinutes} 分钟
+              {task.estimate.basis === 'CALIBRATED'
+                ? ` · 历史校准 ${task.estimate.sampleCount} 样本`
+                : ' · 估计'}
+              {` · 模型 ${task.estimate.modelVersion} / 规则 ${task.estimate.ruleVersion}`}
+            </p>
+          )}
+          {task.expectedOutput && <p className="mt-0.5 text-[11px] text-inkMuted">预期产出：{task.expectedOutput}</p>}
           {task.status === 'DEFERRED' && task.deferReason && (
             <p className="mt-0.5 text-[11px] text-amber-800">已延期：{task.deferReason}</p>
           )}

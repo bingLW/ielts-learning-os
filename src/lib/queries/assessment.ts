@@ -8,6 +8,8 @@
  */
 
 import { IELTS_GATE_MAX_RECORDS, IELTS_GATE_MIN_RECORDS } from '@/lib/constants';
+import { getBusinessTimezone } from '@/lib/businessTime';
+import { toBusinessDate } from '@/lib/date';
 import { accumulatePrimaryMinutes, defaultAllocationFor } from '@/lib/domain/allocation';
 import { evaluateGeneralEnglishGate, evaluateIeltsGate } from '@/lib/domain/tracks';
 import { prisma } from '@/lib/prisma';
@@ -86,7 +88,7 @@ export async function getGeneralEnglishOverview(): Promise<{
     profileCode: StageProfileCode | null;
   };
 }> {
-  const [profile, stage, geGoal, assessments, splitRows] = await Promise.all([
+  const [profile, stage, geGoal, assessments, splitRows, timeZone] = await Promise.all([
     prisma.userProfile.findUnique({ where: { id: 1 } }),
     getActiveStage(),
     prisma.learningGoal.findUnique({
@@ -97,6 +99,7 @@ export async function getGeneralEnglishOverview(): Promise<{
     prisma.studySessionDaySplit.findMany({
       select: { minutes: true, session: { select: { skill: true } } },
     }),
+    getBusinessTimezone(),
   ]);
 
   const cefrTarget = (profile?.cefrTarget ?? 'B2') as CefrLevel;
@@ -142,7 +145,7 @@ export async function getGeneralEnglishOverview(): Promise<{
       description: m.description,
       target: m.target,
       status: m.status as MilestoneRowDto['status'],
-      completedAt: m.completedAt?.toISOString().slice(0, 10) ?? null,
+      completedAt: m.completedAt ? toBusinessDate(m.completedAt, timeZone) : null,
     })),
     allocation: {
       minutes,
@@ -171,13 +174,14 @@ export async function getIeltsOverview(): Promise<{
   /** 判定窗口（最近 N 次）。 */
   maxRecords: number;
 }> {
-  const [profile, ieltsGoal, records] = await Promise.all([
+  const [profile, ieltsGoal, records, timeZone] = await Promise.all([
     prisma.userProfile.findUnique({ where: { id: 1 } }),
     prisma.learningGoal.findUnique({
       where: { goalType: 'IELTS' },
       include: { milestones: { orderBy: { sortOrder: 'asc' } } },
     }),
     prisma.ieltsAssessment.findMany({ orderBy: { testDate: 'asc' } }),
+    getBusinessTimezone(),
   ]);
 
   const target = {
@@ -225,7 +229,7 @@ export async function getIeltsOverview(): Promise<{
       description: m.description,
       target: m.target,
       status: m.status as MilestoneRowDto['status'],
-      completedAt: m.completedAt?.toISOString().slice(0, 10) ?? null,
+      completedAt: m.completedAt ? toBusinessDate(m.completedAt, timeZone) : null,
     })),
     validRecordCount,
     minRecords: IELTS_GATE_MIN_RECORDS,

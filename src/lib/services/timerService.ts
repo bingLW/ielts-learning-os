@@ -12,7 +12,8 @@
  */
 
 import { IDLE_GAP_MINUTES, TIMER_MIN_VALID_SECONDS } from '@/lib/constants';
-import { splitAcrossMidnight } from '@/lib/date';
+import { getBusinessTimezone } from '@/lib/businessTime';
+import { splitAcrossMidnight, toBusinessDate } from '@/lib/date';
 import { clampCountRatio, sessionNet } from '@/lib/domain/duration';
 import { prisma } from '@/lib/prisma';
 import type { TerminatedReason, TimerStatus } from '@/lib/types';
@@ -199,8 +200,9 @@ export async function closeRunningSession(
     : net.reason ?? (idleMinutes > 0 ? `中断 ${idleMinutes} 分钟未操作，已剔除` : null);
   const effectiveReason: TerminatedReason = isTooShort ? 'ABANDONED' : terminatedReason;
 
-  // 写入（事务内，避免 session 与 task 快照不一致）
+  // 写入（事务内，避免 session 与 task 快照不一致）；时区须在事务外解析，避免事务内全局查询。
   let sessionId: string | null = null;
+  const timeZone = await getBusinessTimezone();
   try {
     await prisma.$transaction(async (tx) => {
       const cas = await tx.planTask.updateMany({
@@ -218,8 +220,8 @@ export async function closeRunningSession(
 
       if (isTooShort) return;
 
-      const splits = splitAcrossMidnight(startedAt.toISOString(), net.netMinutes);
-      const fromDate = splits[0]?.date ?? startedAt.toISOString().slice(0, 10);
+      const splits = splitAcrossMidnight(startedAt.toISOString(), net.netMinutes, timeZone);
+      const fromDate = splits[0]?.date ?? toBusinessDate(startedAt, timeZone);
       const session = await tx.studySession.create({
         data: {
           taskId,

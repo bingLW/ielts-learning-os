@@ -10,6 +10,8 @@ const BEARER_RE = /(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}/gi;
 const API_KEY_RE = /\b(sk|pk|rk)-[A-Za-z0-9_-]{8,}\b/g;
 const LONG_DIGITS_RE = /\b\d{11,}\b/g;
 const FILE_URL_RE = /\b(https?:\/\/\S+\.(?:mp3|m4a|wav|ogg|webm|pdf|docx?|png|jpe?g))\b/gi;
+const ABSOLUTE_PATH_RE = /(?:\b[A-Za-z]:\\(?:[^\s"'<>，；,;。]+\\)*[^\s"'<>，；,;。]+|\/(?:Users|home|var|tmp|private|Volumes)\/[^\s"'<>，；,;。]+|\b\.\.?[\\/][^\s"'<>，；,;。]+)/g;
+const SECRET_ASSIGNMENT_RE = /\b(api[_-]?key|access[_-]?token|secret|password)(\s*[:=]\s*)[^\s,;"']+/gi;
 
 /** 通用文本脱敏；保留可读性，不改变业务含义。 */
 export function redactText(input: string): string {
@@ -17,7 +19,9 @@ export function redactText(input: string): string {
     .replace(EMAIL_RE, '[email]')
     .replace(BEARER_RE, '$1[key]')
     .replace(API_KEY_RE, '[key]')
+    .replace(SECRET_ASSIGNMENT_RE, '$1$2[redacted]')
     .replace(FILE_URL_RE, '[file-url]')
+    .replace(ABSOLUTE_PATH_RE, '[path]')
     .replace(LONG_DIGITS_RE, '[number]');
 }
 

@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { importTypeWordsBackupAction } from '@/lib/actions/vocabIntegration';
-import { formatBusinessDateTime } from '@/lib/date';
+import { useBusinessDateTimeFormatter } from '@/components/layout/BusinessTimeProvider';
 import { readBackupArchiveText } from '@/lib/domain/backupArchive';
 import type { VocabIntegrationJobDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
@@ -30,6 +30,7 @@ const DIRECTION_LABEL: Record<string, string> = {
 };
 
 export function VocabSyncBody({ jobs }: VocabSyncBodyProps) {
+  const formatTime = useBusinessDateTimeFormatter();
   const router = useRouter();
   const { toast, show, dismiss } = useToastState();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -132,7 +133,7 @@ export function VocabSyncBody({ jobs }: VocabSyncBodyProps) {
                 {jobs.map((job) => (
                   <tr key={job.id} className="border-t border-line">
                     <td className="px-2 py-1 tabular text-inkMuted">
-                      {formatBusinessDateTime(job.createdAt)}
+                      {formatTime(job.createdAt)}
                     </td>
                     <td className="px-2 py-1">{DIRECTION_LABEL[job.direction] ?? job.direction}</td>
                     <td className="px-2 py-1">{STATUS_LABEL[job.status] ?? job.status}</td>

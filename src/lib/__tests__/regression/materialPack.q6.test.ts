@@ -30,19 +30,7 @@ vi.mock('@/lib/domain/taskProposal', async (importOriginal) => {
 
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const { prisma } = await createTestDb([
-  'studySessionDaySplit',
-  'studySession',
-  'taskProposalItem',
-  'taskProposal',
-  'planVersion',
-  'planTask',
-  'dailyBudget',
-  'plannerSettings',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma } = await createTestDb();
 
 const { confirmTaskProposalAction } = await import('@/lib/actions/materialPack');
 const { skillOfModule } = await import('@/lib/domain/planWriteMap');

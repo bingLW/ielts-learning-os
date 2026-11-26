@@ -12,7 +12,8 @@ import {
   TYPEWORDS_PINNED_DATE,
   VOCAB_DIMENSION_LABEL_ZH,
 } from '@/lib/constants';
-import { formatBusinessDateTime, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { formatBusinessDateTime } from '@/lib/date';
 import {
   getVocabAssignment,
   getVocabLibraryStats,
@@ -34,16 +35,17 @@ const NAV = [
   { href: '/vocabulary/legacy', label: '旧版词汇表（v2.1）' },
 ];
 
-function formatTime(iso: string | null): string {
-  return iso ? formatBusinessDateTime(iso) : '—';
+function formatTime(iso: string | null, timeZone: string): string {
+  return iso ? formatBusinessDateTime(iso, timeZone) : '—';
 }
 
 export default async function VocabularyPage() {
-  const date = today();
-  const [stats, assignment, sessions] = await Promise.all([
+  const date = await businessToday();
+  const [stats, assignment, sessions, timeZone] = await Promise.all([
     getVocabLibraryStats(),
     getVocabAssignment(date),
     listRecentSessions(8),
+    getBusinessTimezone(),
   ]);
 
   return (
@@ -120,7 +122,7 @@ export default async function VocabularyPage() {
             <ul className="space-y-1">
               {sessions.map((session) => (
                 <li key={session.id} className="flex flex-wrap items-center justify-between gap-1 border-b border-line pb-1 text-[11px] last:border-b-0">
-                  <span className="text-ink">{formatTime(session.startedAt)}</span>
+                  <span className="text-ink">{formatTime(session.startedAt, timeZone)}</span>
                   <span className="tabular text-inkMuted">
                     {Math.round(session.effectiveSeconds / 60)} 分钟 · {session.granularity}
                     {session.overlapAdjusted ? ' · 已扣重叠' : ''}
@@ -137,8 +139,8 @@ export default async function VocabularyPage() {
         <ul className="space-y-1 text-[11px] text-inkMuted">
           <li>commit：{TYPEWORDS_PINNED_COMMIT}（{TYPEWORDS_PINNED_DATE}）</li>
           <li>许可：GPL-3.0（仅文件交换，不修改、不分发其代码）</li>
-          <li>最近导入来源：{stats.lastImportAt ? formatTime(stats.lastImportAt) : '—'}</li>
-          <li>最近练习：{stats.lastSessionAt ? formatTime(stats.lastSessionAt) : '—'}</li>
+          <li>最近导入来源：{stats.lastImportAt ? formatTime(stats.lastImportAt, timeZone) : '—'}</li>
+          <li>最近练习：{stats.lastSessionAt ? formatTime(stats.lastSessionAt, timeZone) : '—'}</li>
         </ul>
       </Card>
 

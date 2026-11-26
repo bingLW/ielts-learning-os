@@ -1,6 +1,6 @@
 # IELTS Learning OS
 
-单用户、本地优先的英语学习闭环工作台：每天把 240–300 分钟拆成 9 个模块的计划，用数据库计时器把「计划 → 执行 → 记录 → 诊断 → 复习 → 复盘」串成一条不依赖自律的链路，所有统计口径都由纯函数计算、可被单元测试逐条钉死。
+单用户、本地优先的英语学习闭环工作台：按用户当日可用时间与阶段证据生成计划，用数据库计时器把「计划 → 执行 → 记录 → 诊断 → 复习 → 复盘」串成一条闭环。v2.7.1 使用动态预算（建议值 60 分钟，可配置），不把固定 240–300 分钟当成人人适用的门槛；计划、执行与分析统计均由数据库聚合和纯函数计算。
 
 **v2.0 起支持三条并行学习轨道**，三者分别统计、分别验收，**绝不合并成一个「总能力分」**：
 
@@ -23,10 +23,10 @@
 | 分组 | 路径 | 页面 | 核心能力 |
 | --- | --- | --- | --- |
 | 每日执行 | `/` | Dashboard 总览 | 今日计划完成率（按时长加权）、本周净时长、四科投入、Top3 薄弱点、复习负载预警、阶段进度 |
-| 每日执行 | `/plan` | 学习计划 | 按 9 模块生成每日计划；单任务计时/暂停/完成；未完成任务顺延（≤2 次）；v2.2 到期复测先占预算 |
+| 每日执行 | `/plan` | 学习计划（Legacy） | 保留旧版单日计划与计时入口；单任务计时/暂停/完成、未完成任务顺延（≤2 次）。v2.7.1 的生成入口已统一到 `/planner/build`，本页不再单独调用旧生成 Action |
 | 每日执行 | `/records` | 学习记录 | 学习记录增删改查；正确率（Σ正确/Σ总数）、有效产出判定、跨零点时长归属、修订留痕 |
 | 规划（v2.7） | `/planner` | 自适应计划 | 今日决策、优先级与七因子解释来源、AI 三态徽章、待确认计划；未诊断时只给「先做一轮诊断」单卡 |
-| 规划（v2.7） | `/planner/build` | 计划构建（7/30/90） | 预览零写计划、确认才建版本；`previewToken` 保证「预览==实际」；AI 只能挑候选与润色措辞 |
+| 规划（v2.7） | `/planner/build` | 计划构建（7/30/90） | 预览零写计划、确认才建版本；`previewToken` 保证「预览==实际」；AI 只能挑候选与润色措辞；估时已按历史净分钟校准；无诊断时 DAY/WEEK 仅生成通用模板，MONTH/CYCLE 阻断 |
 | 规划（v2.7） | `/planner/candidates` | 候选队列 | 8 来源候选池、7 因子决策轨迹、逐条排除原因、AI 建议区（关闭时也显示「AI 未参与本次排序」） |
 | 规划（v2.7） | `/planner/readiness` | 阶段就绪 | 五维证据就绪度、`notConsidered` 面板、阶段门清单；系统只建议，切换需用户确认 |
 | 诊断与复盘 | `/grammar` | 语法诊断（EGIU） | 单元管理、练习录入、三色判定（GREEN/YELLOW/RED/PENDING）、append-only 复测、自动排复习点 |
@@ -36,7 +36,7 @@
 | 诊断与复盘 | `/evidence` | Evidence Center | v2.2 证据录入与查看：A0–A4 辅助级别、证据链 E0–E5、独立产出占比、条件快照 |
 | 诊断与复盘 | `/profile` | 能力画像 | 四项技能分别给方向与置信度（LOW/MEDIUM/HIGH），证据依据可追溯，不做平均、不换算 CEFR |
 | 诊断与复盘 | `/diagnosis` | 障碍诊断 | 每轮聚焦一个主障碍，配置定向修复、成功标准与前后测样本 |
-| 诊断与复盘 | `/diagnostics` | AI 初始诊断 | v2.4.1 初始能力诊断：可维护题库、自适应难度路由、客观题确定性判分、开放任务 rubric 辅助评估、四项技能独立画像与 7/30/90 天计划草案（确认后仅标记 ACTIVE） |
+| 诊断与复盘 | `/diagnostics` | AI 初始诊断 | 可维护题库、自适应难度路由、客观题确定性判分、开放任务 rubric 辅助评估、四项技能独立画像与 7/30/90 天方向；诊断提案保持 DRAFT，只有进入 Planner 预览并确认才写正式任务，首次提案只排 7 天启动计划 |
 | 诊断与复盘 | `/retest` | 复测与迁移 | 技能型复测队列（逾期/今日/未来 7 天），D0/D7/D30/D84 阶梯，一键加入今日计划 |
 | 诊断与复盘 | `/coach` | AI Coach 日志 | 六步学习协议、AI 使用登记（工具/级别/动作/采纳），A4 依赖占比提醒 |
 | 诊断与复盘 | `/ai-coach` | AI Learning Coach | v2.4 会话说教闭环：TUTOR/SOCRATIC/EXAMINER/ERROR_ANALYST/DRILL/REVIEWER 六种模式、能力基线、三级提示、即时与延迟复测；AI 评估一律标注「辅助评估」 |
@@ -48,7 +48,7 @@
 | 复盘与配置 | `/resources` | 资源库 | 8 类科目 / 6 种类型的资源清单与适用阶段；资源名称只来自 seed 与用户录入 |
 | 复盘与配置 | `/weekly` | 每周复盘 | 13 项指标自动计算 + 手工覆盖、Top3 薄弱点必须填满、一键导出复盘文本 |
 | 复盘与配置 | `/stages` | 阶段与验收 | 4 阶段、28 条验收项结果录入；H1–H5 门禁评估（**只给建议，绝不自动升级**）；升级留痕 |
-| 复盘与配置 | `/settings` | 系统设置 | 每日可用分钟（15–240/自定义）、薄弱项权重微调、五类领域数据导出（CSV/JSON）、危险操作 |
+| 复盘与配置 | `/settings` | 系统设置 | 每日可用分钟、默认建议预算、业务时区、薄弱项权重、Provider 与隐私同意、五类领域数据导出、危险操作 |
 
 除上述 27 个入口外，还有二级页面 `/review`（复习中心）、`/diagnostics/[id]`（诊断会话）与 `/diagnostics/report/[id]`（诊断报告），以及详情页 `/records/[id]`、`/grammar/[id]`、`/ai-coach/[id]`，AI 子页 `/ai-coach/review`、`/ai-coach/usage`、`/ai-coach/admin`。v2.7 的其余 6 个规划页（`/planner/evidence`、`/planner/explain/[versionId]`、`/planner/replan`、`/planner/budget`、`/planner/history` 等）从 `/planner` 与 `/planner/build` 页内链接进入，不占导航位。数据分析看板**不占一级入口**，是 `/weekly?tab=analytics` 的一个 Tab（10 张图表 + 全局筛选）；`/analytics` 只保留为服务端跳转，把旧书签带到同一个 Tab，本身不含任何渲染逻辑。
 
@@ -62,7 +62,7 @@
 | 数据库 | SQLite + Prisma 6 | 数据文件 `prisma/dev.db`，115 张表（v2.2 新增 11 张证据域表；v2.3 新增 14 张词汇域表；v2.4 新增 9 张 AI 引擎表；v2.4.1 新增 11 张诊断域表；v2.4.2 新增 1 张 Provider 凭据表；v2.5 新增听力口语 9 张表；v2.7 新增规划域 5 张表） |
 | 校验 | zod v4 | 所有输入在 Server Action 入口校验，失败返回字段级错误；AI 结构化输出同样过 zod Schema |
 | 图表 | Recharts v3 | 全部 `'use client'`，统一走 `components/charts/ChartFrame` 挂载守卫 |
-| 测试 | Vitest 3 | **133 个文件 / 1571 条用例**（v2.7 收尾实测）；纯函数单测 + 基于数据库副本的 Server Action 集成测试（v2.4 AI Coach 含 v2.4.2 凭据、v2.4.1 初始诊断、v2.7 规划链路） |
+| 测试 | Vitest 3 + Node 内置测试 | **157 个文件 / 1812 条用例**（v2.7.1 全量实测）；纯函数单测 + 基于显式 `/tmp` 隔离库的 Server Action 集成测试，不复制或清理真实 `dev.db` |
 
 ## 3. 环境要求
 
@@ -94,29 +94,21 @@ node -v    # 应显示 v22.x
 `export PATH="$HOME/.workbuddy/binaries/node/versions/22.22.2-6/bin:$PATH"`，
 但该路径随应用更新可能变化，不建议写进 `~/.zshrc` 长期使用。
 
-若你是**全新 checkout**（没有 `node_modules` 和 `dev.db`），按顺序执行，**不要跳步**（Prisma 客户端版本必须与 `prisma` CLI 一致）：
+若你是**全新 checkout**（没有 `node_modules` 和 `dev.db`），按顺序执行，**不要跳步**：
 
-| 步骤 | 命令 | 预期输出 |
+| 步骤 | 命令 | 预期结果 |
 | --- | --- | --- |
-| 1 | `npm i` → `npx prisma -v` | `package.json` 已把 `@prisma/client` 与 `prisma` 都钉在 `6.16.2`；`npm i` 会纠正本机残留的 7.x，`prisma -v` 应显示 `6.16.2`。**不要**写 `npm i @prisma/client@6`，那会把精确版本改写成 `^6.x` |
-| 2 | `npx prisma generate` | `✔ Generated Prisma Client (v6.x.x)` |
-| 3 | `npx prisma db push` | `Your database is now in sync with your Prisma schema`，并在 `prisma/` 下生成 `dev.db` |
-| 4 | `npm run db:seed` | 见下方输出，共 5 行 |
-| 5 | `npm run dev` | `▲ Next.js 15.x` + `- Local: http://localhost:3000` |
+| 1 | `npm i` → `npx prisma -v` | `@prisma/client` 与 `prisma` 均为 `6.16.2`，不混用 pnpm/yarn |
+| 2 | `npx prisma generate` | 生成与 CLI 同版本的 Prisma Client |
+| 3 | `npm run db:install:v271 -- --db /absolute/path/new.db` | 只接受不存在或空的目标库；建立 115 张表、写定义型种子并登记 v2.2–v2.7.1 权威迁移 checksum。脚本拒绝真实 `prisma/dev.db` 与任何非空目标 |
+| 4 | 设置 `.env` 的 `DATABASE_URL="file:/absolute/path/new.db"` | 明确指向刚安装的数据库，不使用模糊默认值 |
+| 5 | `npm run dev` | Next.js 启动；默认端口 3000，可用 `-- -p 3210` 指定端口 |
 
-第 4 步的真实输出：
+已有数据库**不要**用 `db push` 或 `db:reset` 升级。先执行 `bash scripts/backup.sh`，再按 `docs/48-v2.7-migration-guide.md` 与 `docs/v2.7.1-release-checklist.md` 做版本化迁移、校验与恢复演练。
 
-```text
-开始写入种子数据…
-✓ UserProfile（单用户配置）已就绪
-✓ Stage 4 个阶段 + 28 条验收项已就绪
-✓ Resource 8 类初始资源已就绪（新增 8，更新 0）
-完成。注意：本 seed 不写入任何学习记录/错题/词汇假数据。
-```
+seed 只写「定义型数据」：用户配置、3 条学习目标、4 个阶段、28 条验收项、8 类初始资源及必要的词表/题目定义；**不会**写入学习记录、错题、词汇掌握结果或复习任务。首次打开显示空态是设计，不是 bug。
 
-**seed 只写「定义型数据」**：1 份用户配置（240 分钟 / Asia/Singapore / 周一复盘）、4 个阶段、每阶段 7 条验收项（共 28 条）、8 类初始资源。它**不会**写入任何学习记录、错题、词汇或复习任务。因此首次打开是空态（时长显示「—」、正确率显示「—」）——**这是设计，不是 bug**：统计必须只反映真实使用产生的数据。
-
-`.env` 已包含 `DATABASE_URL="file:./dev.db"`（相对 `prisma/schema.prisma` 所在目录解析）。
+`.env` 中的 SQLite 路径相对 `prisma/schema.prisma` 所在目录解析；安装脚本与迁移脚本使用显式绝对路径，避免误指向真实库。
 
 ## 5. 常用命令
 
@@ -125,20 +117,22 @@ node -v    # 应显示 v22.x
 | `npm run dev` | 开发服务器（热更新） |
 | `npm run build` | 生产构建；**首次构建请关注第 8 节的已知限制** |
 | `npm run start` | 启动生产构建产物（需先 build） |
-| `npm test` | 跑 `src/lib/**/__tests__/` 与 `src/components/planner/__tests__/` 下全部测试（133 文件 / 1571 用例） |
+| `npm test` | 全部 Vitest 回归（157 文件 / 1812 用例，含 `/tmp` 备份恢复演练） |
 | `npm run test:watch` | 监听模式 |
-| `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4（含 v2.4.2 凭据）+ v2.4.1 端到端验收（均使用数据库副本，不改真实库） |
+| `npm run test:e2e` | v2.1 + v2.2 + v2.3 + v2.4 + v2.4.1 端到端验收；全部使用显式 `/tmp` 隔离库，不读真实库 |
 | `npm run test:e2e:v21` | 仅 v2.1 回归（31 条断言） |
 | `npm run test:e2e:v22` | 仅 v2.2 全链路（37 条断言） |
 | `npm run test:e2e:v23` | 仅 v2.3 TypeWords 词汇集成（40 条断言） |
-| `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成（4 条用例，含 v2.4.2 凭据加密/清除；复制 `dev.db` 到临时库后跑 Server Action 全链路） |
-| `npm run test:e2e:v241` | 仅 v2.4.1 初始诊断集成（1 条用例；复制 `dev.db` 到临时库后跑完整诊断、报告、计划激活、补测与删除） |
+| `npm run test:e2e:v24` | 仅 v2.4 AI Coach 集成 |
+| `npm run test:e2e:v241` | 仅 v2.4.1 初始诊断集成 |
 | `npm run typecheck` | `tsc --noEmit`；注意 `tsconfig.json` 排除了测试目录 |
-| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`）；**比 `typecheck` 多覆盖 50 个测试文件** |
-| `npm run db:push` | 把 `schema.prisma` 同步到 SQLite（不丢数据） |
+| `npm run typecheck:test` | 单独检查测试文件的类型（`tsconfig.test.json`） |
+| `npm run db:install:v271 -- --db /tmp/new.db` | 版本化首次安装；只接受空库，登记权威迁移 checksum |
 | `npm run db:generate` | 重新生成 Prisma Client |
-| `npm run db:seed` | 重跑 seed（幂等：`upsert` + 验收项整组重建 + v2 五个回填函数；重复执行新增数恒为 0） |
-| `npm run db:reset` | **删库重建**：`rm dev.db` → `db push` → `generate` → `seed`，所有学习数据会丢失 |
+| `npm run db:seed` | 幂等写定义型数据；不写学习记录 |
+| `npm run db:push` | **仅用于临时实验库**；已有真实库升级禁止使用 |
+| `npm run db:reset` | **删库重建**，所有学习数据会丢失；真实库禁止执行 |
+| `npm run test:provider:smoke` | 默认输出 `NOT_RUN`；真实外发需双重 opt-in、合成数据与 `/tmp` 隔离库 |
 | `bash scripts/backup.sh` | 生成一份 SQLite 一致性备份并自检（**不需要 Node**，详见 §11） |
 | `bash scripts/restore.sh <备份文件>` | 二次确认后从备份恢复（**不需要 Node**，详见 §11） |
 | `node scripts/migrations/v2.2.mjs --db prisma/dev.db` | v2.1 → v2.2 版本化迁移（要求先有备份；`--dry-run` 只打印 DDL） |
@@ -160,24 +154,24 @@ node -v    # 应显示 v22.x
 
 ## 7. 12 个模块的使用顺序建议
 
-9 个主线模块的顺序由 `MODULE_ORDER` 固定（计划生成、排序、导出都引用同一份常量），另加 3 个阶段零基线模块。
+9 个主线模块的顺序由 `MODULE_ORDER` 固定，另加 3 个阶段零基线模块。下表是使用顺序建议，**不是每天必须生成的固定分钟数**；v2.7.1 由当日预算、任务最小块、到期复习和证据优先级共同决定实际排入哪些任务。
 
 | 序 | 模块 | 建议用法 |
 | --- | --- | --- |
-| 1 | 词汇复习（VOCAB_REVIEW，25 分钟） | 先复习旧词再看新词，避免新词挤掉复习 |
-| 2 | 语法（GRAMMAR，40 分钟） | 先做 EGIU 单元练习再决定是否重学；做完立刻录入三色判定 |
-| 3 | 听力（LISTENING，45 分钟） | 盲听抓主旨 → 抓信息 → 看文本定位 → 复述；用计时器记录净时长 |
-| 4 | 阅读（READING，40 分钟） | 先读懂大意，只查影响理解的词，读后 2–5 句总结 |
-| 5 | 口语（SPEAKING，30 分钟） | 跟读 + 录音 + 自评，重点在「有效产出」而不是时长 |
-| 6 | 写作（WRITING，20 分钟） | 写完留摘要，形成可复盘的产出证据 |
-| 7 | 句子成分（SENTENCE，15 分钟） | 成分与词性分开标注，先把 S/V 找对再细化 |
-| 8 | 复盘与计划（REVIEW_PLAN，10 分钟） | 固定 10 分钟不增不减；用来清逾期复习 + 排明天计划 |
-| 9 | 泛听泛读（EXTENSIVE，15 分钟） | 独立成桶统计，**不并入**听力/阅读精练 |
-| 0a | 基线听力（BASELINE_LISTEN，30 分钟） | 仅阶段零（S0）使用，合计 90 分钟三任务 |
-| 0b | 基线阅读（BASELINE_READ，30 分钟） | 同上 |
-| 0c | 基线输出（BASELINE_OUTPUT，30 分钟） | 同上 |
+| 1 | 词汇复习（VOCAB_REVIEW） | 先复习旧词再看新词，避免新词挤掉复习 |
+| 2 | 语法（GRAMMAR） | 先做 EGIU 单元练习再决定是否重学；做完立刻录入三色判定 |
+| 3 | 听力（LISTENING） | 盲听抓主旨 → 抓信息 → 看文本定位 → 复述；用计时器记录净时长 |
+| 4 | 阅读（READING） | 先读懂大意，只查影响理解的词，读后做简短总结 |
+| 5 | 口语（SPEAKING） | 跟读 + 录音 + 自评，重点在有效产出而不是时长 |
+| 6 | 写作（WRITING） | 写完留摘要，形成可复盘产出证据 |
+| 7 | 句子成分（SENTENCE） | 成分与词性分开标注，先把 S/V 找对再细化 |
+| 8 | 复盘与计划（REVIEW_PLAN） | 清逾期复习并规划下一周期 |
+| 9 | 泛听泛读（EXTENSIVE） | 独立成桶统计，不并入听力/阅读精练 |
+| 0a | 基线听力（BASELINE_LISTEN） | 仅阶段零（S0）使用 |
+| 0b | 基线阅读（BASELINE_READ） | 仅阶段零（S0）使用 |
+| 0c | 基线输出（BASELINE_OUTPUT） | 仅阶段零（S0）使用 |
 
-阶段零（S0）只生成这 3 个基线任务（合计 90 分钟），走完诊断再进入 S1。S1 阶段语法类（GRAMMAR + SENTENCE）合计受「总时长 20%」硬约束；单科增量上限 说/听/读 20 分钟、其余 15 分钟；单日在 240–300 分钟之外直接拒绝生成。
+首次诊断提案只进入 7 天启动计划；30/90 天层保留方向与结构，不伪造未来每日任务。预算小于任务最小块时不生成无法执行的碎片；最小块是下限，不是分钟步长。通用 DAY/WEEK 计划与诊断提案都必须在 Planner 预览完整排入并通过确认，才能写正式任务。
 
 ## 8. 已知限制
 
@@ -185,16 +179,18 @@ node -v    # 应显示 v22.x
 | --- | --- | --- |
 | L1 | 仅在**被 Agent 托管执行**时受限：宿主注入的 `node-safe-delete` 保护对 Node 的 `fs.unlink` 设了「单轮 50 次删除」阈值，`next build` / `next dev` 清理 `.next` 时会被拦 | 在你自己的终端里不存在这层保护，`npm run build` / `npm run dev` 均可正常执行。被拦时的绕过方式见 §10 |
 | L2 | 缺陷 D6：`dueDateFrom` 取 `max(d0 + n, today)` | 补录**历史**首测时，D1/D3/D7 会被一起压到同一天（当天多条待办），不产生数据错误但体验差 |
-| L3 | 「复盘与计划」独立成桶（`META`），不计入听说读写任一科 | Dashboard 四项投入的合计**含** META，与「本周净时长」恒等；分析看板「四科分布」图不含 META。两处口径差异均为有意设计，不是漏算 |
+| L3 | 「复盘与计划」独立成桶（`META`），不计入听说读写任一科 | Dashboard 的四技能占比分母不含 META；分析看板的四科分布也不含 META。净学习总时长仍包含所有有效计时段 |
 | L4 | AI 能力已在 v2.4 接通，但默认走 Mock | 未在 `/ai-coach/admin` 保存 API Key（或环境变量回退）且未打开外部 AI 时，所有回复由内置 Mock Provider 生成（确定性、零外部请求）；旧 `AiSuggestion` 表仍保持 `unavailable`，不会调用模型 |
 | L5 | 阶段名称是自建学习路径标签 | 不等于 CEFR 官方评级，也不代表雅思官方分数；UI 已固定展示免责声明 |
 | L6 | `lucide-react` 依赖未使用 | 图标为 `src/components/ui/Icon.tsx` 手写内联 SVG（25 个）。该包**可移除**，移除后不影响任何功能 |
 | L7 | 未配置 ESLint | `npm run lint`（`next lint`）需先初始化 ESLint 配置才能运行 |
-| L8 | 单用户、单进程 | 无账号体系、无并发写保护的多端同步；计时器状态靠 `updateMany` + `timerVersion` 乐观锁保证单端一致 |
+| L8 | 单用户、单进程 | 无账号体系、无多端同步；计时器状态靠 `updateMany` + `timerVersion` 乐观锁保证单端一致 |
+| L9 | 真实 `prisma/dev.db` 曾有误执行 `db push` 的事故，尚未关闭 | 文件 SHA-256 与 `schema_version` 已改变，且没有误操作前完整副本；不能声称逐字节未受影响。真实库禁止任何写命令，发布结论见 `docs/v2.7.1-release-checklist.md` |
+| L10 | 趋势图至少需要 2 个非空有效点 | 只有 1 个点时显示「有效数据点不足」，不补 0，也不把已有汇总值说成没有数据 |
 
 ## 9. 测试说明
 
-`npm test` 会跑 `src/lib/**/__tests__/` 与 `src/components/planner/__tests__/` 下的 **133 个文件、1571 条用例**（v2.7 收尾实测）。绝大多数针对纯函数，不连数据库、不读系统时间（`today` 一律由入参传入），可在任意环境稳定复现；集成测试则先 `createTestDb(delegates)` 把 `prisma/dev.db` 复制到临时文件、清空声明表后再跑全链路，不触碰真实库。v2.7 的 AI 层测试用 `vi.spyOn(OpenAICompatibleProvider.prototype, 'complete')` 注入假响应，不发外部请求。
+`npm test` 当前覆盖 **157 个文件、1812 条用例**（v2.7.1 全量实测）。绝大多数针对纯函数；集成测试由 `createTestDb(delegates)` 在系统临时目录从 schema 建库并写入声明夹具，**不复制、不清空真实 `prisma/dev.db`**。AI 单测通过 spy 注入假响应，不发外部请求。`npm run build` 与 `npm test` 应顺序执行：并行构建会清理 `.next`，可能让类型检查读到已删除的生成文件。
 
 下表保留 v2.0 时期的领域纯函数用例分布（当时 14 文件 / 306 用例），后续版本的新增用例见 §13–§15。
 
@@ -454,7 +450,7 @@ IELTS_BACKUP_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/ielts-backu
 
 ## 12. v1.5 → v2.0 迁移与回滚
 
-> 完整方案见 `docs/06-v2-upgrade-plan.md`（含差异分析、页面变更方案、风险清单、P1 执行回填）。
+> **历史记录，不可照抄执行**：以下 v1.5 → v2.0 步骤中的 `db push` 只适用于当时的空实验库。当前已有库一律使用版本化迁移；真实 `prisma/dev.db` 禁止执行 `db push` / `db:reset`。完整历史方案见 `docs/06-v2-upgrade-plan.md`。
 
 ### 12.1 迁移原则（三条，缺一不可）
 
@@ -765,7 +761,7 @@ npx prisma generate
 ### 16.3 测试与文档
 
 - 单元测试：`src/lib/diagnostic/__tests__/routing.test.ts`（判分、路由、置信度、报告不平均、计划预算）；
-- 集成测试：`src/lib/actions/__tests__/diagnostics.integration.test.ts`（复制数据库副本，覆盖多时段暂停/恢复、幂等、技术无效、开放任务待评估、报告暂定、计划激活、补测与删除）；
+- 集成测试：`src/lib/actions/__tests__/diagnostics.integration.test.ts`（从空 schema 与声明式 seed 创建系统临时库，覆盖多时段暂停/恢复、幂等、技术无效、开放任务待评估、报告暂定、计划激活、补测与删除；不复制或清理真实 `prisma/dev.db`）；
 - 命令：`npm run test:e2e:v241`；全量回归 `npm test`、`npm run typecheck`、`npm run typecheck:test`、`npm run build`；
 - 设计与接口：`docs/24-v2.4.1-design.md`；Phase 0 审计：`CURRENT_STATE_AUDIT.md`。
 
@@ -850,9 +846,9 @@ npx prisma generate                                  # 重新生成 Prisma Clien
 | L35 | 口语 AI 反馈依赖外部 AI 通道 | 未启用外部 AI 时只保存录音与作答 |
 | L36 | 听力训练交互表单为增量 | 九种模式的完整编辑表单逐步补齐 |
 
-## 19. v2.5 → v2.7 规划内核
+## 19. v2.5 → v2.7.1 规划内核与上线修复
 
-v2.7 让「为什么今天排了这些」可复现、可解释、可审计：计划先生成快照与候选池，再按七因子评分，最后装箱；每一次优先级都有落库的决策可查。
+v2.7 让「为什么今天排了这些」可复现、可解释、可审计；v2.7.1 把诊断提案、carryover、预算、证据就绪度、计时与备份恢复接到同一条 Planner 链路，并保留全部历史数据。
 
 ### 19.1 新增入口
 
@@ -876,11 +872,23 @@ npx prisma generate                                  # 重新生成 Prisma Clien
 
 纯加法：新增 5 张规划域表 + 10 个可空列 + 10 个索引；单事务 `BEGIN IMMEDIATE`；checksum `8563a351ba6ba475`（脚本会登记进 `AppMigration`，同版本不同校验和拒绝执行）。回滚方式：`bash scripts/restore.sh backups/<升级前备份>`（无 `down` 脚本，理由见 `docs/48-v2.7-migration-guide.md` §5）。
 
-### 19.3 测试
+### 19.3 v2.7.1 迁移补充
 
-133 文件 / 1571 用例；`typecheck` / `typecheck:test` / `build` 通过；4 个一级规划页（`/planner`、`/planner/build`、`/planner/candidates`、`/planner/readiness`）冒烟 200。浏览器端到端本次未执行（v2.7 未改 v2.1–v2.5 既有链路）。详见 `docs/45-v2.7-test-report.md`。
+已有 v2.7 库先备份，再在**显式 `/tmp` 副本**演练：
 
-### 19.4 文档
+```bash
+bash scripts/backup.sh
+node scripts/migrations/v2.7.1.mjs --db /tmp/ielts-v271-copy.db --dry-run
+node scripts/migrations/v2.7.1.mjs --db /tmp/ielts-v271-copy.db
+```
+
+权威 checksum 与结果以 `node scripts/migrations/v2.7.1.mjs --checksum-only` 和迁移 JSON 报告为准。该迁移新增 9 个可空/带默认值列与 2 个索引，不重建表、不删行；自动备份并校验全部用户表行数、旧列定义、integrity 与外键。脚本**只接受 `/tmp` 或 `/private/tmp` 隔离库**，真实库升级需由维护者按发布清单另行执行，不能用本脚本直接指向 `prisma/dev.db`。
+
+### 19.4 测试与浏览器验收
+
+157 文件 / 1812 用例全量通过；`typecheck` / `typecheck:test` / `build` 通过。本地 Chrome + Qoder Browser Connector 在 `/tmp` 隔离库完成诊断补测、报告取代、Planner 预览/确认、真实计时、预算、Dashboard、readiness、版本解释与分析页验收；生产构建复验确认分析页显示单数据点不足提示，Dashboard 今日计划 100、本周计划 160、净 5 分钟。并发双提交、DEMOTE 与 CYCLE 浏览器分支未执行；真实 Provider smoke 无凭据时为 `NOT_RUN`。详见 `docs/v2.7.1-test-report.md`。
+
+### 19.5 文档
 
 | 文档 | 内容 |
 | --- | --- |
@@ -891,12 +899,17 @@ npx prisma generate                                  # 重新生成 Prisma Clien
 | `docs/47-v2.7-known-limits.md` | 采集/评分/查询/AI 的已知限制与休眠风险 |
 | `docs/48-v2.7-migration-guide.md` | 备份、预演、执行、校验、回滚 |
 | `docs/49-v2.7-prompt-changelog.md` | 3 个 prompt kind 的版本、变量、schema、拒绝条件 |
+| `docs/v2.7.1-fix-report.md` | v2.7.1 修复项、根因、P0/P1/P2 状态矩阵 |
+| `docs/v2.7.1-test-report.md` | 全量测试、迁移恢复、Provider smoke 与 Chrome 隔离库验收证据 |
+| `docs/v2.7.1-release-checklist.md` | 首次使用放行条件、真实库事故披露与剩余人工步骤 |
 
-### 19.5 已知限制
+### 19.6 已知限制
 
 | 编号 | 限制 | 影响 |
 | --- | --- | --- |
 | L37 | `OPEN_TASK` 写作 20 分钟 / 口语 10 分钟为粗估 | 40 分钟级大作文仍会被排在很后面；覆写只改善不解决 |
-| L38 | `carryoverApply` 尚未接线 | 用户当前用不到「昨日未完成自动滚入今天」；挂载点已裁决在生成新一天计划时 |
-| L39 | D1 覆盖率依赖的 `coverageRatio` 当前恒 `null` | 阶段就绪度偏保守，几乎到不了 `READY_FOR_REVIEW`（需后续装配分题型正确率） |
+| L38 | v2.7.1 已接入日/周 GENERATE carryover；仅处理过去未完成且计时空闲的任务 | 四类裁决在预览中展示，确认时单事务写入；Backlog 不自动排入当天，放弃任务保留审计记录；滚入任务在 replan 中自动锁定 |
+| L39 | readiness 已按蓝图分母计算真实覆盖率；旧 `PlanningSnapshot → SkillGap.coverageRatio` 仍为 `null` | 阶段就绪评审使用真实 Attempt 覆盖率；仍消费旧缺口快照的候选评分把未知当未知，不补 0 |
 | L40 | 快照/候选/决策无自动清理 | 长期使用 `dev.db` 持续变大；需人工按 `asOfDate` 归档，归档前先确认无 `PlanVersion` 引用 |
+| L41 | 计划分钟与预算占用分钟不同 | 计划展示用原 `plannedMinutes`；预算守卫对 `PARTIAL` 按实际分钟占用。两者不应互相改写 |
+| L42 | 无诊断仍可生成通用 DAY/WEEK 计划 | 诊断提案保持 DRAFT，只有 Planner Confirm 才激活；通用模板生成不表示已有诊断证据 |

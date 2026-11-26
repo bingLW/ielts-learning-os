@@ -19,59 +19,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-/**
- * 读集必须写全：`buildPlanningSnapshot` 会跑 8 个候选源 + 缺口 + 评分，
- * 任何一张没清的源表都会让种子数据混进 `decisions`。清空后候选池只剩本文件显式造的。
- */
-const { prisma, path } = await createTestDb([
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'studySessionDaySplit',
-  'evidenceRecord',
-  'studySession',
-  'skillProfile',
-  'goalMilestone',
-  'learningGoal',
-  'weeklyFocus',
-  'learningCycle',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'planningSnapshot',
-  'planTask',
-  'planVersion',
-  'dailyBudget',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'plannerSettings',
-  'skillAllocationProfile',
-  'stageAcceptanceItem',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma, cleanup } = await createTestDb();
 
 const { buildPlan } = await import('@/lib/services/planBuild');
 const { generatePlanPreviewAction, confirmPlanVersionAction } = await import('@/lib/actions/planner');
@@ -116,6 +64,18 @@ beforeAll(async () => {
   await prisma.dailyBudget.create({
     data: { date: '2026-11-26', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
   });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-27', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
+  });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-28', plannedAvailableMinutes: 0, isRestDay: true, source: 'USER' },
+  });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-29', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
+  });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-30', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
+  });
   await prisma.learningGoal.create({
     data: {
       goalType: 'GENERAL_ENGLISH',
@@ -129,8 +89,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('T07 buildPlan（预览零写 + 取舍 + MONTH 结构）', () => {
@@ -174,12 +133,23 @@ describe('T07 buildPlan（预览零写 + 取舍 + MONTH 结构）', () => {
     const after = await prisma.planVersion.count({ where: { snapshotId: { not: null } } });
     expect(after - before).toBe(1);
 
-    const header = await prisma.planVersion.findFirst({
-      where: { snapshotId: preview.data.snapshotId },
-      orderBy: { createdAt: 'desc' },
-    });
+    const header = await prisma.planVersion.findUnique({ where: { id: confirm.data.versionId } });
     expect(header).not.toBeNull();
-    expect(header?.snapshotId).toBe(preview.data.snapshotId);
+    expect(header?.snapshotId).toBeTruthy();
+    expect(header?.snapshotId).not.toBe(preview.data.snapshotId);
+
+    // P1-1/P1-5：确认行始终携带完整估时与 Expected Output（含无候选回落任务）。
+    const written = await prisma.planTask.findMany({ where: { planDate: AS_OF, planVersion: confirm.data.version } });
+    expect(written.length).toBeGreaterThan(0);
+    for (const task of written) {
+      const decision = JSON.parse(task.decisionJson ?? '{}');
+      expect(decision.expectedOutput).toEqual(expect.any(String));
+      expect(decision.expectedOutput.length).toBeGreaterThan(0);
+      expect(decision.estimate).toMatchObject({
+        basis: expect.stringMatching(/^(ESTIMATE|CALIBRATED)$/),
+        modelVersion: 'estimate-range-v2.7.1', ruleVersion: 'v2.7.1',
+      });
+    }
   });
 
   it('③ 同 previewToken 重复确认 → 第二次 fail(CONFLICT)', async () => {
@@ -201,8 +171,59 @@ describe('T07 buildPlan（预览零写 + 取舍 + MONTH 结构）', () => {
     if (!second.ok) expect(second.code).toBe('CONFLICT');
   });
 
+  it('已有任务占用纳入预览/确认预算，历史版本 taskIds 不重复计入', async () => {
+    const planDate = '2026-11-30';
+    await prisma.planTask.create({
+      data: {
+        id: 'existing-budget-task',
+        stageId: STAGE_ID,
+        planDate,
+        module: 'READING',
+        skill: 'READING',
+        plannedMinutes: 40,
+        actualMinutes: 0,
+        status: 'TODO',
+        priority: 'P1',
+        sourceKind: 'MANUAL_ADD',
+        splittable: true,
+        minChunkMinutes: 5,
+        sortOrder: 0,
+        planVersion: 1,
+        track: 'GENERAL_ENGLISH',
+        primarySkill: 'READING',
+      },
+    });
+    await prisma.planVersion.create({
+      data: {
+        planDate,
+        version: 2,
+        changeSource: 'REPLAN',
+        reason: '历史版本测试',
+        afterSnapshot: JSON.stringify({ taskIds: ['existing-budget-task'], taskCount: 99, totalMinutes: 9999 }),
+      },
+    });
+    const input = { purpose: 'GENERATE' as const, asOfDate: planDate, horizonDays: 1, stageId: STAGE_ID };
+    const preview = await generatePlanPreviewAction(input);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.data.days[0].tasks.reduce((sum, task) => sum + task.plannedMinutes, 0)).toBe(20);
+
+    const confirm = await confirmPlanVersionAction({
+      ...input,
+      snapshotId: preview.data.snapshotId,
+      previewToken: preview.data.previewToken,
+    });
+    expect(confirm.ok).toBe(true);
+    if (!confirm.ok) return;
+    const version = await prisma.planVersion.findUniqueOrThrow({ where: { id: confirm.data.versionId } });
+    const after = JSON.parse(version.afterSnapshot ?? '{}') as { taskIds: string[]; taskCount: number; totalMinutes: number };
+    expect(after.taskIds).toContain('existing-budget-task');
+    expect(after.totalMinutes).toBe(60);
+    expect(after.taskCount).toBe(await prisma.planTask.count({ where: { planDate, status: { notIn: ['CANCELLED', 'DEFERRED'] } } }));
+  });
+
   it('⑤ horizonDays=30 → layer=MONTH 版本 + 8 项结构 + parentVersionId=null（无 CYCLE）', async () => {
-    const monthInput = { purpose: 'GENERATE' as const, asOfDate: AS_OF, horizonDays: 30, stageId: STAGE_ID };
+    const monthInput = { purpose: 'GENERATE' as const, asOfDate: '2026-11-27', horizonDays: 30, stageId: STAGE_ID };
     const preview = await generatePlanPreviewAction(monthInput);
     expect(preview.ok).toBe(true);
     if (!preview.ok) return;
@@ -216,13 +237,14 @@ describe('T07 buildPlan（预览零写 + 取舍 + MONTH 结构）', () => {
       snapshotId: preview.data.snapshotId,
       previewToken: preview.data.previewToken,
     });
-    expect(confirm.ok).toBe(true);
+    expect(confirm.ok, confirm.ok ? undefined : confirm.error).toBe(true);
     if (!confirm.ok) return;
 
     const version = await prisma.planVersion.findUnique({ where: { id: confirm.data.versionId } });
     expect(version).not.toBeNull();
     expect(version?.layer).toBe('MONTH');
-    expect(version?.snapshotId).toBe(preview.data.snapshotId);
+    expect(version?.snapshotId).toBeTruthy();
+    expect(version?.snapshotId).not.toBe(preview.data.snapshotId);
     expect(version?.parentVersionId).toBeNull();
 
     const parsed = JSON.parse(version!.afterSnapshot ?? '{}') as Record<string, unknown>;
@@ -238,5 +260,30 @@ describe('T07 buildPlan（预览零写 + 取舍 + MONTH 结构）', () => {
     // 无 CYCLE 时 confirm 应带 warning（`41 §5.4`）
     expect(confirm.data.warnings.length).toBeGreaterThan(0);
     expect(confirm.data.warnings.some((w) => w.includes('无'))).toBe(true);
+  });
+
+  it('⑥ WEEK 主日期无新任务时仍生成主版本头，批量写入不产生 P2028', async () => {
+    const weekInput = { purpose: 'GENERATE' as const, asOfDate: '2026-11-28', horizonDays: 7, stageId: STAGE_ID };
+    const preview = await generatePlanPreviewAction(weekInput);
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(preview.data.layer).toBe('WEEK');
+    expect(preview.data.days[0].tasks).toHaveLength(0);
+    expect(preview.data.days.slice(1).some((day) => day.tasks.length > 0)).toBe(true);
+
+    const confirm = await confirmPlanVersionAction({
+      ...weekInput,
+      snapshotId: preview.data.snapshotId,
+      previewToken: preview.data.previewToken,
+    });
+    expect(confirm.ok).toBe(true);
+    if (!confirm.ok) return;
+
+    const primary = await prisma.planVersion.findUniqueOrThrow({ where: { id: confirm.data.versionId } });
+    expect(primary.planDate).toBe('2026-11-28');
+    expect(primary.idempotencyKey).toBe(preview.data.previewToken);
+    const after = JSON.parse(primary.afterSnapshot ?? '{}') as { taskCount: number; totalMinutes: number; taskIds: string[] };
+    expect(after).toMatchObject({ taskCount: 0, totalMinutes: 0, taskIds: [] });
+    expect(await prisma.planVersion.count({ where: { idempotencyKey: { startsWith: preview.data.previewToken } } })).toBeGreaterThanOrEqual(2);
   });
 });

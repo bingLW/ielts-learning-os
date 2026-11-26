@@ -1,268 +1,119 @@
-/**
- * T09 AC-14 业务口径 + action 落库（验收 ⑦⑧⑨ + 评审/切换生命周期）。
- *
- * 业务口径（PRD §4.9 / AC-14）：
- * - ⑦ 阶段天数再长（daysCompleted=90 无法传入，F-2 已挡）也不补延迟复测的缺；
- * - ⑧ 单次 AI 分数 9.0 不参与判定（只出现在 notConsidered 反例区）；
- * - ⑨ notConsidered 必含「学习天数 / 完成率 / 单次 AI 分数」三项，只用于展示。
- */
-
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
-import { computeReadiness, type EvidenceDistribution, type ReadinessInput } from '@/lib/domain/readiness';
+import { READINESS_RULE_VERSION, type ReadinessDimensionCode } from '@/lib/domain/readiness';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
-
-const { prisma, path } = await createTestDb([
-  'stageReadinessReview',
-  'stageTransitionLog',
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'studySessionDaySplit',
-  'evidenceRecord',
-  'studySession',
-  'skillProfile',
-  'goalMilestone',
-  'learningGoal',
-  'weeklyFocus',
-  'learningCycle',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'planningSnapshot',
-  'planTask',
-  'planVersion',
-  'dailyBudget',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'plannerSettings',
-  'skillAllocationProfile',
-  'stageAcceptanceItem',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
-
+const { prisma, cleanup } = await createTestDb();
 const { reviewReadinessAction, confirmStageTransitionAction } = await import('@/lib/actions/planner');
 
 const AS_OF = '2026-11-25';
 const STAGE_ID = 'stage-readiness';
-
-const SKILLS = ['LISTENING', 'READING', 'SPEAKING', 'WRITING'] as const;
-
-function dist(): EvidenceDistribution {
-  return { baseline: 1, immediate: 1, delayed: 0, applied: 0, transfer: 0, independent: 2 };
-}
-
-function readyInput(): ReadinessInput {
-  return {
-    stageId: STAGE_ID,
-    stageStart: '2026-01-01',
-    asOfDate: AS_OF,
-    officialGaps: [],
-    officialUncertainties: [],
-    evidenceBySkill: Object.fromEntries(SKILLS.map((skill) => [skill, dist()])) as Record<
-      string,
-      EvidenceDistribution
-    >,
-    retestOutcomes: [
-      { retestType: 'DELAYED', skill: 'LISTENING', status: 'DONE', score: 2, materialRef: 'r-delayed' },
-      { retestType: 'APPLIED', skill: 'LISTENING', status: 'DONE', score: 2, materialRef: 'r-applied' },
-    ],
-    distinctSources: SKILLS.map((skill) => ({ skill, sourceRefs: ['src-a', 'src-b'] })),
-    readErrors: [],
-  };
-}
+const CODES: ReadinessDimensionCode[] = ['D1_EVIDENCE_COVERAGE', 'D2_CROSS_SOURCE_CONSISTENCY', 'D3_INDEPENDENT_COMPLETION', 'D4_DELAYED_RETENTION', 'D5_TRANSFER_EVIDENCE'];
 
 beforeAll(async () => {
-  await prisma.stage.create({
-    data: {
-      id: STAGE_ID,
-      code: 'S1_A0_A2',
-      nameZh: 'readiness 测试阶段',
-      estDaysMin: 30,
-      status: 'ACTIVE',
-      profileCode: 'A0_A2',
-    },
-  });
-  await prisma.stage.create({
-    data: {
-      id: 'stage-target',
-      code: 'S2_A2_B1',
-      nameZh: '目标阶段',
-      estDaysMin: 30,
-      status: 'NOT_STARTED',
-      profileCode: 'A2_B1',
-    },
-  });
-  await prisma.plannerSettings.create({
-    data: { id: 1, defaultDailyMinutes: 60, minTaskMinutes: 5, isUserConfirmed: true },
-  });
-  await prisma.dailyBudget.create({
-    data: { date: AS_OF, plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
-  });
-  await prisma.learningGoal.create({
-    data: { goalType: 'GENERAL_ENGLISH', name: '通用英语', status: 'ACTIVE', targetValue: 'B2' },
-  });
+  await prisma.stage.create({ data: { id: STAGE_ID, code: 'S1_A0_A2', nameZh: 'readiness 测试阶段', estDaysMin: 30, status: 'ACTIVE', profileCode: 'A0_A2' } });
+  await prisma.stage.create({ data: { id: 'stage-target', code: 'S2_A2_B1', nameZh: '目标阶段', estDaysMin: 30, status: 'NOT_STARTED', profileCode: 'A2_B1' } });
 });
-
 afterAll(async () => {
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
-describe('T09 AC-14 业务口径（纯 computeReadiness）', () => {
-  it('⑦ 阶段 90 天但延迟复测 0 条 DONE → NEED_MORE_EVIDENCE', () => {
-    // daysCompleted 无法传入（F-2），这里刻意证明：即使其它维度全 PASS，
-    // 只要延迟复测 0 条 DONE，结论就是 NEED_MORE_EVIDENCE —— 天数不补证据的缺。
-    const input = readyInput();
-    input.retestOutcomes = [
-      { retestType: 'DELAYED', skill: 'LISTENING', status: 'PENDING', score: null, materialRef: 'r1' },
-      { retestType: 'APPLIED', skill: 'LISTENING', status: 'DONE', score: 2, materialRef: 'r2' },
-    ];
+async function createReview(options: { outcome?: string; status?: string; stageId?: string } = {}) {
+  const stageId = options.stageId ?? STAGE_ID;
+  const snapshot = await prisma.planningSnapshot.create({ data: {
+    purpose: 'READINESS', asOfDate: AS_OF, inputHash: `review-${Math.random()}`,
+    ruleVersion: READINESS_RULE_VERSION, budgetJson: '{}', configJson: '{}',
+  } });
+  return prisma.stageReadinessReview.create({ data: {
+    stageId, snapshotId: snapshot.id, outcome: options.outcome ?? 'READY_FOR_REVIEW',
+    ruleVersion: READINESS_RULE_VERSION,
+    criteriaJson: JSON.stringify({ schemaVersion: 2, dimensions: CODES.map((code) => ({
+      code, label: code, status: options.status ?? 'PASS', detail: '测试快照', evidenceRefs: ['ev-1'], suggestion: '补测',
+    })) }),
+  } });
+}
 
-    const result = computeReadiness(input);
-    expect(result.outcome).toBe('NEED_MORE_EVIDENCE');
-  });
-
-  it('⑧ 单次 AI 分数 9.0 不影响结论（只出现在反例区）', () => {
-    const result = computeReadiness(readyInput());
-    // 「单次 AI 分数」只在 notConsidered 里出现，不在任何维度或结论里 —— 它进不了判定。
-    expect(result.outcome).toBe('READY_FOR_REVIEW');
-    expect(result.notConsidered.some((row) => row.label === '单次 AI 分数')).toBe(true);
-    expect(JSON.stringify(result.dimensions)).not.toContain('9.0');
-    expect(JSON.stringify(result.dimensions)).not.toContain('aiScore');
-  });
-
-  it('⑨ notConsidered 必含「学习天数 / 完成率 / 单次 AI 分数」三项且只用于展示', () => {
-    const result = computeReadiness(readyInput());
-    const labels = result.notConsidered.map((row) => row.label);
-    expect(labels).toEqual(['学习天数', '完成率', '单次 AI 分数']);
-    for (const row of result.notConsidered) {
-      expect(row.value).toBe('不参与判定');
-    }
-  });
+beforeEach(async () => {
+  await prisma.stage.updateMany({ data: { status: 'NOT_STARTED', completedAt: null } });
+  await prisma.stage.update({ where: { id: STAGE_ID }, data: { status: 'ACTIVE', startedAt: '2026-01-01' } });
+  await prisma.stage.update({ where: { id: 'stage-target' }, data: { status: 'NOT_STARTED', startedAt: null } });
 });
 
-describe('T09 评审 / 切换 action 生命周期', () => {
-  beforeEach(async () => {
-    // 复位阶段状态：`confirmStageTransitionAction` 会翻转全局 ACTIVE，
-    // 每个 action 测试都从「stage-readiness ACTIVE、stage-target NOT_STARTED」出发。
-    await prisma.stage.updateMany({ data: { status: 'NOT_STARTED', completedAt: null } });
-    await prisma.stage.update({
-      where: { id: STAGE_ID },
-      data: { status: 'ACTIVE', startedAt: '2026-01-01' },
-    });
-    await prisma.stage.update({
-      where: { id: 'stage-target' },
-      data: { status: 'NOT_STARTED', startedAt: null },
-    });
-  });
-
-  it('reviewReadinessAction 落库 StageReadinessReview，criteriaJson 含五维明细', async () => {
+describe('AC-03 评审快照', () => {
+  it('空库评审仍落库；蓝图缺失为 D1 READ_ERROR，不伪造 0% 或 READY', async () => {
     const result = await reviewReadinessAction({ stageId: STAGE_ID, asOfDate: AS_OF });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-
-    const review = await prisma.stageReadinessReview.findUnique({
-      where: { id: result.data.reviewId },
-    });
-    expect(review).not.toBeNull();
-    expect(review!.userConfirmed).toBe(false);
-
-    const criteria = JSON.parse(review!.criteriaJson) as Array<{ code: string; status: string }>;
-    expect(Array.isArray(criteria)).toBe(true);
-    expect(criteria).toHaveLength(5);
-    expect(criteria.map((row) => row.code)).toEqual([
-      'D1_EVIDENCE_COVERAGE',
-      'D2_CROSS_SOURCE_CONSISTENCY',
-      'D3_INDEPENDENT_COMPLETION',
-      'D4_DELAYED_RETENTION',
-      'D5_TRANSFER_EVIDENCE',
-    ]);
-    // 五维明细可回溯：每个维度都带状态与说明
-    for (const row of criteria) {
-      expect(['PASS', 'FAIL', 'INSUFFICIENT', 'READ_ERROR']).toContain(row.status);
-    }
+    expect(result.data.outcome).toBe('NEED_MORE_EVIDENCE');
+    const review = await prisma.stageReadinessReview.findUniqueOrThrow({ where: { id: result.data.reviewId } });
+    const criteria = JSON.parse(review.criteriaJson) as { schemaVersion: number; dimensions: Array<{ code: string; status: string }>; snapshot: { ruleVersion: string; dataSnapshotId: string; coverageBySkill: Record<string, { coverageRatio: number | null }> } };
+    expect(criteria.schemaVersion).toBe(2);
+    expect(criteria.dimensions).toHaveLength(5);
+    expect(criteria.dimensions.find((row) => row.code === 'D1_EVIDENCE_COVERAGE')?.status).toBe('READ_ERROR');
+    expect(criteria.snapshot.ruleVersion).toBe(review.ruleVersion);
+    expect(criteria.snapshot.dataSnapshotId).toBe(review.snapshotId);
+    expect(Object.values(criteria.snapshot.coverageBySkill).every((row) => row.coverageRatio === null)).toBe(true);
   });
 
-  it('confirmStageTransitionAction 写 outcome=USER_APPROVED_TRANSITION + userConfirmed + StageTransitionLog', async () => {
-    const review = await reviewReadinessAction({ stageId: STAGE_ID, asOfDate: AS_OF });
-    expect(review.ok).toBe(true);
-    if (!review.ok) return;
+  it('历史 review 不因新增证据而变化', async () => {
+    const review = await createReview({ outcome: 'NEED_MORE_EVIDENCE', status: 'INSUFFICIENT' });
+    const before = review.criteriaJson;
+    await prisma.evidenceRecord.create({ data: { skill: 'LISTENING', evidenceType: 'BASELINE', score: 2, outputText: 'new evidence' } });
+    const after = await prisma.stageReadinessReview.findUniqueOrThrow({ where: { id: review.id } });
+    expect(after.criteriaJson).toBe(before);
+  });
+});
 
-    const confirm = await confirmStageTransitionAction({
-      reviewId: review.data.reviewId,
-      toStageCode: 'S2_A2_B1',
-      reason: '证据已满足，用户本人确认进入下一阶段',
-      confirmedBy: '本人',
-    });
+describe('阶段确认门禁', () => {
+  it('READY + 用户确认才写 USER_APPROVED_TRANSITION 和 StageTransitionLog', async () => {
+    const review = await createReview();
+    const confirm = await confirmStageTransitionAction({ reviewId: review.id, toStageCode: 'S2_A2_B1', reason: '证据已满足，用户本人确认进入下一阶段', confirmedBy: '本人' });
     expect(confirm.ok).toBe(true);
     if (!confirm.ok) return;
-
-    const updated = await prisma.stageReadinessReview.findUnique({
-      where: { id: review.data.reviewId },
-    });
-    expect(updated?.outcome).toBe('USER_APPROVED_TRANSITION');
-    expect(updated?.userConfirmed).toBe(true);
-    expect(updated?.confirmedBy).toBe('本人');
-
-    const log = await prisma.stageTransitionLog.findUnique({ where: { id: confirm.data.logId } });
-    expect(log).not.toBeNull();
-    expect(log!.toStageCode).toBe('S2_A2_B1');
-    expect(log!.decidedBy).toBe('USER');
-    expect(log!.evidenceSnapshot).toBe(updated!.criteriaJson);
-
-    // 口径 2：确认后阶段状态真的切过去了（旧 COMPLETED、目标 ACTIVE）
-    const from = await prisma.stage.findUnique({ where: { id: STAGE_ID } });
-    expect(from?.status).toBe('COMPLETED');
-    const to = await prisma.stage.findUnique({ where: { code: 'S2_A2_B1' } });
-    expect(to?.status).toBe('ACTIVE');
+    const updated = await prisma.stageReadinessReview.findUniqueOrThrow({ where: { id: review.id } });
+    expect(updated.outcome).toBe('USER_APPROVED_TRANSITION');
+    expect(updated.userConfirmed).toBe(true);
+    const log = await prisma.stageTransitionLog.findUniqueOrThrow({ where: { id: confirm.data.logId } });
+    expect(log.evidenceSnapshot).toBe(updated.criteriaJson);
+    expect((await prisma.stage.findUniqueOrThrow({ where: { id: STAGE_ID } })).status).toBe('COMPLETED');
+    expect((await prisma.stage.findUniqueOrThrow({ where: { code: 'S2_A2_B1' } })).status).toBe('ACTIVE');
   });
 
-  it('重复确认同一 review → CONFLICT（幂等拦截）', async () => {
-    const review = await reviewReadinessAction({ stageId: STAGE_ID, asOfDate: AS_OF });
-    expect(review.ok).toBe(true);
-    if (!review.ok) return;
+  it.each([
+    ['NEED_MORE_EVIDENCE', 'INSUFFICIENT'],
+    ['READY_FOR_REVIEW', 'READ_ERROR'],
+    ['CONTINUE_CURRENT', 'FAIL'],
+  ])('非 READY 或存在 READ_ERROR（%s/%s）拒绝切换且不写日志', async (outcome, status) => {
+    const review = await createReview({ outcome, status });
+    const count = await prisma.stageTransitionLog.count();
+    const result = await confirmStageTransitionAction({ reviewId: review.id, toStageCode: 'S2_A2_B1', reason: '尝试绕过就绪门禁但应被拒绝', confirmedBy: '本人' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('PRECONDITION');
+    expect(await prisma.stageTransitionLog.count()).toBe(count);
+    expect((await prisma.stage.findUniqueOrThrow({ where: { id: STAGE_ID } })).status).toBe('ACTIVE');
+  });
 
-    const first = await confirmStageTransitionAction({
-      reviewId: review.data.reviewId,
-      toStageCode: 'S2_A2_B1',
-      reason: '证据已满足，用户本人确认进入下一阶段',
-      confirmedBy: '本人',
-    });
-    expect(first.ok).toBe(true);
+  it('criteriaJson 损坏时拒绝切换（fail closed）', async () => {
+    const review = await createReview();
+    await prisma.stageReadinessReview.update({ where: { id: review.id }, data: { criteriaJson: '{broken' } });
+    const result = await confirmStageTransitionAction({ reviewId: review.id, toStageCode: 'S2_A2_B1', reason: '损坏快照不得通过确认', confirmedBy: '本人' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('PRECONDITION');
+  });
 
-    const second = await confirmStageTransitionAction({
-      reviewId: review.data.reviewId,
-      toStageCode: 'S2_A2_B1',
-      reason: '证据已满足，用户本人确认进入下一阶段',
-      confirmedBy: '本人',
-    });
+  it('评审不属于当前 ACTIVE 阶段时拒绝切换', async () => {
+    const review = await createReview({ stageId: 'stage-target' });
+    const result = await confirmStageTransitionAction({ reviewId: review.id, toStageCode: 'S2_A2_B1', reason: '非当前阶段评审不得确认', confirmedBy: '本人' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe('PRECONDITION');
+  });
+
+  it('重复确认同一 review → CONFLICT', async () => {
+    const review = await createReview();
+    const payload = { reviewId: review.id, toStageCode: 'S2_A2_B1', reason: '证据已满足，用户本人确认进入下一阶段', confirmedBy: '本人' };
+    expect((await confirmStageTransitionAction(payload)).ok).toBe(true);
+    const second = await confirmStageTransitionAction(payload);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe('CONFLICT');
   });

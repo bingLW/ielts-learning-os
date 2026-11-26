@@ -1,5 +1,5 @@
 /**
- * v2.2 端到端验收（真实数据库副本）。
+ * v2.2 端到端验收（独立临时数据库）。
  *
  * 链路（未来日期用 fixture 模拟并标注）：
  *   2026-09-01 A0 微基线 → 即时复测 → 2026-09-08 第 7 天平行材料 →
@@ -7,29 +7,15 @@
  *   + 90 天周期阶段（第 1/14/15/56/57/90 天）+ 周主问题槽位
  *   + 计划融合（到期复测计入预算）+ A0–A4 独立性 + 知识型/技能型队列隔离。
  *
- * 安全边界：先复制 prisma/dev.db 到临时目录，DATABASE_URL 指向副本；
- * 真实库只读，跑完删除副本。
+ * 安全边界：从 Prisma schema 创建临时库并加载定义型种子；不读取或写入真实库。
  *
  * 说明：不直接调用 Server Action（revalidatePath 需要 Next 请求上下文），
  * 这里复用同一批领域函数与 retestSchedule 服务端助手，校验引擎与数据不变量。
  */
 
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createScriptTestDatabase } from './helpers/testDatabase.mts';
 
-const repoRoot = process.cwd();
-const sourceDb = join(repoRoot, 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-e2e-v22-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) {
-  console.error(`[FAIL] 找不到真实数据库：${sourceDb}`);
-  process.exit(1);
-}
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}`;
-
-const { PrismaClient } = await import('@prisma/client');
+const { prisma, path: workDb, cleanup } = await createScriptTestDatabase('ielts-e2e-v22');
 const { ensureRetestChain } = await import('../src/lib/retestSchedule');
 const {
   checkRetestEvidence,
@@ -47,8 +33,6 @@ const {
   buildRecoveryAdvice,
 } = await import('../src/lib/domain/cycle');
 const { aiUsageIndependent } = await import('../src/lib/domain/coach');
-
-const prisma = new PrismaClient();
 
 let passed = 0;
 let failed = 0;
@@ -71,8 +55,8 @@ function at(isoDate: string): Date {
 }
 
 async function main() {
-  console.log('== v2.2 端到端验收（数据库副本）==');
-  console.log(`副本：${workDb}\n`);
+  console.log('== v2.2 端到端验收（独立临时库）==');
+  console.log(`临时库：${workDb}\n`);
 
   const before = {
     evidence: await prisma.evidenceRecord.count(),
@@ -387,8 +371,6 @@ try {
   console.error(`[FAIL] ${error instanceof Error ? error.stack : String(error)}`);
   failed += 1;
 } finally {
-  await prisma.$disconnect();
-  rmSync(workDb, { force: true });
-  rmSync(`${workDb}-journal`, { force: true });
+  await cleanup();
   if (failed > 0) process.exitCode = 1;
 }

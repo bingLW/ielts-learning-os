@@ -28,12 +28,13 @@ export function FiveDimensionMatrix({ dimensions }: { dimensions: ReadinessDimen
 
   return (
     <div className="overflow-x-auto">
-      <table data-testid="readiness-dimensions" className="w-full min-w-[520px] text-[11px]">
+      <table data-testid="readiness-dimensions" className="w-full min-w-[680px] text-[11px]">
         <thead>
           <tr className="border-b border-line text-inkMuted">
             <th className="py-1 text-left font-medium">维度</th>
             <th className="py-1 text-left font-medium">状态</th>
             <th className="py-1 text-left font-medium">依据</th>
+            <th className="py-1 text-left font-medium">补测建议</th>
             <th className="py-1 text-right font-medium">证据条数</th>
           </tr>
         </thead>
@@ -49,7 +50,17 @@ export function FiveDimensionMatrix({ dimensions }: { dimensions: ReadinessDimen
                 <td className={`py-1 font-medium ${meta.tone}`}>
                   {meta.icon} {meta.label}
                 </td>
-                <td className="py-1 text-inkMuted">{row.detail}</td>
+                <td className="py-1 text-inkMuted">
+                  <p>{row.detail || '历史评审未记录维度说明'}</p>
+                  {row.evidenceRefs.length > 0 && (
+                    <p className="mt-0.5 break-all">
+                      Evidence IDs：{row.evidenceRefs.join('、')}
+                    </p>
+                  )}
+                </td>
+                <td className="py-1 text-inkMuted">
+                  {row.suggestion ?? '历史评审未记录补测建议'}
+                </td>
                 <td className="py-1 text-right tabular">{row.evidenceRefs.length}</td>
               </tr>
             );

@@ -34,6 +34,8 @@ import {
   SKILL_TO_SUBJECT,
 } from '@/lib/queries/planning';
 import { getActiveStage } from '@/lib/queries/stages';
+import { effectiveActualMinutesByTask } from '@/lib/services/carryoverApply';
+import { reservedMinutesForTask } from '@/lib/services/planInventory';
 import { prisma } from '@/lib/prisma';
 import { fail, ok } from '@/lib/result';
 import type {
@@ -89,6 +91,8 @@ function mapToExistingTask(row: PlanTask): ExistingTask {
     skill: row.skill,
     plannedMinutes: row.plannedMinutes,
     actualMinutes: row.actualMinutes,
+    timerStatus: row.timerStatus,
+    timerVersion: row.timerVersion,
     status: row.status as TaskStatus,
     priority: (row.priority ?? 'P1') as TaskPriority,
     sourceKind: row.sourceKind as TaskSourceKind,
@@ -96,6 +100,8 @@ function mapToExistingTask(row: PlanTask): ExistingTask {
     minChunkMinutes: row.minChunkMinutes,
     sortOrder: row.sortOrder,
     planVersion: row.planVersion,
+    movedToDate: row.movedToDate,
+    movedCount: row.movedCount,
     timerRunning: row.timerStatus === 'RUNNING',
     track: row.track as LearningTrack,
     primarySkill: row.primarySkill,
@@ -190,7 +196,14 @@ function buildDiff(args: BuildDiffArgs): ReplanDiff {
 
   // 锁定任务：受保护，不参与重排，原样保留（before == after）。
   for (const task of args.locked) {
-    const row = beforeRow(task, planDate, '用户锁定，不参与重排', true);
+    const row = beforeRow(
+      task,
+      planDate,
+      task.movedToDate === planDate && (task.movedCount ?? 0) > 0
+        ? '上期滚入任务，自动锁定，不参与普通延期'
+        : '用户锁定，不参与重排',
+      true,
+    );
     before.push(row);
     after.push({ ...row });
   }
@@ -241,10 +254,12 @@ function fingerprintTokens(args: {
   existingTasks: ExistingTask[];
   actualMinutesToday: number;
   lockedTaskIds: string[];
+  actions: ReplanAction[];
+  newTasks: NewTaskSpec[];
 }): { previewToken: string; snapshotId: string } {
   const sortedTaskFingerprint = [...args.existingTasks]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map((t) => `${t.id}:${t.status}:${t.plannedMinutes}:${t.actualMinutes}:${t.planVersion}`)
+    .map((t) => `${t.id}:${t.status}:${t.timerStatus ?? 'IDLE'}:${t.timerVersion ?? 0}:${t.plannedMinutes}:${t.actualMinutes}:${t.planVersion}:${t.movedToDate ?? ''}:${t.movedCount ?? 0}:${t.priority}:${t.splittable}:${t.minChunkMinutes}`)
     .join(',');
 
   const sortedLockedIds = [...args.lockedTaskIds].sort().join(',');
@@ -259,6 +274,8 @@ function fingerprintTokens(args: {
     sortedTaskFingerprint,
     String(args.actualMinutesToday),
     sortedLockedIds,
+    JSON.stringify([...args.actions].sort((a, b) => a.taskId.localeCompare(b.taskId))),
+    JSON.stringify(args.newTasks),
   ].join('|');
 
   return {
@@ -283,22 +300,37 @@ async function runReplan(input: ReplanPreviewInput): Promise<ActionResult<Replan
     return fail('PRECONDITION', '当日尚无任务，请直接生成计划，无需重排');
   }
 
-  const existingTasks = rows.map(mapToExistingTask);
+  const actualByTask = await effectiveActualMinutesByTask(rows);
+  const existingTasks = rows.map((row) => {
+    const actualMinutes = actualByTask.get(row.id) ?? 0;
+    return mapToExistingTask({ ...row, actualMinutes });
+  });
   const lockedIds = new Set(input.lockedTaskIds ?? []);
+  for (const task of existingTasks) {
+    if (task.movedToDate === input.planDate && (task.movedCount ?? 0) > 0
+      && (task.status === 'TODO' || task.status === 'IN_PROGRESS')) {
+      lockedIds.add(task.id);
+    }
+  }
   const locked = existingTasks.filter((task) => lockedIds.has(task.id));
   const unlocked = existingTasks.filter((task) => !lockedIds.has(task.id));
 
   // 锁定任务仍占用预算：把它们「未完成尾巴」从新预算里预扣，交给引擎的剩余预算
   // 就不会把这些时间重复排给新任务（否则锁定 + 新任务会超预算）。
   const reservedByLocked = locked
-    .filter((task) => task.status === 'TODO' || task.status === 'IN_PROGRESS')
+    .filter((task) => !['DONE', 'PARTIAL', 'CANCELLED', 'DEFERRED'].includes(task.status))
     .reduce(
       (sum, task) => sum + Math.max(0, task.plannedMinutes - Math.max(0, task.actualMinutes)),
       0,
     );
-  const effectiveBudget = Math.max(0, Math.round(input.newBudgetMinutes) - reservedByLocked);
+  const taskActualMinutes = existingTasks.reduce((sum, task) => sum + Math.max(0, task.actualMinutes), 0);
+  const actualMinutesToday = Math.max(await getNetMinutesOfDate(input.planDate), taskActualMinutes);
+  const budgetAfterActual = Math.round(input.newBudgetMinutes) - actualMinutesToday;
+  if (reservedByLocked > Math.max(0, budgetAfterActual)) {
+    return fail('PRECONDITION', `锁定任务剩余 ${reservedByLocked} 分钟，超过当日已发生时长后的剩余预算 ${Math.max(0, budgetAfterActual)} 分钟；请先提高预算或解锁任务`);
+  }
+  const effectiveBudget = Math.round(input.newBudgetMinutes) - reservedByLocked;
 
-  const actualMinutesToday = await getNetMinutesOfDate(input.planDate);
   const nextVersion = await nextPlanVersion(input.planDate);
   const isRestDay = input.isRestDay ?? input.newBudgetMinutes === 0;
 
@@ -344,6 +376,8 @@ async function runReplan(input: ReplanPreviewInput): Promise<ActionResult<Replan
     existingTasks,
     actualMinutesToday,
     lockedTaskIds: [...lockedIds],
+    actions: replan.actions,
+    newTasks: replan.newTasks,
   });
 
   return ok({
@@ -358,6 +392,20 @@ async function runReplan(input: ReplanPreviewInput): Promise<ActionResult<Replan
     newTasks: replan.newTasks,
     scheduledRetestIds: replan.scheduledRetestIds,
   });
+}
+
+class ReplanConflictError extends Error {
+  constructor() {
+    super('计划在预览后已变化');
+    this.name = 'ReplanConflictError';
+  }
+}
+
+class ReplanBudgetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReplanBudgetError';
+  }
 }
 
 /**
@@ -414,6 +462,7 @@ export async function confirmReplan(
   if (already) return fail('CONFLICT', '该预览已确认过，请刷新预览再确认');
 
   const moduleById = new Map(existingTasks.map((task) => [task.id, task.module]));
+  const isRestDay = input.isRestDay ?? input.newBudgetMinutes === 0;
   const beforeSnapshot = JSON.stringify(
     existingTasks.map((task) => ({
       id: task.id,
@@ -423,25 +472,62 @@ export async function confirmReplan(
       status: task.status,
     })),
   );
-  const afterSnapshot = JSON.stringify({ summary: diff.summary, entries: diff.entries });
 
   // 主材料映射是只读查询，必须在事务外取：事务内调全局 prisma 会另开连接，SQLite 死锁。
   const resourceMap = newTasks.length > 0 ? await primaryResourceMap() : {};
 
+  try {
   await prisma.$transaction(async (tx) => {
+    const duplicate = await tx.planVersion.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      select: { id: true },
+    });
+    if (duplicate) throw new ReplanConflictError();
+    const currentRows = await tx.planTask.findMany({ where: { planDate: input.planDate } });
+    const currentActual = await effectiveActualMinutesByTask(currentRows, tx);
+    const currentFingerprint = currentRows.map((row) => ({
+      ...mapToExistingTask(row),
+      actualMinutes: currentActual.get(row.id) ?? 0,
+    })).sort((a, b) => a.id.localeCompare(b.id));
+    if (JSON.stringify(currentFingerprint) !== JSON.stringify([...existingTasks].sort((a, b) => a.id.localeCompare(b.id)))) {
+      throw new ReplanConflictError();
+    }
+
+    const taskById = new Map(existingTasks.map((task) => [task.id, task]));
+    const rawTaskById = new Map(currentRows.map((task) => [task.id, task]));
     // 逐条执行 replan 指令（与 v2.1 replan action 同口径）。
     for (const action of actions) {
+      const task = taskById.get(action.taskId);
+      const rawTask = rawTaskById.get(action.taskId);
+      if (!task || !rawTask) throw new ReplanConflictError();
+      const expectedWhere = {
+        id: task.id,
+        planDate: input.planDate,
+        status: task.status,
+        timerStatus: task.timerStatus ?? 'IDLE',
+        timerVersion: task.timerVersion ?? 0,
+        plannedMinutes: task.plannedMinutes,
+        actualMinutes: rawTask.actualMinutes,
+        planVersion: task.planVersion,
+        movedToDate: task.movedToDate ?? null,
+        movedCount: task.movedCount ?? 0,
+        priority: task.priority,
+        splittable: task.splittable,
+        minChunkMinutes: task.minChunkMinutes,
+      } as const;
       if (action.type === 'SHRINK') {
-        await tx.planTask.update({
-          where: { id: action.taskId },
+        const changed = await tx.planTask.updateMany({
+          where: expectedWhere,
           data: {
             plannedMinutes: action.newPlannedMinutes,
+            planVersion: nextVersion,
             rescheduleReason: input.reason ?? '预算变更后重新规划',
           },
         });
+        if (changed.count !== 1) throw new ReplanConflictError();
       } else if (action.type === 'DEFER') {
-        await tx.planTask.update({
-          where: { id: action.taskId },
+        const changed = await tx.planTask.updateMany({
+          where: expectedWhere,
           data: {
             status: 'DEFERRED',
             statusChangedAt: new Date(),
@@ -449,7 +535,7 @@ export async function confirmReplan(
             rescheduleReason: input.reason ?? '预算变更后重新规划',
           },
         });
-        // 复测任务被延期：解除排期关联，让它能重新进入下一次生成/重排。
+        if (changed.count !== 1) throw new ReplanConflictError();
         if (moduleById.get(action.taskId) === 'EVIDENCE_RETEST') {
           await tx.retestSchedule.updateMany({
             where: { planTaskId: action.taskId },
@@ -457,7 +543,6 @@ export async function confirmReplan(
           });
         }
       }
-      // KEEP：无写入。
     }
 
     // 批量创建新任务（不删除旧任务，保护 StudySession 级联）。
@@ -503,6 +588,39 @@ export async function confirmReplan(
       }
     }
 
+    const activeRows = await tx.planTask.findMany({
+      where: { planDate: input.planDate, status: { notIn: ['CANCELLED', 'DEFERRED'] } },
+      orderBy: { sortOrder: 'asc' },
+    });
+    const actualByTask = await effectiveActualMinutesByTask(activeRows, tx);
+    const taskActualMinutes = activeRows.reduce(
+      (sum, task) => sum + Math.max(0, actualByTask.get(task.id) ?? 0),
+      0,
+    );
+    const nonTaskActualMinutes = Math.max(0, actualMinutesToday - taskActualMinutes);
+    const committedMinutes = activeRows.reduce(
+      (sum, task) => sum + reservedMinutesForTask(task, actualByTask.get(task.id) ?? 0),
+      nonTaskActualMinutes,
+    );
+    if (committedMinutes > Math.round(input.newBudgetMinutes)) {
+      throw new ReplanBudgetError(`重排后有效任务共 ${committedMinutes} 分钟，超过预算 ${Math.round(input.newBudgetMinutes)} 分钟`);
+    }
+
+    await tx.dailyBudget.upsert({
+      where: { date: input.planDate },
+      create: {
+        date: input.planDate,
+        plannedAvailableMinutes: Math.round(input.newBudgetMinutes),
+        isRestDay: isRestDay,
+        source: 'USER',
+      },
+      update: {
+        plannedAvailableMinutes: Math.round(input.newBudgetMinutes),
+        isRestDay: isRestDay,
+        source: 'USER',
+      },
+    });
+
     // 写一条 REPLAN 版本（幂等键唯一，token 失效则到不了这里）。
     await tx.planVersion.create({
       data: {
@@ -513,12 +631,30 @@ export async function confirmReplan(
         budgetMinutes: input.newBudgetMinutes,
         actualMinutesAtChange: actualMinutesToday,
         beforeSnapshot,
-        afterSnapshot,
+        afterSnapshot: JSON.stringify({
+          summary: diff.summary,
+          entries: diff.entries,
+          taskIds: activeRows.map((task) => task.id),
+          totalMinutes: committedMinutes,
+          layer: 'DAY',
+        }),
         idempotencyKey: input.idempotencyKey,
         snapshotId,
+        layer: 'DAY',
       },
     });
   });
-
   return ok({ version: nextVersion, applied: diff.summary });
+  } catch (error) {
+    if (error instanceof ReplanConflictError) {
+      return fail('CONFLICT', '计划在预览后已变化，请刷新预览再确认');
+    }
+    if (error instanceof ReplanBudgetError) return fail('PRECONDITION', error.message);
+    if (typeof error === 'object' && error !== null && 'code' in error
+      && ['P2002', 'P2028'].includes((error as { code?: unknown }).code as string)) {
+      console.error('重排确认数据库冲突', { code: (error as { code?: unknown }).code });
+      return fail('CONFLICT', '重排确认发生并发冲突，请刷新预览后重试');
+    }
+    throw error;
+  }
 }

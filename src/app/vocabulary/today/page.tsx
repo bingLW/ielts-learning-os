@@ -2,7 +2,7 @@
  * `/vocabulary/today` 今日词汇任务。
  */
 
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { prisma } from '@/lib/prisma';
 import { getActiveVocabDeck, getVocabAssignment } from '@/lib/queries/vocabIntegration';
 import { VocabTodayBody } from '@/components/vocabulary/VocabTodayBody';
@@ -10,7 +10,7 @@ import { VocabTodayBody } from '@/components/vocabulary/VocabTodayBody';
 export const dynamic = 'force-dynamic';
 
 export default async function VocabularyTodayPage() {
-  const date = today();
+  const date = await businessToday();
   const [assignment, activeDeck, planTask] = await Promise.all([
     getVocabAssignment(date),
     getActiveVocabDeck(),

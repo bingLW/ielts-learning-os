@@ -3,7 +3,7 @@
 /**
  * 系统设置 Server Actions。
  *
- * 时区不接受客户端传值（固定 Asia/Singapore），长期目标标签目前也不落库 ——
+ * 时区只接受 IANA 名称，长期目标标签目前也不落库 ——
  * 它属于产品文案，不进入业务数据，避免与 CEFR 声明混淆。
  */
 
@@ -22,6 +22,7 @@ export async function updateProfileAction(
     targetBandOverall: number;
     dailyMinutes: number;
     weeklyReviewDow: number;
+    timezone: string;
     examDate: string | null;
     aiEnabled: boolean;
   }>
@@ -38,6 +39,7 @@ export async function updateProfileAction(
     targetBandSpeak: input.targetBandSpeak ?? null,
     dailyMinutes: input.dailyMinutes,
     weeklyReviewDow: input.weeklyReviewDow,
+    ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
     examDate: nullIfEmpty(input.examDate),
     aiEnabled: input.aiEnabled ?? false,
   };
@@ -55,6 +57,7 @@ export async function updateProfileAction(
     targetBandOverall: profile.targetBandOverall,
     dailyMinutes: profile.dailyMinutes,
     weeklyReviewDow: profile.weeklyReviewDow,
+    timezone: profile.timezone,
     examDate: profile.examDate,
     aiEnabled: profile.aiEnabled,
   });

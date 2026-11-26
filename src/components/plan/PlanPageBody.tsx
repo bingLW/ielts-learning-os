@@ -36,7 +36,7 @@ export function PlanPageBody({ data, todayStr, weekStrip }: PlanPageBodyProps) {
         <div>
           <h1 className="text-base font-semibold text-ink">学习计划 · {data.planDate}</h1>
           <p className="text-xs text-inkMuted">
-            {data.stageName ?? '尚未激活阶段'} · 时区 Asia/Singapore · 计划与实际严格分列
+            {data.stageName ?? '尚未激活阶段'} · Legacy 计划查看与执行入口 · 计划与实际严格分列
           </p>
         </div>
       </div>
@@ -47,7 +47,6 @@ export function PlanPageBody({ data, todayStr, weekStrip }: PlanPageBodyProps) {
         weekStrip={weekStrip}
         dailyMinutesPreset={data.budget.minutes}
         hasTasks={hasTasks}
-        onToast={show}
       />
 
       <Card
@@ -61,7 +60,6 @@ export function PlanPageBody({ data, todayStr, weekStrip }: PlanPageBodyProps) {
           actualMinutesToday={data.netMinutes}
           planVersionCount={data.planVersionCount}
           retestPlannedMinutes={data.retestPlannedMinutes}
-          onToast={show}
         />
       </Card>
 
@@ -126,7 +124,6 @@ export function PlanPageBody({ data, todayStr, weekStrip }: PlanPageBodyProps) {
         <PlanEmptyState
           planDate={data.planDate}
           dailyMinutesPreset={data.budget.minutes}
-          onToast={show}
         />
       )}
 

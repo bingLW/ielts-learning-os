@@ -1,7 +1,6 @@
 /**
- * 处理管线集成测试（真实 Prisma，数据库用 dev.db 的副本）。
+ * 处理管线集成测试（真实 Prisma，独立临时数据库）。
  *
- * 安全边界与既有集成测试一致：复制 `prisma/dev.db` 到临时目录，**真实库只读**；
  * `next/cache` 的 `revalidatePath` 需要 Next 请求上下文，这里显式 mock 掉，
  * 其余逻辑（落盘、去重、状态机、tick、取消、重试、删除预览）全部走真实实现。
  *
@@ -14,30 +13,17 @@
  * - getDeletionPreview 计数 / getMaterialImportContext 限额
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-materials-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-
-// 临时库用内存日志：回滚日志不需要落成 `{db}-journal` 文件，省掉每次事务的
-// 创建/删除开销（本机的安全删除钩子对 unlink 很敏感），语义上等价于默认的
-// `journal_mode=DELETE`（单连接、无崩溃恢复需求）。
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { finalizeMaterialUpload } = await import('@/lib/materials/upload');
 const { runPipelineTick } = await import('@/lib/materials/pipeline');
@@ -58,6 +44,7 @@ const { GENERATING_NO_ANCHOR_REASON } = await import(
  */
 beforeAll(async () => {
   await ensurePromptRegistry(prisma);
+  await prisma.aIEngineSetting.create({ data: { id: 'default', externalAiEnabled: false } });
   await prisma.aIEngineSetting.updateMany({ data: { externalAiEnabled: false } });
 });
 
@@ -127,40 +114,27 @@ async function runToEnd(materialId: string) {
 }
 
 /**
- * 结束时是否清理临时库与原文目录。
+ * 结束时是否清理材料原文目录；临时数据库始终由 createTestDb 清理。
  *
  * 默认开；但在「删除被安全钩子拦一层」的机器上，每次 unlink 会同步阻塞约 2s，
  * 二十来个样本就会把 hook 拖出 10s 默认超时、把一份全绿的用例判成失败。
- * 这种环境用 `MATERIALS_TEST_CLEANUP=0 npm test` 跳过清理（`storage/` 与
- * 系统临时目录都在 .gitignore 之外/之内且无副作用）。hook 超时放宽到 60s。
+ * 这种环境用 `MATERIALS_TEST_CLEANUP=0 npm test` 跳过目录清理。hook 超时放宽到 60s。
  */
 const CLEANUP_ARTIFACTS = process.env.MATERIALS_TEST_CLEANUP !== '0';
 
 afterAll(async () => {
   if (CLEANUP_ARTIFACTS) {
     // 失败一律忽略：清理是收尾动作，绝不能因为它把整份用例判红
-    await Promise.allSettled([
-      ...Array.from(createdIds, (id) => removeMaterialDir(id)),
-      removeTempFile(workDb),
-      removeTempFile(`${workDb}-journal`),
-    ]);
+    await Promise.allSettled(Array.from(createdIds, (id) => removeMaterialDir(id)));
   }
   await prisma.$disconnect();
+  cleanup();
 }, 60_000);
 
 /** 异步删除材料原文目录（失败忽略）。 */
 async function removeMaterialDir(materialId: string): Promise<void> {
   try {
     await rm(join(materialsDir(), materialId), { recursive: true, force: true });
-  } catch {
-    // 忽略
-  }
-}
-
-/** 异步删除临时文件（失败忽略）。 */
-async function removeTempFile(file: string): Promise<void> {
-  try {
-    await rm(file, { force: true });
   } catch {
     // 忽略
   }

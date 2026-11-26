@@ -14,21 +14,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma } = await createTestDb([
-  'studySessionDaySplit',
-  'studySession',
-  'taskProposalItem',
-  'taskProposal',
-  'planVersion',
-  'planTask',
-  'dailyBudget',
-  'plannerSettings',
-  'stage',
-  'learningMaterial',
-  'materialPackItem',
-  'materialPack',
-  'resource',
-]);
+const { prisma } = await createTestDb();
 
 const { confirmTaskProposalAction } = await import('@/lib/actions/materialPack');
 const { collectMaterialCandidates } = await import('@/lib/services/candidateSources');

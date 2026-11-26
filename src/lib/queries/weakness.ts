@@ -7,7 +7,8 @@
  */
 
 import { SKILL_LABEL_ZH, WEAKNESS_MIN_QUESTIONS, WEAKNESS_TOP_N, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
-import { addDays, diffDays, today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, diffDays } from '@/lib/date';
 import { mergeSampleTotals } from '@/lib/domain/accuracy';
 import { rankWeaknesses, type WeaknessCandidate } from '@/lib/domain/weakness';
 import { prisma } from '@/lib/prisma';
@@ -21,7 +22,8 @@ export interface WeaknessRanking {
 }
 
 /** 聚合近 28 天的薄弱点排序结果。 */
-export async function getWeaknessRanking(nowDate: string = today()): Promise<WeaknessRanking> {
+export async function getWeaknessRanking(nowDateParam?: string): Promise<WeaknessRanking> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const fromWindow = addDays(nowDate, -(WEAKNESS_WINDOW_DAYS - 1));
 
   const [windowRecords, windowTasks, windowMistakes, lessons, pendingReviews] = await Promise.all([

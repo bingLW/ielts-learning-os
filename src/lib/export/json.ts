@@ -2,7 +2,8 @@
  * 全量 JSON 导出。含 `schema_version` / `exported_at` / 各表条数。
  */
 
-import { SCHEMA_VERSION, TZ_NAME } from '@/lib/constants';
+import { SCHEMA_VERSION } from '@/lib/constants';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { prisma } from '@/lib/prisma';
 import type { ExportPayload } from '@/lib/types';
 import { EXPORT_TABLES, mapRows, type ExportTable } from './mapping';
@@ -36,7 +37,7 @@ export async function buildExportPayload(): Promise<ExportPayload> {
   return {
     schema_version: SCHEMA_VERSION,
     exported_at: new Date().toISOString(),
-    timezone: TZ_NAME,
+    timezone: await getBusinessTimezone(),
     counts,
     data,
   };

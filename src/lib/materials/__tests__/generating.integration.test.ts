@@ -10,20 +10,12 @@
  * - **全批失败**：本轮所有批次都失败时才落 `failed`。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 import type { MaterialFormat, MaterialSourceType } from '@/lib/constants';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-generating-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-// 单连接 + 内存日志：本机安全删除钩子对 unlink 敏感，见 pipeline.integration.test.ts
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -31,8 +23,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { finalizeMaterialUpload } = await import('@/lib/materials/upload');
 const { runPipelineTick } = await import('@/lib/materials/pipeline');
@@ -132,6 +123,7 @@ async function acceptAnchors(materialId: string): Promise<number> {
 
 beforeAll(async () => {
   await ensurePromptRegistry(prisma);
+  await prisma.aIEngineSetting.create({ data: { id: 'default', externalAiEnabled: false } });
   // 强制 mock 通道：绝不让集成测试打到真实模型
   await prisma.aIEngineSetting.updateMany({ data: { externalAiEnabled: false } });
 });
@@ -146,16 +138,10 @@ afterAll(async () => {
           // 清理失败不影响结论
         }
       }),
-      (async () => {
-        try {
-          await rm(workDb, { force: true });
-        } catch {
-          // 忽略
-        }
-      })(),
     ]);
   }
   await prisma.$disconnect();
+  cleanup();
 }, 60_000);
 
 describe('没有已采纳结果：不失败，停在待审核并说明原因', () => {

@@ -48,6 +48,12 @@ export interface DiagnosticAttemptDto {
   confidence: string | null;
   limitations: string[];
   needsFollowUp: boolean;
+  aiAudit: {
+    callLogId: string | null;
+    modelId: string | null;
+    promptVersionId: string | null;
+    rubricVersion: string | null;
+  } | null;
   submittedAt: string;
 }
 
@@ -180,6 +186,14 @@ export async function getDiagnosticSessionDetail(
     confidence: attempt.assessment?.confidence ?? attempt.confidence,
     limitations: parseJson<string[]>(attempt.assessment?.limitationsJson, []),
     needsFollowUp: attempt.assessment?.needsFollowUp ?? false,
+    aiAudit: attempt.assessment?.assessorType === 'AI'
+      ? {
+          callLogId: attempt.assessment.aiCallLogId,
+          modelId: attempt.assessment.aiModelId,
+          promptVersionId: attempt.assessment.aiPromptVersionId,
+          rubricVersion: attempt.assessment.rubricVersion,
+        }
+      : null,
     submittedAt: attempt.submittedAt.toISOString(),
   }));
 
@@ -219,7 +233,7 @@ export interface DiagnosticReportDto {
     levelRange: [string, string] | null;
     confidence: string;
     evidenceCount: number;
-    coverageRatio: number;
+    coverageRatio: number | null;
     needsFollowUp: boolean;
     limitations: string[];
   }>;
@@ -282,6 +296,14 @@ export async function getDiagnosticReport(
     confidence: attempt.assessment?.confidence ?? attempt.confidence,
     limitations: parseJson<string[]>(attempt.assessment?.limitationsJson, []),
     needsFollowUp: attempt.assessment?.needsFollowUp ?? false,
+    aiAudit: attempt.assessment?.assessorType === 'AI'
+      ? {
+          callLogId: attempt.assessment.aiCallLogId,
+          modelId: attempt.assessment.aiModelId,
+          promptVersionId: attempt.assessment.aiPromptVersionId,
+          rubricVersion: attempt.assessment.rubricVersion,
+        }
+      : null,
     submittedAt: attempt.submittedAt.toISOString(),
   }));
 
@@ -324,7 +346,7 @@ export async function getDiagnosticReport(
       levelRange: parseJson<[string, string] | null>(snapshot.levelRangeJson, null),
       confidence: snapshot.confidence,
       evidenceCount: snapshot.evidenceCount,
-      coverageRatio: parseJson<{ ratio?: number }>(snapshot.coverageJson, {}).ratio ?? 0,
+      coverageRatio: parseJson<{ ratio?: number | null }>(snapshot.coverageJson, {}).ratio ?? null,
       needsFollowUp: snapshot.needsFollowUp,
       limitations: parseJson<string[]>(snapshot.limitationsJson, []),
     })),

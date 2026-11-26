@@ -16,7 +16,7 @@
  */
 
 import { CEFR_LEVELS, GOAL_HREF, GOAL_TYPE_LABEL_ZH, MEDIATED_INTENSITY_BY_PROFILE } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
 import { skillShare } from '@/lib/domain/allocation';
 import { evaluateGeneralEnglishGate, evaluateIeltsGate, evaluateMediatedGate, goalProgress, mediatedOutputCount } from '@/lib/domain/tracks';
 import { prisma } from '@/lib/prisma';
@@ -39,7 +39,8 @@ async function currentProfileCode(): Promise<StageProfileCode | null> {
  *
  * @param nowDate 业务日（测试可注入）
  */
-export async function getGoalCards(nowDate: string = today()): Promise<GoalCardDto[]> {
+export async function getGoalCards(nowDateParam?: string): Promise<GoalCardDto[]> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const profile = await prisma.userProfile.findUnique({ where: { id: 1 } });
   const cefrTarget = (profile?.cefrTarget ?? 'B2') as CefrLevel;
   const mediatedSubject = profile?.mediatedSubject ?? 'French';

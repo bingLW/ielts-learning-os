@@ -10,7 +10,8 @@ import {
   REVIEW_BUCKET_WEEK_DAYS,
   TARGET_TYPE_LABEL_ZH,
 } from '@/lib/constants';
-import { addDays, diffDays, today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, diffDays } from '@/lib/date';
 import { isReviewLoadHeavy } from '@/lib/domain/duration';
 import { prisma } from '@/lib/prisma';
 import type {
@@ -61,7 +62,8 @@ export function toReviewTaskDto(row: ReviewTaskRecord, todayStr: string): Review
 }
 
 /** 复习中心：按到期日分「逾期 / 今日 / 本周」三桶。 */
-export async function getReviewCenter(nowDate: string = today()): Promise<ReviewCenterDto> {
+export async function getReviewCenter(nowDateParam?: string): Promise<ReviewCenterDto> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const weekEnd = addDays(nowDate, REVIEW_BUCKET_WEEK_DAYS - 1);
 
   const [rows, lowFreqRows, profile] = await Promise.all([
@@ -130,8 +132,9 @@ export async function getReviewCenter(nowDate: string = today()): Promise<Review
 export async function listUpcomingReviews(
   targetType: TargetType,
   targetId: string,
-  nowDate: string = today(),
+  nowDateParam?: string,
 ): Promise<ReviewTaskRowDto[]> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const rows = await prisma.reviewTask.findMany({
     where: { targetType, targetId, status: 'PENDING' },
     orderBy: { dueDate: 'asc' },
@@ -143,9 +146,10 @@ export async function listUpcomingReviews(
 export async function listReviewHistory(
   targetType: TargetType,
   targetId: string,
-  nowDate: string = today(),
+  nowDateParam?: string,
   limit = 20,
 ): Promise<ReviewTaskRowDto[]> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const rows = await prisma.reviewTask.findMany({
     where: { targetType, targetId, status: { in: ['DONE', 'SKIPPED'] } },
     orderBy: [{ dueDate: 'desc' }],
@@ -155,11 +159,12 @@ export async function listReviewHistory(
 }
 
 /** 待复习总量（Dashboard / 侧栏角标用）。 */
-export async function countPendingReviews(nowDate: string = today()): Promise<{
+export async function countPendingReviews(nowDateParam?: string): Promise<{
   dueToday: number;
   overdue: number;
   next7Days: number;
 }> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const weekEnd = addDays(nowDate, REVIEW_BUCKET_WEEK_DAYS - 1);
   const [overdue, dueToday, next7] = await Promise.all([
     prisma.reviewTask.count({ where: { status: 'PENDING', dueDate: { lt: nowDate } } }),

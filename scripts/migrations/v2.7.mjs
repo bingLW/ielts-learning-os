@@ -266,13 +266,14 @@ const CORE_TABLES = [
 ];
 
 function parseArgs(argv) {
-  const opts = { db: DEFAULT_DB, dryRun: false, allowNoBackup: false, quiet: false, help: false };
+  const opts = { db: DEFAULT_DB, dryRun: false, checksumOnly: false, allowNoBackup: false, quiet: false, help: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--db') {
       opts.db = argv[++i];
       if (!opts.db) throw new Error('--db 需要一个路径');
     } else if (arg === '--dry-run') opts.dryRun = true;
+    else if (arg === '--checksum-only') opts.checksumOnly = true;
     else if (arg === '--allow-no-backup') opts.allowNoBackup = true;
     else if (arg === '--quiet') opts.quiet = true;
     else if (arg === '-h' || arg === '--help') opts.help = true;
@@ -356,15 +357,31 @@ function columnDrift(beforeColumns, afterColumns) {
   return problems;
 }
 
+const checksum = createHash('sha256')
+  .update(
+    CREATE_TABLES.join('\n--\n')
+      + '===\n'
+      + ALTER_STATEMENTS.join('\n')
+      + '===\n'
+      + [...CREATE_INDEXES, ...ALTERED_INDEXES].join('\n'),
+  )
+  .digest('hex')
+  .slice(0, 16);
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log(`用法：node scripts/migrations/v2.7.mjs [--db <路径>] [--dry-run] [--allow-no-backup]
+    console.log(`用法：node scripts/migrations/v2.7.mjs [--db <路径>] [--dry-run] [--checksum-only] [--allow-no-backup]
 
   --db <路径>        目标数据库（默认 prisma/dev.db）
   --dry-run          只打印将执行的语句，不写库
+  --checksum-only    只输出权威 checksum，不读/写数据库
   --allow-no-backup  跳过「必须已有当日备份」检查（仅用于副本演练）
 `);
+    return;
+  }
+  if (opts.checksumOnly) {
+    console.log(checksum);
     return;
   }
 
@@ -395,17 +412,6 @@ function main() {
       );
     }
   }
-
-  const checksum = createHash('sha256')
-    .update(
-      CREATE_TABLES.join('\n--\n')
-        + '===\n'
-        + ALTER_STATEMENTS.join('\n')
-        + '===\n'
-        + [...CREATE_INDEXES, ...ALTERED_INDEXES].join('\n'),
-    )
-    .digest('hex')
-    .slice(0, 16);
 
   let alreadyApplied = false;
   const registeredChecksum = query(

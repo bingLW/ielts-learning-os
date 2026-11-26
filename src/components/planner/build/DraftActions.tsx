@@ -15,6 +15,7 @@ import { Button, buttonClass } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { confirmPlanVersionAction, generatePlanPreviewAction, saveDraftAction } from '@/lib/actions/planner';
 import type { BuildPlanPreviewResult } from '@/lib/actions/planner';
+import { CarryoverPanel } from './CarryoverPanel';
 import { NinetyDayTimeline } from './NinetyDayTimeline';
 import { SevenDayGrid } from './SevenDayGrid';
 import { ThirtyDayMatrix } from './ThirtyDayMatrix';
@@ -27,6 +28,8 @@ export function DraftActions({
   planDate,
   disabled = false,
   disabledReason,
+  initialBudgetOverride,
+  proposalId,
 }: {
   horizonDays: number;
   asOfDate: string;
@@ -35,12 +38,22 @@ export function DraftActions({
   planDate?: string;
   disabled?: boolean;
   disabledReason?: string;
+  initialBudgetOverride?: number;
+  proposalId?: string;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [budgetOverride, setBudgetOverride] = useState('');
+  const [budgetOverride, setBudgetOverride] = useState(
+    initialBudgetOverride === undefined ? '' : String(initialBudgetOverride),
+  );
   const [preview, setPreview] = useState<BuildPlanPreviewResult | null>(null);
-  const [confirmed, setConfirmed] = useState<{ version: number; versionId: string; warnings: string[] } | null>(null);
+  const [confirmed, setConfirmed] = useState<{
+    version: number;
+    versionId: string;
+    warnings: string[];
+    writtenTaskCount: number;
+    carryover: BuildPlanPreviewResult['carryover'];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
 
@@ -55,6 +68,7 @@ export function DraftActions({
     ...(budgetOverrideMinutes !== undefined && Number.isFinite(budgetOverrideMinutes)
       ? { budgetOverrideMinutes }
       : {}),
+    ...(proposalId ? { proposalId } : {}),
   };
 
   const runPreview = () => {
@@ -112,7 +126,7 @@ export function DraftActions({
   return (
     <Card
       title="生成计划"
-      description="预览不写库；确认后才会写入 PlanTask 与版本历史"
+      description="预览使用规则引擎、不调用 AI，也不写库；确认后才写入 PlanTask 与版本历史"
       actions={
         <span className="flex items-center gap-1.5">
           <label className="flex items-center gap-1 text-[11px] text-inkMuted">
@@ -145,7 +159,13 @@ export function DraftActions({
       )}
       {confirmed && (
         <div className="mb-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-800">
-          <p>已确认：版本 {confirmed.version}。计划已写入，可在解释页逐条查看依据。</p>
+          <p>已确认：版本 {confirmed.version}，新任务 {confirmed.writtenTaskCount} 条。计划已写入，可在解释页逐条查看依据。</p>
+          {confirmed.carryover && (
+            <p className="mt-0.5">
+              上期处理：纳入 {confirmed.carryover.promotedCount + confirmed.carryover.demotedCount} 条，
+              Backlog {confirmed.carryover.backlogCount} 条，放弃 {confirmed.carryover.abandonedCount} 条。
+            </p>
+          )}
           {confirmed.warnings.map((warning) => (
             <p key={warning} className="mt-0.5">
               · {warning}
@@ -168,6 +188,7 @@ export function DraftActions({
               {warning}
             </p>
           ))}
+          <CarryoverPanel carryover={preview.carryover} />
           <SevenDayGrid days={preview.days} />
           {preview.layerStructure &&
             (preview.layer === 'CYCLE' ? (

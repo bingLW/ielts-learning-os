@@ -14,7 +14,8 @@ import {
   QUIZ_SIZE,
   VOCAB_NEW_DEFAULT,
 } from '@/lib/constants';
-import { addDays, startOfIsoWeek, today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, startOfIsoWeek } from '@/lib/date';
 import { suggestNewWordCount } from '@/lib/domain/vocab';
 import { prisma } from '@/lib/prisma';
 import type {
@@ -92,7 +93,8 @@ export async function listVocabWords(filter: VocabFilter = {}): Promise<VocabWor
 }
 
 /** 词汇页统计 + 下周新词量建议。 */
-export async function getVocabStats(nowDate: string = today()): Promise<VocabStatsDto> {
+export async function getVocabStats(nowDateParam?: string): Promise<VocabStatsDto> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const weekStart = startOfIsoWeek(nowDate);
 
   const [groups, newThisWeek, reviewDueToday, latestQuiz, quizCount] = await Promise.all([
@@ -190,7 +192,8 @@ export function masteryWeights(): { level: MasteryLevel; label: string; weight: 
 }
 
 /** 今日是否已经抽测（避免同一天重复生成多条会话提示）。 */
-export async function hasQuizToday(nowDate: string = today()): Promise<boolean> {
+export async function hasQuizToday(nowDateParam?: string): Promise<boolean> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const count = await prisma.vocabQuiz.count({ where: { quizDate: nowDate } });
   return count > 0;
 }

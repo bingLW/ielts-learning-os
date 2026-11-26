@@ -9,10 +9,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const { prisma, path } = await createTestDb(['planTask']);
+const { prisma, cleanup } = await createTestDb();
 
-const { carryoverPolicy } = await import('@/lib/domain/carryover');
-const { applyCarryover } = await import('@/lib/services/carryoverApply');
+const { carryoverPolicy, carryoverTaskFingerprint } = await import('@/lib/domain/carryover');
+const { applyCarryover, loadOverdueTasks } = await import('@/lib/services/carryoverApply');
 
 const STAGE_ID = 'stage-carryover';
 const AS_OF = '2026-11-25';
@@ -66,37 +66,25 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('T08 carryover 落库（AC-11 ⑩）', () => {
   it('⑩ 每次移动必写 rescheduleReason/deferReason 且状态正确', async () => {
-    const overdue = await prisma.planTask.findMany({
-      where: { id: { in: ['t-promote', 't-demote', 't-backlog', 't-abandon'] } },
-      orderBy: { id: 'asc' },
-    });
+    const overdueInput = await loadOverdueTasks(AS_OF);
 
     const policy = carryoverPolicy({
       asOfDate: AS_OF,
-      overdue: overdue.map((row) => ({
-        taskId: row.id,
-        module: row.module as Parameters<typeof carryoverPolicy>[0]['overdue'][number]['module'],
-        priority: row.priority as Parameters<typeof carryoverPolicy>[0]['overdue'][number]['priority'],
-        plannedMinutes: row.plannedMinutes,
-        actualMinutes: row.actualMinutes,
-        status: row.status as Parameters<typeof carryoverPolicy>[0]['overdue'][number]['status'],
-        planDate: row.planDate,
-        movedCount: row.movedCount,
-        splittable: row.splittable,
-        minChunkMinutes: row.minChunkMinutes,
-        deferReason: row.deferReason,
-      })),
+      overdue: overdueInput,
       // 100×0.25=25 分钟上限：PROMOTE(10) + DEMOTE(10) 都放得下，不被挤回 BACKLOG
       budgetMinutes: 100,
     });
 
-    const applied = await applyCarryover({ targetDate: AS_OF, decisions: policy.decisions });
+    const applied = await applyCarryover({
+      targetDate: AS_OF,
+      decisions: policy.decisions,
+      expectedFingerprint: carryoverTaskFingerprint(overdueInput),
+    });
     expect(applied.ok).toBe(true);
     if (!applied.ok) return;
 

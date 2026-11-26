@@ -20,6 +20,16 @@ describe('文本脱敏', () => {
     expect(output).not.toContain('abcdefgh12345678');
   });
 
+  it('替换本地路径、Windows 路径与密钥赋值', () => {
+    const input = '路径 /Users/bing/private/essay.docx；C:\\secret\\essay.txt；api_key=supersecretvalue';
+    const output = redactText(input);
+    expect(output).toContain('[path]');
+    expect(output).toContain('api_key=[redacted]');
+    expect(output).not.toContain('/Users/bing');
+    expect(output).not.toContain('C:\\secret');
+    expect(output).not.toContain('supersecretvalue');
+  });
+
   it('普通文本保持原样', () => {
     expect(redactText('今天练习 Task 2，用时 40 分钟。')).toBe('今天练习 Task 2，用时 40 分钟。');
   });

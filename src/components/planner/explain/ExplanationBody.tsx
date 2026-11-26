@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { EvidenceDrawer } from '../shared/EvidenceDrawer';
 import { ThirtyDayMatrix } from '../build/ThirtyDayMatrix';
 import { NinetyDayTimeline } from '../build/NinetyDayTimeline';
+import { CarryoverPanel } from '../build/CarryoverPanel';
 import { AiDispositionPanel } from './AiDispositionPanel';
 import { SnapshotHeader } from './SnapshotHeader';
 import { TaskExplanationCard } from './TaskExplanationCard';
@@ -29,6 +30,8 @@ export function ExplanationBody({
   return (
     <div className="space-y-3">
       <SnapshotHeader data={data} />
+
+      {hasDailyTasks && <CarryoverPanel carryover={data.carryover} />}
 
       {hasDailyTasks ? (
         <Card title={`任务解释（${data.tasks.length} 条）`} description="每一条都引用写出时的决策快照，不重算">

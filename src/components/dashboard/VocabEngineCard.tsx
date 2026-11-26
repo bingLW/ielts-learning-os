@@ -11,11 +11,15 @@ import { formatBusinessDateTime } from '@/lib/date';
 import { Card } from '@/components/ui/Card';
 import { StatTile } from '@/components/ui/StatTile';
 
-function formatTime(iso: string | null): string {
-  return iso ? formatBusinessDateTime(iso) : '—';
-}
-
-export function VocabEngineCard({ data }: { data: VocabDashboardSummary }) {
+export function VocabEngineCard({
+  data,
+  timeZone,
+}: {
+  data: VocabDashboardSummary;
+  timeZone: string;
+}) {
+  const formatTime = (iso: string | null) =>
+    iso ? formatBusinessDateTime(iso, timeZone) : '—';
   return (
     <Card
       title="词汇引擎（v2.3）"

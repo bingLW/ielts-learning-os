@@ -3,8 +3,7 @@
 /**
  * 系统设置：学习目标 / 时间与时长 / 导出备份 / AI 预留 / 免责声明。
  *
- * 时区字段**只读**（固定 Asia/Singapore）：这不是「忘了开放」，而是产品硬约束，
- * 因为所有业务日期都按 +08:00 切分，可改时区会让历史数据口径不一致。
+ * 时区使用 IANA 名称；修改只影响后续日界计算，不重写历史 UTC 时间戳。
  */
 
 import Link from 'next/link';
@@ -14,11 +13,11 @@ import { updateProfileAction } from '@/lib/actions/settings';
 import { shutdownApplicationAction } from '@/lib/actions/listening';
 import {
   BUDGET_PRESET_MINUTES,
+  BUSINESS_TIMEZONE_OPTIONS,
   DISCLAIMER_BAND,
   DISCLAIMER_CEFR,
   DOMAIN_EXPORT_KINDS,
   SCHEMA_VERSION,
-  TZ_NAME,
 } from '@/lib/constants';
 import { formatBand } from '@/lib/format';
 import { EXPORT_TABLES, TABLE_FILE_NAME } from '@/lib/export/mapping';
@@ -36,6 +35,7 @@ export interface SettingsProfileDto {
   targetBandSpeak: number | null;
   dailyMinutes: number;
   weeklyReviewDow: number;
+  timezone: string;
   examDate: string | null;
   aiEnabled: boolean;
   lastExportedAt: string | null;
@@ -70,6 +70,7 @@ export function SettingsBody({ profile }: { profile: SettingsProfileDto }) {
   const [speak, setSpeak] = useState(profile.targetBandSpeak ?? 0);
   const [dailyMinutes, setDailyMinutes] = useState(profile.dailyMinutes);
   const [weeklyReviewDow, setWeeklyReviewDow] = useState(profile.weeklyReviewDow);
+  const [timezone, setTimezone] = useState(profile.timezone);
   const [examDate, setExamDate] = useState(profile.examDate ?? '');
   const [aiEnabled, setAiEnabled] = useState(profile.aiEnabled);
 
@@ -84,6 +85,7 @@ export function SettingsBody({ profile }: { profile: SettingsProfileDto }) {
         targetBandSpeak: speak || undefined,
         dailyMinutes,
         weeklyReviewDow,
+        timezone,
         examDate: examDate || undefined,
         aiEnabled,
       });
@@ -233,8 +235,24 @@ export function SettingsBody({ profile }: { profile: SettingsProfileDto }) {
             </select>
           </FormField>
 
-          <FormField label="时区（只读）" hint="固定 +08:00，无夏令时；业务日期按此切分">
-            <input value={`${TZ_NAME} · UTC+08:00`} readOnly disabled className={inputClass} />
+          <FormField
+            label="业务时区"
+            htmlFor="timezone"
+            error={fieldErrors.timezone}
+            hint="修改只影响后续日界；历史 UTC 时间戳不会被重写"
+          >
+            <select
+              id="timezone"
+              value={timezone}
+              onChange={(event) => setTimezone(event.target.value)}
+              className={selectClass}
+            >
+              {BUSINESS_TIMEZONE_OPTIONS.map((zone) => (
+                <option key={zone} value={zone}>
+                  {zone}
+                </option>
+              ))}
+            </select>
           </FormField>
 
           <FormField label="专注块 / 休息" hint="默认 45–50 分钟专注 + 5–10 分钟休息，休息不计入净时长">

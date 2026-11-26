@@ -5,9 +5,11 @@
 import type { UserProfile } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
-/** 读取配置；库为空时按 schema 默认值建一行（幂等）。 */
+/** 读取配置；库为空时按 schema 默认值建一行（并发安全）。 */
 export async function getProfile(): Promise<UserProfile> {
-  const existing = await prisma.userProfile.findUnique({ where: { id: 1 } });
-  if (existing) return existing;
-  return prisma.userProfile.create({ data: { id: 1 } });
+  return prisma.userProfile.upsert({
+    where: { id: 1 },
+    create: { id: 1 },
+    update: {},
+  });
 }

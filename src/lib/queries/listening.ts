@@ -21,6 +21,7 @@ export interface AudioAssetDto {
 
 export async function listAudioAssets(): Promise<AudioAssetDto[]> {
   const rows = await prisma.audioAsset.findMany({
+    where: { deletedAt: null },
     orderBy: { createdAt: 'desc' },
   });
   return rows.map((row) => ({
@@ -39,7 +40,7 @@ export async function listAudioAssets(): Promise<AudioAssetDto[]> {
 }
 
 export async function getAudioAsset(id: string): Promise<AudioAssetDto | null> {
-  const row = await prisma.audioAsset.findUnique({ where: { id } });
+  const row = await prisma.audioAsset.findFirst({ where: { id, deletedAt: null } });
   if (!row) return null;
   return {
     id: row.id,
@@ -74,6 +75,7 @@ export interface ListeningExerciseDto {
 
 export async function listListeningExercises(): Promise<ListeningExerciseDto[]> {
   const rows = await prisma.listeningExercise.findMany({
+    where: { audioAsset: { deletedAt: null } },
     orderBy: { createdAt: 'desc' },
     include: {
       attempts: {
@@ -114,7 +116,7 @@ export interface TranscriptDto {
 
 export async function listTranscriptsForAudio(audioAssetId: string): Promise<TranscriptDto[]> {
   const rows = await prisma.transcript.findMany({
-    where: { audioAssetId },
+    where: { audioAssetId, audioAsset: { deletedAt: null } },
     orderBy: { createdAt: 'desc' },
     include: { segments: { orderBy: { seq: 'asc' } } },
   });
@@ -140,13 +142,29 @@ export interface SpeakingPromptDto {
 }
 
 export async function listSpeakingPrompts(): Promise<SpeakingPromptDto[]> {
-  const rows = await prisma.speakingPrompt.findMany({ orderBy: { createdAt: 'desc' } });
+  const rows = await prisma.speakingPrompt.findMany({ where: { active: true }, orderBy: { createdAt: 'desc' } });
   return rows.map((row) => ({
     id: row.id,
     taskType: row.taskType,
     title: row.title,
     prompt: row.prompt,
   }));
+}
+
+export interface SpeakingRecordingDto {
+  id: string;
+  filePath: string;
+  durationSec: number | null;
+  takeNumber: number;
+  createdAt: Date;
+}
+
+export async function listUnassignedRecordings(): Promise<SpeakingRecordingDto[]> {
+  return prisma.recordingAsset.findMany({
+    where: { sessionId: null, deletedAt: null },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, filePath: true, durationSec: true, takeNumber: true, createdAt: true },
+  });
 }
 
 export interface SpeakingSessionDto {
@@ -163,15 +181,29 @@ export async function listSpeakingSessions(): Promise<SpeakingSessionDto[]> {
     orderBy: { createdAt: 'desc' },
     include: {
       turns: { orderBy: { seq: 'asc' } },
-      recordings: { orderBy: { takeNumber: 'asc' } },
+      recordings: { where: { deletedAt: null }, orderBy: { takeNumber: 'asc' } },
     },
   });
+  const recordingIds = rows.flatMap((row) => row.turns.flatMap((turn) => turn.recordingAssetId ? [turn.recordingAssetId] : []));
+  const transcriptIds = rows.flatMap((row) => row.turns.flatMap((turn) => turn.transcriptId ? [turn.transcriptId] : []));
+  const [deletedRecordings, deletedTranscripts] = await Promise.all([
+    prisma.recordingAsset.findMany({ where: { id: { in: recordingIds }, deletedAt: { not: null } }, select: { id: true } }),
+    prisma.transcript.findMany({
+      where: { id: { in: transcriptIds }, OR: [{ audioAsset: { deletedAt: { not: null } } }, { recordingAsset: { deletedAt: { not: null } } }] },
+      select: { id: true },
+    }),
+  ]);
+  const deletedRecordingSet = new Set(deletedRecordings.map((row) => row.id));
+  const deletedTranscriptSet = new Set(deletedTranscripts.map((row) => row.id));
   return rows.map((row) => ({
     id: row.id,
     promptId: row.promptId,
     mode: row.mode,
     status: row.status,
-    turns: row.turns.map((turn) => ({
+    turns: row.turns.filter((turn) =>
+      (!turn.recordingAssetId || !deletedRecordingSet.has(turn.recordingAssetId))
+      && (!turn.transcriptId || !deletedTranscriptSet.has(turn.transcriptId)),
+    ).map((turn) => ({
       id: turn.id,
       role: turn.role,
       seq: turn.seq,

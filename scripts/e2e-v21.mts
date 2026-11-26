@@ -1,40 +1,23 @@
 /**
- * v2.1 端到端验收（真实数据副本）。
+ * v2.1 端到端验收（独立临时数据库）。
  *
  * 链路：设定预算 → 生成计划 → 记录实际 → 改预算 → 中途重排 → 周报。
  *
- * 安全边界：
- * - 先 `cp prisma/dev.db` 到临时副本，`DATABASE_URL` 指向副本；
- * - 真实库只读，任何写入都落在副本，跑完删除。
+ * 安全边界：从 Prisma schema 创建临时库并加载定义型种子；不读取或写入真实库。
  *
  * 之所以不直接调用 Server Action：`revalidatePath` 需要 Next 请求上下文，
  * 在脚本里会抛错。这里复现动作层的写入序列（同样的域函数 + 同样的字段），
  * 校验的是**引擎与数据不变量**，而不是 HTTP 层。
  */
 
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createScriptTestDatabase } from './helpers/testDatabase.mts';
 
-const repoRoot = process.cwd();
-const sourceDb = join(repoRoot, 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-e2e-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) {
-  console.error(`[FAIL] 找不到真实数据库：${sourceDb}`);
-  process.exit(1);
-}
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}`;
-
-const { PrismaClient } = await import('@prisma/client');
+const { prisma, path: workDb, cleanup } = await createScriptTestDatabase('ielts-e2e-v21');
 const { generateAdaptivePlan } = await import('../src/lib/domain/adaptivePlan');
 const { replanDailyTasks } = await import('../src/lib/domain/replan');
 const { today, weekRange, listDateRange, addDays, isoWeek: isoWeekOf } = await import('../src/lib/date');
 const { getBudgetRange } = await import('../src/lib/queries/budget');
 const { getWeeklyBudget } = await import('../src/lib/queries/weekly');
-
-const prisma = new PrismaClient();
 
 let passed = 0;
 let failed = 0;
@@ -118,14 +101,14 @@ async function commitPlan(params: {
 
 async function main() {
   const planDate = today();
-  console.log(`\n=== v2.1 E2E · 计划日期 ${planDate}（数据库副本）===\n`);
+  console.log(`\n=== v2.1 E2E · 计划日期 ${planDate}（独立临时库）===\n`);
 
   const stage = await prisma.stage.findFirst({ where: { status: 'ACTIVE' } });
   check('存在激活阶段', Boolean(stage), stage ? `${stage.code}` : '无');
   if (!stage) throw new Error('没有激活阶段，无法继续');
   const stageCode = stage.code as 'S0_PREP' | 'S1_A0_A2' | 'S2_A2_B1' | 'S3_B1_IELTS';
 
-  // 清掉副本里目标日的既有任务，让链路从「空日」开始（仅副本）
+  // 清掉临时库里目标日的既有任务，让链路从「空日」开始
   await prisma.planTask.deleteMany({ where: { planDate } });
   await prisma.planVersion.deleteMany({ where: { planDate } });
 
@@ -427,17 +410,12 @@ try {
   failures.push(String(error));
   console.error('\n[ERROR]', error);
 } finally {
-  await prisma.$disconnect();
-  try {
-    rmSync(workDb, { force: true });
-  } catch {
-    /* 清理失败不影响结论 */
-  }
+  await cleanup();
   console.log(`\n════════ 结果：${passed} 通过 / ${failed} 失败 ════════`);
   if (failures.length > 0) {
     console.log('\n失败项：');
     for (const item of failures) console.log(`  - ${item}`);
   }
-  console.log(`真实库未被修改：${sourceDb}`);
+  console.log(`未读取或修改真实库；临时库已清理：${workDb}`);
   process.exit(failed > 0 ? 1 : 0);
 }

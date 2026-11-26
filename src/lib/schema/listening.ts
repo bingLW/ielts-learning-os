@@ -29,6 +29,21 @@ export const audioAssetCreateSchema = z.object({
 });
 export type AudioAssetCreateInput = z.infer<typeof audioAssetCreateSchema>;
 
+/** 资产删除预览：只读，不提交文件路径或删除标记。 */
+export const assetDeletionPreviewSchema = z.object({
+  kind: z.enum(['audio', 'recording'], '资产类型'),
+  assetId: z.string().min(1).max(200),
+  reason: z.string().trim().min(1, '请填写删除原因').max(500),
+});
+export type AssetDeletionPreviewInput = z.infer<typeof assetDeletionPreviewSchema>;
+
+/** 删除必须绑定当次预览与明确文字确认；服务端在事务内再次核验。 */
+export const assetDeletionConfirmSchema = assetDeletionPreviewSchema.extend({
+  previewToken: z.string().min(20).max(5000),
+  confirmation: z.literal('确认删除', '请输入“确认删除”'),
+});
+export type AssetDeletionConfirmInput = z.infer<typeof assetDeletionConfirmSchema>;
+
 /** 创建听力练习。 */
 export const listeningExerciseCreateSchema = z.object({
   audioAssetId: z.string().min(1),

@@ -8,17 +8,9 @@
  * - `AICallLog` 账本保留、`materialId` 置 null。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-deletion-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -26,8 +18,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { deleteMaterialWithCascade } = await import('@/lib/services/materialDeletion');
 
@@ -210,6 +201,7 @@ describe('deleteMaterialWithCascade（AC-09 材料+派生全删、用户资产�
 
   afterAll(async () => {
     await prisma.$disconnect();
+    cleanup();
   });
 
   it('材料与派生全删、词条/任务/账本保留、归属行删除', async () => {

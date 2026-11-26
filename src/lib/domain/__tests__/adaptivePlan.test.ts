@@ -397,6 +397,57 @@ describe('不变量', () => {
   });
 });
 
+describe('v2.7 候选装箱', () => {
+  it('可拆候选使用不低于最小块的全部余量，不把最小块当作步长', () => {
+    const plan = mustPlan(makeInput({
+      budgetMinutes: 9,
+      candidateOnly: true,
+      candidateBudgetMinutes: 9,
+      candidates: [{
+        candidateKey: 'material:test',
+        module: 'LISTENING',
+        primarySkill: 'LISTENING',
+        track: 'GENERAL_ENGLISH',
+        estMinutes: 18,
+        minMinutes: 5,
+        maxBlockMinutes: 18,
+        priority: 'P1',
+        splittable: true,
+        rationale: '测试候选',
+        score: 0.5,
+        sourceKind: 'MANUAL',
+      }],
+    }));
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0].minutes).toBe(9);
+    expect(plan.totalPlannedMinutes).toBe(9);
+  });
+
+  it('余量低于最小块时不生成碎片', () => {
+    const plan = mustPlan(makeInput({
+      budgetMinutes: 4,
+      candidateOnly: true,
+      candidateBudgetMinutes: 4,
+      candidates: [{
+        candidateKey: 'material:test',
+        module: 'LISTENING',
+        primarySkill: 'LISTENING',
+        track: 'GENERAL_ENGLISH',
+        estMinutes: 18,
+        minMinutes: 5,
+        maxBlockMinutes: 18,
+        priority: 'P1',
+        splittable: true,
+        rationale: '测试候选',
+        score: 0.5,
+        sourceKind: 'MANUAL',
+      }],
+    }));
+    expect(plan.items).toEqual([]);
+    expect(plan.backlog).toHaveLength(1);
+  });
+});
+
 describe('预算利用口径', () => {
   it('预算为 0 时返回 null（显示 N/A）', () => {
     expect(budgetUsageRatio(30, 0)).toBeNull();

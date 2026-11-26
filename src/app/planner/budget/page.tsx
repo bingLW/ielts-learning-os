@@ -6,7 +6,8 @@
  * `setBudgetAction` / `setWeeklyTargetAction`，这里不写库。
  */
 
-import { isValidDateString, startOfIsoWeek, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { isValidDateString, startOfIsoWeek } from '@/lib/date';
 import { getBudgetWeek, getWeeklyTargetSummary } from '@/lib/queries/planner';
 import { BudgetPlannerBody } from '@/components/planner/budget/BudgetPlannerBody';
 
@@ -24,7 +25,7 @@ function parseWeekStart(raw: string | undefined, fallback: string): string {
 
 export default async function PlannerBudgetPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const asOfDate = today();
+  const asOfDate = await businessToday();
   const weekStart = parseWeekStart(params.week, startOfIsoWeek(asOfDate));
 
   const [week, target] = await Promise.all([

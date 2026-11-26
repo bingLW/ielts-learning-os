@@ -49,13 +49,13 @@ function braceBlock(source: string, openIndex: number): string {
 }
 
 /**
- * 每个 `prisma.skillGap.findMany(` 调用点：只看 `where: { … }` 块里有没有
+ * 每个 `prisma/tx.skillGap.findMany(` 调用点：只看 `where: { … }` 块里有没有
  * `dimensionKind`。**不能看整段 600 字符** —— `select: { dimensionKind: true }`
  * 会提供假阴性（字段被读出来，但没过滤）。
  */
 function findUnfilteredGapQueries(source: string): number[] {
   const unfiltered: number[] = [];
-  const pattern = /prisma\.skillGap\.findMany\s*\(/g;
+  const pattern = /\b(?:prisma|tx)\.skillGap\.findMany\s*\(/g;
   for (const match of source.matchAll(pattern)) {
     const start = match.index ?? 0;
     const after = source.slice(start, start + 500);

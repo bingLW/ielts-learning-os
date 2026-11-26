@@ -9,7 +9,7 @@ import {
   SENTENCE_COMPONENT_LABEL_ZH,
   SENTENCE_COMPONENTS,
 } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
 import { parseJson } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import type {
@@ -147,7 +147,8 @@ export async function getSentenceStats(): Promise<SentenceStatsDto> {
 }
 
 /** 最近 N 条句子（Dashboard / 记录详情侧栏用）。 */
-export async function listRecentSentences(limit = 5, nowDate: string = today()) {
+export async function listRecentSentences(limit = 5, nowDateParam?: string) {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const rows = await prisma.sentenceAnalysis.findMany({
     where: { archivedAt: null, sentenceDate: { lte: nowDate } },
     orderBy: [{ sentenceDate: 'desc' }, { createdAt: 'desc' }],

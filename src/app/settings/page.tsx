@@ -20,6 +20,7 @@ export default async function SettingsPage() {
         targetBandSpeak: profile.targetBandSpeak,
         dailyMinutes: profile.dailyMinutes,
         weeklyReviewDow: profile.weeklyReviewDow,
+        timezone: profile.timezone,
         examDate: profile.examDate,
         aiEnabled: profile.aiEnabled,
         lastExportedAt: profile.lastExportedAt ? profile.lastExportedAt.toISOString() : null,

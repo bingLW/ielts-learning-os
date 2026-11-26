@@ -4,7 +4,7 @@
  * `date` 缺省为今天；当日没有任务时直接给空态（重排无法凭空生成新计划）。
  */
 
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { getReplanContext } from '@/lib/queries/planner';
 import { PlannerEmptyState } from '@/components/planner/shared/EmptyState';
 import { ReplanPreviewBody } from '@/components/planner/replan/ReplanPreviewBody';
@@ -17,7 +17,7 @@ export default async function PlannerReplanPage({
   searchParams: Promise<{ date?: string }>;
 }) {
   const params = await searchParams;
-  const planDate = params.date ?? today();
+  const planDate = params.date ?? (await businessToday());
   const context = await getReplanContext(planDate);
 
   if (!context.hasTasks) {

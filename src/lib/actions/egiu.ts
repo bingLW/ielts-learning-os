@@ -11,7 +11,8 @@
 
 import { revalidatePath } from 'next/cache';
 import { EST_MINUTES_BY_INTERVAL, REVIEW_INTERVAL_DAYS, STAGE_META } from '@/lib/constants';
-import { addDays, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { addDays } from '@/lib/date';
 import { judgeEgiuColor } from '@/lib/domain/color';
 import {
   appendAfterRetest,
@@ -182,7 +183,7 @@ export async function recordEgiuReviewAction(
   const reason = judgment.judgment.reason;
   const branch = judgment.judgment.branch;
   const score = judgment.judgment.score ?? null;
-  const todayStr = today();
+  const todayStr = await businessToday();
 
   // ② 幂等：同单元 + 同日期 + 同档位只允许一条（append-only 不等于可重复灌水）
   const duplicate = await prisma.egiuReview.findFirst({
@@ -392,7 +393,7 @@ export async function scheduleEgiuManualReviewAction(
   if (!lesson) return fail('NOT_FOUND', 'EGIU 单元不存在');
   if (lesson.archivedAt) return fail('PRECONDITION', '该单元已归档');
 
-  const dueDate = addDays(today(), REVIEW_INTERVAL_DAYS.MANUAL);
+  const dueDate = addDays(await businessToday(), REVIEW_INTERVAL_DAYS.MANUAL);
   const exists = await prisma.reviewTask.findFirst({
     where: {
       targetType: 'EGIU_LESSON',

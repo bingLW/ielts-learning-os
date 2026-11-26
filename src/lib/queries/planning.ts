@@ -16,7 +16,8 @@ import {
   WEAKNESS_WINDOW_DAYS,
   type ResourceSubject,
 } from '@/lib/constants';
-import { addDays, diffDays, today, weekRange } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, diffDays, weekRange } from '@/lib/date';
 import type { AdaptivePlanInput, DueRetestInput } from '@/lib/domain/adaptivePlan';
 import { checkAllocation } from '@/lib/domain/allocation';
 import { prisma } from '@/lib/prisma';
@@ -94,7 +95,8 @@ export interface DueReviewLoad {
  *
  * `estMinutes` 用每条 `ReviewTask.estMinutes` 求和，不用「条数 × 固定分钟」。
  */
-export async function getDueReviewLoad(nowDate: string = today()): Promise<DueReviewLoad | null> {
+export async function getDueReviewLoad(nowDateParam?: string): Promise<DueReviewLoad | null> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const rows = await prisma.reviewTask.findMany({
     where: { status: 'PENDING', dueDate: { lte: nowDate } },
     select: { estMinutes: true, dueDate: true },

@@ -8,11 +8,14 @@
 
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
+import { businessToday } from '@/lib/businessTime';
+import { TZ_NAME } from '@/lib/constants';
 import { today } from '@/lib/date';
 import { getActiveStage } from '@/lib/queries/stages';
 import { getProfile } from '@/lib/queries/profile';
 import { getEffectiveBudget } from '@/lib/queries/budget';
 import AppShell from '@/components/layout/AppShell';
+import { BusinessTimeProvider } from '@/components/layout/BusinessTimeProvider';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -25,13 +28,18 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   let stageName = '尚未激活阶段';
   let targetBand = 6.5;
   let budgetLabel = '预算未设定';
+  let todayStr = today(new Date());
+  let timeZone = TZ_NAME;
 
   try {
-    const [profile, stage, budget] = await Promise.all([
+    const [profile, stage, budget, profileToday] = await Promise.all([
       getProfile(),
       getActiveStage(),
       getEffectiveBudget(),
+      businessToday(),
     ]);
+    todayStr = profileToday;
+    timeZone = profile.timezone;
     stageName = stage?.nameZh ?? stageName;
     targetBand = profile.targetBandOverall;
     budgetLabel = budget.isRestDay
@@ -44,14 +52,16 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html lang="zh-CN">
       <body>
-        <AppShell
-          todayStr={today()}
-          stageName={stageName}
-          targetBand={targetBand}
-          budgetLabel={budgetLabel}
-        >
-          {children}
-        </AppShell>
+        <BusinessTimeProvider timeZone={timeZone} businessDate={todayStr}>
+          <AppShell
+            todayStr={todayStr}
+            stageName={stageName}
+            targetBand={targetBand}
+            budgetLabel={budgetLabel}
+          >
+            {children}
+          </AppShell>
+        </BusinessTimeProvider>
       </body>
     </html>
   );

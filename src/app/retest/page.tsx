@@ -5,13 +5,14 @@
  */
 
 import { RetestPageBody } from '@/components/retest/RetestPageBody';
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { getRetestStats, listRetestQueue } from '@/lib/queries/retest';
 
 export const dynamic = 'force-dynamic';
 
 export default async function RetestPage() {
+  const todayStr = await businessToday();
   const rows = await listRetestQueue();
-  const stats = getRetestStats(rows);
-  return <RetestPageBody rows={rows} stats={stats} todayStr={today()} />;
+  const stats = getRetestStats(rows, todayStr);
+  return <RetestPageBody rows={rows} stats={stats} todayStr={todayStr} />;
 }

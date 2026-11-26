@@ -1,22 +1,13 @@
 /**
- * AI Coach 服务端闭环集成测试（真实数据库副本）。
+ * AI Coach 服务端闭环集成测试（独立临时数据库）。
  *
- * 与 e2e-v2x 相同安全边界：复制 dev.db 到临时目录，真实库只读。
  * Server Action 的 revalidatePath 需要 Next 请求上下文，这里显式 mock 掉，
  * 其余逻辑（校验、状态机、证据写入、幂等、预算拦截）走真实实现。
  */
 
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-ai-integration-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -24,7 +15,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
+const { prisma, cleanup } = await createTestDb();
 const actions = await import('@/lib/actions/tutor');
 const { getAiSessionDetail, getAiAdminData } = await import('@/lib/queries/tutor');
 const { ensurePromptRegistry } = await import('@/lib/ai/registry');
@@ -33,10 +24,22 @@ const { AI_ASSESSMENT_DISCLAIMER_ZH } = await import('@/lib/constants');
 
 const baselineText = 'Last year I go to the beach with my family. We are very happy.';
 
+beforeAll(async () => {
+  // 诊断转错题必须显式依赖一个 ACTIVE 阶段，不能继承本机开发库状态。
+  await prisma.stage.create({
+    data: {
+      code: 'S3_B1_IELTS',
+      nameZh: 'AI Coach 集成测试阶段',
+      estDaysMin: 30,
+      status: 'ACTIVE',
+      sortOrder: 0,
+    },
+  });
+});
+
 afterAll(async () => {
   await prisma.$disconnect();
-  rmSync(workDb, { force: true });
-  rmSync(`${workDb}-journal`, { force: true });
+  cleanup();
 });
 
 describe('AI Learning Coach 闭环', () => {
@@ -289,7 +292,7 @@ describe('AI Learning Coach 闭环', () => {
     ).toBeGreaterThan(0);
   });
 
-  it('预算为 0 且有支出时拦截调用并留下 BLOCKED 日志', async () => {
+  it('正预算已用满时拦截调用并留下 BLOCKED 日志（mock 零预算豁免）', async () => {
     const session = await prisma.aILearningSession.create({
       data: {
         mode: 'TUTOR',
@@ -306,8 +309,8 @@ describe('AI Learning Coach 闭环', () => {
 
     await actions.updateAiEngineSettingsAction({
       externalAiEnabled: false,
-      dailyBudgetUsd: 0,
-      monthlyBudgetUsd: 0,
+      dailyBudgetUsd: 0.01,
+      monthlyBudgetUsd: 0.01,
       warnPercent: 80,
       directTeachingDefault: false,
       explainLanguage: 'ZH_MIXED',

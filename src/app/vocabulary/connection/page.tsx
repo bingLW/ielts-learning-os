@@ -10,6 +10,7 @@ import {
   TYPEWORDS_PINNED_DATE,
   VOCAB_INTEGRATION_MODE_LABEL_ZH,
 } from '@/lib/constants';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { formatBusinessDateTime } from '@/lib/date';
 import { listVocabConnections } from '@/lib/queries/vocabIntegration';
 import { Card } from '@/components/ui/Card';
@@ -18,7 +19,7 @@ import { VocabConnectionToggle } from '@/components/vocabulary/VocabConnectionTo
 export const dynamic = 'force-dynamic';
 
 export default async function VocabularyConnectionPage() {
-  const connections = await listVocabConnections();
+  const [connections, timeZone] = await Promise.all([listVocabConnections(), getBusinessTimezone()]);
 
   return (
     <div className="space-y-3">
@@ -47,7 +48,7 @@ export default async function VocabularyConnectionPage() {
                   </p>
                   <p className="text-[11px] text-inkMuted">
                     固定版本 {connection.pinnedVersion ?? '—'}
-                    {connection.lastSyncAt ? ` · 最近同步 ${formatBusinessDateTime(connection.lastSyncAt)}` : ''}
+                    {connection.lastSyncAt ? ` · 最近同步 ${formatBusinessDateTime(connection.lastSyncAt, timeZone)}` : ''}
                   </p>
                   {connection.licenseNote && (
                     <p className="text-[11px] text-inkMuted">{connection.licenseNote}</p>

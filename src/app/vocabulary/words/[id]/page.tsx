@@ -10,7 +10,8 @@ import {
   type VocabDimension,
   type VocabDimensionStatus,
 } from '@/lib/constants';
-import { formatBusinessDateTime } from '@/lib/date';
+import { getBusinessTimezone } from '@/lib/businessTime';
+import { formatBusinessDateTime, toBusinessDate } from '@/lib/date';
 import { getVocabWordDetail } from '@/lib/queries/vocabIntegration';
 import { listVocabRetests } from '@/lib/vocabRetest';
 import { Card } from '@/components/ui/Card';
@@ -27,6 +28,7 @@ export default async function VocabularyWordPage({ params }: PageProps) {
   const word = await getVocabWordDetail(id);
   if (!word) notFound();
   const retests = await listVocabRetests(word.id);
+  const timeZone = await getBusinessTimezone();
   const retestDimension = (note: string | null): string => {
     const parts = (note ?? '').split('|');
     const dimension = parts[2] ?? '';
@@ -109,7 +111,7 @@ export default async function VocabularyWordPage({ params }: PageProps) {
                 </span>
                 <span className="tabular text-inkMuted">
                   {retest.dueDate} · {retest.status}
-                  {retest.completedAt ? ` · 完成于 ${retest.completedAt.toISOString().slice(0, 10)}` : ''}
+                  {retest.completedAt ? ` · 完成于 ${toBusinessDate(retest.completedAt, timeZone)}` : ''}
                 </span>
               </li>
             ))}
@@ -144,7 +146,7 @@ export default async function VocabularyWordPage({ params }: PageProps) {
           <ul className="space-y-1 text-[11px]">
             {word.recentSessions.map((session) => (
               <li key={session.id} className="flex items-center justify-between">
-                <span className="text-ink">{formatBusinessDateTime(session.startedAt)}</span>
+                <span className="text-ink">{formatBusinessDateTime(session.startedAt, timeZone)}</span>
                 <span className="tabular text-inkMuted">
                   {Math.round(session.effectiveSeconds / 60)} 分钟 · {session.granularity}
                 </span>

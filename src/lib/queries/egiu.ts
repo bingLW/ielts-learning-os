@@ -15,7 +15,8 @@ import {
   STAGE_META,
 } from '@/lib/constants';
 import { accuracyOf } from '@/lib/domain/accuracy';
-import { startOfIsoWeek, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone, resolveBusinessDate } from '@/lib/businessTime';
+import { startOfIsoWeek, toBusinessDate } from '@/lib/date';
 import { parseObject } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import { listUpcomingReviews } from '@/lib/queries/reviews';
@@ -95,7 +96,7 @@ export async function listEgiuLessons(filter: EgiuLessonFilter = {}): Promise<Eg
       where: { targetType: 'EGIU_LESSON', status: 'PENDING' },
       select: { targetId: true, dueDate: true },
     }),
-    Promise.resolve(today()),
+    businessToday(),
   ]);
 
   const counters = new Map<string, { pending: number; overdue: number }>();
@@ -180,9 +181,9 @@ function masteryNoteOf(lesson: {
   masteredAt: Date | null;
   greenStreak: number;
   inLowFreqPool: boolean;
-}): string {
+}, timeZone: string): string {
   if (lesson.masteredAt) {
-    return `已于 ${lesson.masteredAt.toISOString().slice(0, 10)} 判定掌握（连续 ${MASTERY_GREEN_STREAK} 次绿灯且间隔 ≥${MASTERY_MIN_GAP_DAYS} 天）${
+    return `已于 ${toBusinessDate(lesson.masteredAt, timeZone)} 判定掌握（连续 ${MASTERY_GREEN_STREAK} 次绿灯且间隔 ≥${MASTERY_MIN_GAP_DAYS} 天）${
       lesson.inLowFreqPool ? '，已转 30 天低频抽测池' : ''
     }`;
   }
@@ -217,8 +218,10 @@ function buildMasteryChanges(reviews: EgiuReviewRowDto[]): EgiuMasteryChangeDto[
 /** EGIU 单元详情。 */
 export async function getEgiuLessonDetail(
   id: string,
-  nowDate: string = today(),
+  nowDateParam?: string,
 ): Promise<EgiuLessonDetailDto | null> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
+  const timeZone = await getBusinessTimezone();
   const lesson = await prisma.egiuLesson.findUnique({
     where: { id },
     include: {
@@ -238,7 +241,7 @@ export async function getEgiuLessonDetail(
   return {
     stageId: lesson.stageId,
     egiuAllowed: stageMeta ? stageMeta.allowedEgiu : false,
-    masteryNote: masteryNoteOf(lesson),
+    masteryNote: masteryNoteOf(lesson, timeZone),
     reviews,
     upcoming,
     masteryChanges: buildMasteryChanges(reviews),
@@ -282,7 +285,7 @@ export async function getEgiuColorCounts(): Promise<Record<EgiuColor, number>> {
 }
 
 /** 页面顶部统计条。 */
-export async function getEgiuSummary(nowDate: string = today()): Promise<{
+export async function getEgiuSummary(nowDateParam?: string): Promise<{
   total: number;
   colors: Record<EgiuColor, number>;
   mastered: number;
@@ -291,6 +294,7 @@ export async function getEgiuSummary(nowDate: string = today()): Promise<{
   reviewsThisWeek: number;
   today: string;
 }> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const [rows, colors, overdue, reviewsThisWeek] = await Promise.all([
     prisma.egiuLesson.findMany({
       where: { archivedAt: null },

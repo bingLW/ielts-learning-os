@@ -28,7 +28,7 @@
 
 import type { Prisma } from '@prisma/client';
 import { BUDGET_MINUTES_MAX, BUDGET_MINUTES_MIN } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
 import { resolveEffectiveBudget, type EffectiveBudget, type WeekdayProfile } from '@/lib/domain/budget';
 import { prisma } from '@/lib/prisma';
 import type { BudgetTierCode, BudgetType } from '@/lib/types';
@@ -60,9 +60,10 @@ export { parseWeekdayProfiles } from '@/lib/domain/budget';
 
 /** 该日期的有效预算（薄壳：读 → `resolveEffectiveBudget` → 返回）。 */
 export async function getEffectiveBudget(
-  date: string = today(),
+  dateParam?: string,
   db: BudgetReader = prisma,
 ): Promise<EffectiveBudget> {
+  const date = await resolveBusinessDate(dateParam);
   const [daily, settings] = await Promise.all([
     db.dailyBudget.findUnique({ where: { date } }),
     getPlannerSettings(db),

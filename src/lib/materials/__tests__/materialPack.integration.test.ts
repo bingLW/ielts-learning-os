@@ -9,21 +9,12 @@
  * - **超预算确认被拒**：`PRECONDITION` + `planTask.count()` 不变 + 草案仍是 draft；
  * - **引用失效**：被引用的练习集删掉后包仍可查询，该条解析为「内容已移除」。
  *
- * 隔离方式与 T12 的词汇同步测试一致：拷贝 `prisma/dev.db` 到临时目录，
- * 每个用例用自己的材料（标题唯一，靠内容哈希去重不会撞）。
+ * 每个用例使用独立临时库和自己的材料（标题唯一，靠内容哈希去重不会撞）。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-materialpack-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -31,8 +22,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { finalizeMaterialUpload } = await import('@/lib/materials/upload');
 const { runPipelineTick } = await import('@/lib/materials/pipeline');
@@ -139,9 +129,9 @@ async function acceptAllExtractions(materialId: string): Promise<void> {
 const BASE_DATE = '2025-10-24';
 
 /** 给基准日起 7 天写死预算（并清掉休息日），让拆分结果可预测。 */
-async function seedBudgets(minutes = 60): Promise<void> {
+async function seedBudgets(minutes = 60, startDate = BASE_DATE): Promise<void> {
   for (let offset = 0; offset < 7; offset += 1) {
-    const date = addDays(BASE_DATE, offset);
+    const date = addDays(startDate, offset);
     await prisma.dailyBudget.upsert({
       where: { date },
       create: {
@@ -180,14 +170,15 @@ async function ensureActiveStage(): Promise<void> {
 beforeAll(async () => {
   // 提示词注册表必须先用**本测试的** prisma 实例填充（否则 pipeline 拿不到模板）
   await ensurePromptRegistry(prisma);
+  await prisma.aIEngineSetting.create({ data: { id: 'default', externalAiEnabled: false } });
   await prisma.aIEngineSetting.updateMany({ data: { externalAiEnabled: false } });
   await seedBudgets(60);
   await ensureActiveStage();
 });
 
 afterAll(async () => {
-  // 只断连接：临时库文件在 tmpdir 里，交给系统回收（沙箱不允许我们删它）
   await prisma.$disconnect();
+  cleanup();
   void createdMaterialIds;
 });
 
@@ -384,6 +375,166 @@ describe('超预算确认被拒（PRECONDITION）', () => {
       select: { status: true },
     });
     expect(row?.status).toBe('draft');
+  });
+});
+
+async function activeStageId(): Promise<string> {
+  const stage = await prisma.stage.findFirstOrThrow({ where: { status: 'ACTIVE' } });
+  return stage.id;
+}
+
+describe('材料确认原子性与预算边界', () => {
+  it('已有 PlanTask 占用计入预算：材料条目超支时整批不写、草案仍 draft', async () => {
+    const baseDate = '2025-11-01';
+    await seedBudgets(60, baseDate);
+    const materialId = await importText('已有占用样本');
+    await settle(materialId);
+    await acceptAllExtractions(materialId);
+    await buildMaterialPackAction({ materialId });
+
+    const created = await createTaskProposalAction({ materialId, baseDate });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const proposal = await getTaskProposal(materialId);
+    expect(proposal).not.toBeNull();
+    if (!proposal) return;
+
+    await prisma.taskProposalItem.updateMany({
+      where: { proposalId: proposal.id, id: { not: proposal.items[0].id } },
+      data: { selected: false },
+    });
+    const existing = await prisma.planTask.create({
+      data: {
+        stageId: await activeStageId(),
+        planDate: baseDate,
+        module: 'READING',
+        skill: 'READING',
+        plannedMinutes: 45,
+        status: 'TODO',
+        sourceKind: 'MANUAL',
+        track: 'IELTS_PREPARATION',
+        primarySkill: 'READING',
+      },
+    });
+    const updated = await updateProposalItemAction({
+      itemId: proposal.items[0].id,
+      finalMinutes: 30,
+    });
+    expect(updated.ok).toBe(true);
+
+    const tasksBefore = await prisma.planTask.count();
+    const versionsBefore = await prisma.planVersion.count();
+    const result = await confirmTaskProposalAction({ proposalId: proposal.id });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('PRECONDITION');
+    expect(result.error).toContain('超出每日预算');
+    expect(await prisma.planTask.count()).toBe(tasksBefore);
+    expect(await prisma.planVersion.count()).toBe(versionsBefore);
+    expect((await prisma.taskProposal.findUnique({ where: { id: proposal.id } }))?.status).toBe('draft');
+    expect((await prisma.planTask.findUnique({ where: { id: existing.id } }))?.plannedMinutes).toBe(45);
+  });
+
+  it('窗口外条目直接拒绝：VALIDATION，零 PlanTask、零版本、草案仍 draft', async () => {
+    const baseDate = '2025-11-02';
+    await seedBudgets(60, baseDate);
+    const materialId = await importText('窗口边界样本');
+    await settle(materialId);
+    await acceptAllExtractions(materialId);
+    await buildMaterialPackAction({ materialId });
+
+    const created = await createTaskProposalAction({ materialId, baseDate });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const proposal = await getTaskProposal(materialId);
+    expect(proposal).not.toBeNull();
+    if (!proposal) return;
+
+    const outsideDate = addDays(baseDate, 7);
+    await prisma.taskProposalItem.update({
+      where: { id: proposal.items[0].id },
+      data: { finalDate: outsideDate },
+    });
+    const tasksBefore = await prisma.planTask.count();
+    const versionsBefore = await prisma.planVersion.count();
+    const result = await confirmTaskProposalAction({ proposalId: proposal.id });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('VALIDATION');
+    expect(result.error).toContain(outsideDate);
+    expect(await prisma.planTask.count()).toBe(tasksBefore);
+    expect(await prisma.planVersion.count()).toBe(versionsBefore);
+    expect((await prisma.taskProposal.findUnique({ where: { id: proposal.id } }))?.status).toBe('draft');
+  });
+
+  it('多日期任一日超支整批回滚；预算恢复后确认，每日恰有一个 MANUAL_ADJUST 版本', async () => {
+    const baseDate = '2025-11-03';
+    await seedBudgets(60, baseDate);
+    const materialId = await importText('多日原子样本');
+    await settle(materialId);
+    await acceptAllExtractions(materialId);
+    await buildMaterialPackAction({ materialId });
+
+    const created = await createTaskProposalAction({ materialId, baseDate });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const proposal = await getTaskProposal(materialId);
+    expect(proposal).not.toBeNull();
+    if (!proposal || proposal.items.length < 2) return;
+    const [first, second] = proposal.items;
+    const secondDate = addDays(baseDate, 1);
+
+    await prisma.taskProposalItem.updateMany({
+      where: { proposalId: proposal.id, id: { notIn: [first.id, second.id] } },
+      data: { selected: false },
+    });
+    await updateProposalItemAction({
+      itemId: first.id,
+      selected: true,
+      finalDate: baseDate,
+      finalMinutes: 30,
+    });
+    await updateProposalItemAction({
+      itemId: second.id,
+      selected: true,
+      finalDate: secondDate,
+      finalMinutes: 30,
+    });
+    await prisma.dailyBudget.update({
+      where: { date: secondDate },
+      data: { plannedAvailableMinutes: 10 },
+    });
+
+    const tasksBefore = await prisma.planTask.count();
+    const versionsBefore = await prisma.planVersion.count();
+    const rejected = await confirmTaskProposalAction({ proposalId: proposal.id });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.code).toBe('PRECONDITION');
+    expect(await prisma.planTask.count()).toBe(tasksBefore);
+    expect(await prisma.planVersion.count()).toBe(versionsBefore);
+    expect(await prisma.taskProposalItem.count({
+      where: { proposalId: proposal.id, planTaskId: { not: null } },
+    })).toBe(0);
+    expect((await prisma.taskProposal.findUnique({ where: { id: proposal.id } }))?.status).toBe('draft');
+
+    await prisma.dailyBudget.update({
+      where: { date: secondDate },
+      data: { plannedAvailableMinutes: 60 },
+    });
+    const accepted = await confirmTaskProposalAction({ proposalId: proposal.id });
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) return;
+    expect(accepted.data.created).toBe(2);
+    expect(accepted.data.failed).toBe(0);
+
+    for (const date of [baseDate, secondDate]) {
+      const versions = await prisma.planVersion.findMany({
+        where: { planDate: date, reason: '材料草案确认写入计划' },
+      });
+      expect(versions).toHaveLength(1);
+      expect(versions[0].changeSource).toBe('MANUAL_ADJUST');
+    }
   });
 });
 

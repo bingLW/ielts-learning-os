@@ -8,8 +8,9 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
-import { STORAGE_DIR, UPLOAD_DIR } from './constants';
+import { AUDIO_ALLOWED_EXTENSIONS, STORAGE_DIR, UPLOAD_DIR } from './constants';
 
 /** 项目根目录（storage 所在）。 */
 function projectRoot(): string {
@@ -21,10 +22,15 @@ export function uploadsDir(): string {
   return path.join(projectRoot(), UPLOAD_DIR);
 }
 
-/** 确保存储目录存在，返回绝对路径。 */
+/** 确保存储目录存在，返回绝对路径；根目录及父目录都不得经 symlink 逃逸。 */
 export function ensureUploadsDir(): string {
-  const dir = uploadsDir();
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const root = path.resolve(projectRoot());
+  if (realpathSync(root) !== root) throw new Error('项目根目录包含符号链接');
+  const storage = path.join(root, STORAGE_DIR);
+  if (existsSync(storage) && realpathSync(storage) !== storage) throw new Error('存储目录包含符号链接');
+  const dir = path.resolve(uploadsDir());
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true});
+  if (realpathSync(dir) !== dir) throw new Error('上传目录为符号链接');
   return dir;
 }
 
@@ -50,13 +56,17 @@ export interface StoredFile {
 
 /**
  * 把 Buffer 落盘到 storage/uploads，返回存储元数据。
- * 同名冲突由 uniqueFileName 规避；权限 0644（音频非敏感派生，但录音默认私有，调用方自行控制）。
+ * 同名冲突由 uniqueFileName 规避；音频和录音统一以 0600 私有权限落盘。
  */
 export function writeUploadedFile(buffer: Buffer, extension: string): StoredFile {
   const dir = ensureUploadsDir();
   const name = uniqueFileName(extension);
   const absolutePath = path.join(dir, name);
-  writeFileSync(absolutePath, buffer, { flag: 'wx' });
+  writeFileSync(absolutePath, buffer, { flag: 'wx', mode: 0o600 });
+  if (realpathSync(absolutePath) !== absolutePath) {
+    rmSync(absolutePath, { force: true });
+    throw new Error('落盘路径包含符号链接');
+  }
   return {
     relativePath: name,
     absolutePath,
@@ -67,18 +77,23 @@ export function writeUploadedFile(buffer: Buffer, extension: string): StoredFile
 
 /** 由相对路径还原绝对路径（防穿越：解析后必须仍在 uploads 目录内）。 */
 export function resolveUploadPath(relativePath: string): string {
-  const dir = ensureUploadsDir();
-  const resolved = path.resolve(dir, relativePath);
-  if (!resolved.startsWith(dir + path.sep)) {
+  if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes('\0') || relativePath.includes('\\')) {
     throw new Error('非法文件路径');
   }
+  const dir = ensureUploadsDir();
+  // 上传根目录自身也不能是逃逸到 storage/uploads 之外的 symlink。
+  if (realpathSync(dir) !== path.resolve(dir)) throw new Error('上传目录为符号链接');
+  const resolved = path.resolve(dir, relativePath);
+  if (!resolved.startsWith(dir + path.sep)) throw new Error('非法文件路径');
+  // realpath 同时拒绝文件 symlink 和中间目录 symlink；必须与词法路径完全一致。
+  if (realpathSync(resolved) !== resolved) throw new Error('文件路径包含符号链接');
   return resolved;
 }
 
 /** 校验文件扩展名是否在允许集合内。 */
 export function isAllowedExtension(extension: string): boolean {
-  return ['mp3', 'm4a', 'wav', 'webm', 'ogg', 'aac'].includes(
-    extension.replace(/^\./, '').toLowerCase(),
+  return AUDIO_ALLOWED_EXTENSIONS.includes(
+    extension.replace(/^\./, '').toLowerCase() as (typeof AUDIO_ALLOWED_EXTENSIONS)[number],
   );
 }
 

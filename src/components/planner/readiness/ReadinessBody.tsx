@@ -6,13 +6,160 @@
 
 import { Card } from '@/components/ui/Card';
 import { diffDays } from '@/lib/date';
-import { effectiveReadinessOutcome } from '@/lib/domain/readiness';
+import { effectiveReadinessOutcome, type ReadinessSnapshot } from '@/lib/domain/readiness';
 import type { ReadinessViewDto } from '@/lib/queries/planner';
 import { FiveDimensionMatrix } from './FiveDimensionMatrix';
 import { GateChecklistCard } from './GateChecklistCard';
 import { NotConsideredPanel } from './NotConsideredPanel';
 import { ReadinessConclusion } from './ReadinessConclusion';
 import { StageSwitchActions } from './StageSwitchActions';
+
+const SKILL_LABELS: Record<string, string> = {
+  LISTENING: '听力',
+  READING: '阅读',
+  SPEAKING: '口语',
+  WRITING: '写作',
+};
+
+function formatCoverageRatio(value: number | null): string {
+  return value === null ? '未知（未测）' : `${Math.round(value * 100)}%`;
+}
+
+function ReadinessSnapshotDetails({
+  snapshot,
+  reviewRuleVersion,
+}: {
+  snapshot: ReadinessSnapshot | null;
+  reviewRuleVersion: string;
+}) {
+  if (!snapshot) {
+    return (
+      <p data-testid="readiness-snapshot-missing" className="text-[11px] text-inkMuted">
+        历史评审未记录就绪快照，不回算历史覆盖率。评审记录规则版本：{reviewRuleVersion}。
+      </p>
+    );
+  }
+
+  const invalidSamples = new Map<string, ReadinessSnapshot['invalidSamples'][number]>();
+  for (const sample of snapshot.invalidSamples) {
+    invalidSamples.set(
+      [sample.id, sample.sourceType, sample.skill, sample.subskill ?? '', sample.reason].join('|'),
+      sample,
+    );
+  }
+  for (const coverage of Object.values(snapshot.coverageBySkill)) {
+    for (const sample of coverage.invalidSamples) {
+      invalidSamples.set(
+        [sample.id, sample.sourceType, sample.skill, sample.subskill ?? '', sample.reason].join('|'),
+        sample,
+      );
+    }
+  }
+
+  return (
+    <div data-testid="readiness-snapshot" className="space-y-3 text-[11px]">
+      <dl className="grid gap-1 sm:grid-cols-2">
+        <div>
+          <dt className="text-inkMuted">计算时间（computedAt）</dt>
+          <dd className="break-all text-ink">
+            <time dateTime={snapshot.computedAt}>{snapshot.computedAt}</time>
+          </dd>
+        </div>
+        <div>
+          <dt className="text-inkMuted">数据快照 ID（dataSnapshotId）</dt>
+          <dd className="break-all text-ink">{snapshot.dataSnapshotId}</dd>
+        </div>
+        <div>
+          <dt className="text-inkMuted">规则版本</dt>
+          <dd className="text-ink">{snapshot.ruleVersion}</dd>
+        </div>
+        <div>
+          <dt className="text-inkMuted">评审记录规则版本</dt>
+          <dd className="text-ink">{reviewRuleVersion}</dd>
+        </div>
+        <div>
+          <dt className="text-inkMuted">蓝图版本</dt>
+          <dd className="text-ink">
+            {snapshot.blueprint.code} · {snapshot.blueprint.version}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-inkMuted">阶段 Profile / 蓝图 ID</dt>
+          <dd className="break-all text-ink">
+            {snapshot.blueprint.stageProfileCode} · {snapshot.blueprint.id}
+          </dd>
+        </div>
+      </dl>
+
+      <div className="space-y-2">
+        {Object.values(snapshot.coverageBySkill).map((coverage) => (
+          <section
+            key={coverage.skill}
+            data-testid={`skill-coverage-${coverage.skill}`}
+            className="rounded border border-line bg-surfaceAlt/40 px-2.5 py-2"
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-1">
+              <h3 className="text-xs font-semibold text-ink">
+                {SKILL_LABELS[coverage.skill] ?? coverage.skill}（{coverage.skill}）
+              </h3>
+              <p className="font-medium tabular text-ink">
+                {coverage.completed}/{coverage.required} · {formatCoverageRatio(coverage.coverageRatio)}
+              </p>
+            </div>
+            <p className="mt-1 text-inkMuted">
+              缺失子维度：
+              {coverage.missingSubskills.length > 0 ? coverage.missingSubskills.join('、') : '无'}
+            </p>
+            <div className="mt-1">
+              <p className="font-medium text-ink">必测清单</p>
+              {coverage.dimensions.length > 0 ? (
+                <ul className="mt-0.5 space-y-1">
+                  {coverage.dimensions.map((dimension) => (
+                    <li key={`${coverage.skill}:${dimension.subskill}`} className="rounded border border-line/60 bg-white px-2 py-1">
+                      <p className="font-medium text-ink">
+                        {dimension.completed ? '✓ 已覆盖' : '○ 未覆盖'} · {dimension.subskill}
+                        <span className="ml-1 font-normal text-inkMuted">
+                          题目 {dimension.itemCodes.length > 0 ? dimension.itemCodes.join('、') : '未记录'}
+                        </span>
+                      </p>
+                      <p className="mt-0.5 break-all text-inkMuted">
+                        Evidence IDs：{dimension.evidenceRefs.length > 0 ? dimension.evidenceRefs.join('、') : '无'}
+                      </p>
+                      <p className="text-inkMuted">
+                        来源分类：{dimension.sourceKinds.length > 0 ? dimension.sourceKinds.join('、') : '无'}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-0.5 text-inkMuted">未记录必测清单。</p>
+              )}
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <div>
+        <h3 className="text-xs font-semibold text-ink">无效样本与原因</h3>
+        {invalidSamples.size > 0 ? (
+          <ul className="mt-1 space-y-0.5">
+            {[...invalidSamples.values()].map((sample) => (
+              <li
+                key={[sample.id, sample.sourceType, sample.skill, sample.subskill ?? '', sample.reason].join('|')}
+                className="text-amber-900"
+              >
+                {sample.id} · {sample.sourceType} · {sample.skill}
+                {sample.subskill ? ` / ${sample.subskill}` : ''}：{sample.reason}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-1 text-inkMuted">没有记录无效样本。</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export function ReadinessBody({
   view,
@@ -78,6 +225,15 @@ export function ReadinessBody({
           </div>
         )}
       </Card>
+
+      {review && (
+        <Card
+          title="就绪快照与技能覆盖"
+          description="回放评审落库时的必测清单、证据来源与无效样本；历史快照缺失时不回算"
+        >
+          <ReadinessSnapshotDetails snapshot={review.snapshot} reviewRuleVersion={review.ruleVersion} />
+        </Card>
+      )}
 
       <Card title="不参与判定的指标（反例）" description="它们现在可能很好看，但不会让结论变 Ready">
         <NotConsideredPanel rows={view.notConsidered} />

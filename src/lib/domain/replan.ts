@@ -34,8 +34,12 @@ export interface ExistingTask {
   minChunkMinutes: number;
   sortOrder: number;
   planVersion: number;
+  movedToDate?: string | null;
+  movedCount?: number;
   /** 该行计时器正在运行：不能改时长、不能延期，只能原样保留（否则会打断计时）。 */
   timerRunning?: boolean;
+  timerStatus?: string;
+  timerVersion?: number;
   track: string;
   primarySkill: string;
   resourceId: string | null;

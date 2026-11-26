@@ -386,8 +386,8 @@ export async function registerMaterialAudioAction(
   if (!parsed.success) return failValidation(parsed.error);
 
   const input = parsed.data;
-  const audio = await prisma.audioAsset.findUnique({
-    where: { id: input.audioAssetId },
+  const audio = await prisma.audioAsset.findFirst({
+    where: { id: input.audioAssetId, deletedAt: null },
     select: { id: true, title: true, filePath: true, fileName: true, mimeType: true, sizeBytes: true, sha256: true, durationSec: true },
   });
   if (!audio) return fail('NOT_FOUND', '音频资产不存在，请先上传音频');

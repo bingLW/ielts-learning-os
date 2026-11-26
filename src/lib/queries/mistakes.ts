@@ -11,6 +11,7 @@ import {
   MISTAKE_TOP_KNOWLEDGE_POINTS,
   PAGE_SIZE,
 } from '@/lib/constants';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { endOfBusinessDay, toUtcInstant } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
 import type {
@@ -37,6 +38,7 @@ export function emptyMistakeFilter(): MistakeFilterState {
 
 /** 错题列表（默认只看未掌握；筛选全部在服务端完成）。 */
 export async function listMistakes(filter: MistakeFilterState): Promise<MistakeRowDto[]> {
+  const timeZone = await getBusinessTimezone();
   const where: Prisma.MistakeWhereInput = { archivedAt: null };
   if (filter.stageId) where.stageId = filter.stageId;
   if (filter.errorCategory !== 'ALL') where.errorCategory = filter.errorCategory;
@@ -46,8 +48,8 @@ export async function listMistakes(filter: MistakeFilterState): Promise<MistakeR
   if (filter.from || filter.to) {
     // 业务日期 → 真实时刻：统一走 date lib，不手写 +08:00 偏移字符串
     where.createdAt = {
-      ...(filter.from ? { gte: toUtcInstant(filter.from) } : {}),
-      ...(filter.to ? { lte: endOfBusinessDay(filter.to) } : {}),
+      ...(filter.from ? { gte: toUtcInstant(filter.from, '00:00', timeZone) } : {}),
+      ...(filter.to ? { lt: endOfBusinessDay(filter.to, timeZone) } : {}),
     };
   }
   if (filter.q.trim().length > 0) {

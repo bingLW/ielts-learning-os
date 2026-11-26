@@ -17,7 +17,7 @@ import { MaterialStatusBadge } from '@/components/materials/MaterialStatusBadge'
 import { PackOverviewBody } from '@/components/materials/PackOverviewBody';
 import { TaskProposalPanel } from '@/components/materials/TaskProposalPanel';
 import { MATERIAL_LIMITS, type MaterialStatus } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import {
   getDeletionPreview,
   getMaterialPack,
@@ -131,7 +131,7 @@ export default async function MaterialDetailPage({ params }: PageProps) {
         materialId={id}
         proposal={proposal}
         canCreate={canBuild && pack.packId !== null}
-        baseDate={today()}
+        baseDate={await businessToday()}
       />
 
       <DangerZone preview={preview} />

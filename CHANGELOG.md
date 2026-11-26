@@ -2,7 +2,41 @@
 
 本项目采用手工维护的版本记录；每个条目只列已实际执行并验证的内容。
 
-## v2.7（进行中）— 规划内核
+## v2.7.1 — 2026-11-27
+
+上线前缺口修复与发布收尾。**当前发布结论为 NOT READY FOR FIRST USE**：真实库事故未关闭，当前真实库副本的版本化迁移/回滚与真实 Provider smoke 未执行，浏览器并发、DEMOTE 与 CYCLE 分支未覆盖。
+
+### 计划与预算
+
+- 预算解析、最小任务粒度、逐日预算审计与统一写入者收口；诊断提案只有进入 Planner 预览并确认后才写正式任务。
+- 日/周 GENERATE 接入 carryover：预览零写，确认在同一事务内应用滚存、校验预算、写任务与版本头；预算覆盖与库存指纹进入预览令牌。
+- 旧固定生成、旧自适应生成与可导出的旧 `replanDailyTasksAction` 入口均拒绝写入，引导使用统一 Planner，避免绕过预算、库存和版本守卫。
+- 计划时长与预算占用时长分开展示；实际净时长只取 `StudySessionDaySplit.minutes`。
+
+### 估时与解释
+
+- 生产候选估时接入近 90 天有效历史净分钟校准：至少 3 个样本时使用中位点估计与 P25–P75 区间，候选身份样本优先于技能样本；模型、规则、样本数和校准键写入决策快照。
+- 用户指定分钟、诊断提案估时不被历史校准覆盖；新增异常或未完成样本不回写旧快照。默认估时仍不区分写作 Task 2/短句及口语题型，保持 PARTIAL。
+- 计划解释优先回读持久化 `decisionJson`，不再重新评分；预计产出、目标参照和证据引用随确认计划保存，旧任务缺失时显示未知。
+
+### 诊断、资产与隐私
+
+- 补测保持 append-only；同基线报告取代与 finalize 在同一事务内完成；报告区分暂定、正式与证据不足。
+- 听力与录音资产删除采用签名预览 + 事务复核 + tombstone，只允许删除无引用资产；保留子行、证据索引和物理文件，不做静默级联清除。
+- Provider smoke 默认 `NOT_RUN`；真实调用必须同时显式 opt-in、使用 `/tmp` 隔离库和合成数据。不发送 API Key、用户录音或个人文档正文。
+
+### 数据迁移与恢复
+
+- 新增版本化 `scripts/migrations/v2.7.1.mjs`（checksum `7cd30baa4974708b6b1d2c3e4d279b45cff71eff1a30e78fceff06a4f58328bb`）：9 个追加列、2 个索引，迁移前自动备份，校验行数、结构、integrity 与外键，重复执行不重复变更。
+- 新增空库安装守卫、数据库 + uploads 备份恢复与显式覆盖回滚演练；测试库统一从 schema 在系统临时目录创建，禁止复制或清理真实 `prisma/dev.db`。
+- 隔离库迁移、幂等和恢复演练通过；真实 `prisma/dev.db` 曾被误执行 `prisma db push`，没有误操作前完整副本，不能声称逐字节恢复或 P0-5 通过。
+
+### 文档与验证
+
+- 新增修复报告、测试报告和发布清单：`docs/v2.7.1-fix-report.md`、`docs/v2.7.1-test-report.md`、`docs/v2.7.1-release-checklist.md`。
+- 修正单数据点趋势提示；测试隔离、预计产出、历史估时校准、语音域关系动作和发布边界已同步到 README、使用指南与 Known Limits。
+
+## v2.7 — 2026-11-27（实现完成；首次使用未放行）
 
 目标是让「为什么今天排了这些」可复现、可解释、可审计。数据层与两处「判定口径」修正已完成。
 
@@ -54,7 +88,7 @@
 - **T05 装箱引擎扩展：行为不变的兼容承诺。** `domain/adaptivePlan.ts` 只为 `generateAdaptivePlan` 增加可选输入（候选与 carryover 相关字段），**不传这些字段时输出与 v2.1 逐字相同**；由 `adaptivePlanGolden.test.ts` 的 18 组黄金对照锁定。这不是行为变更，而是「新链路可以加、旧调用点结果不会被动到」的证明。
 - **T07 计划构建：预览零写、确认才落库。** 新增 `services/planBuild.ts` 的 `buildPlan()`：任何调用都只返回 `BuildPlanResult`（`preview: true` 恒成立），**从不写 `PlanTask` / `PlanVersion`**；确认时用 `previewTokenOf(snapshotId, inputHash, budgetOverrideMinutes)` 重算令牌，不一致返回 `CONFLICT`，通过后在**同一事务**写版本、任务、候选与决策。`budgetOverrideMinutes` 刻意进签名：它不在快照 `inputHash` 里，但会改变落库分钟，不入签就会出现「预览 60 分钟、确认写出 90 分钟」。
 - **T07 评分与排序口径。** 七因子加权（`urgency 0.22` / `goalRelevance 0.18` / `evidenceStrength 0.20` / `errorRecurrence 0.12` / `prerequisiteReady 0.10` / `timeCost 0.10` / `preferenceFit 0.08`，合计 1.000），阈值 `P1 ≥ 0.60`、`P2 ≥ 0.42`；**到期复习/复测一律 P0，不看分数**；P0 之外先按优先级、再按分数降序、最后按 `candidateKey` 升序，保证同样输入得到同样排列。`weightsVersion` 当前 `w1`，改权重或阈值必须递增。
-- **T08 重排与滚存。** `domain/replan.ts` 的 `replanDailyTasks()` 产出 `KEEP` / `SHRINK` / `DEFER` 三类处置（未开始任务才会被 `DEFER`），`services/replanPreview.ts` 提供 `previewReplan()`（零写）与 `confirmReplan()`（幂等键 + 事务）。`domain/carryover.ts` 的 `carryoverPolicy()` 产出 `PROMOTE` / `DEMOTE` / `BACKLOG` / `ABANDON` 四类裁决（单日条数/分钟上限、顺延次数上限）。`services/carryoverApply.ts` 已实现但**尚未接线**，挂载点裁决为 T07 的 GENERATE 路径，见 `docs/47` §6。
+- **T08 重排与滚存。** `domain/replan.ts` 的 `replanDailyTasks()` 产出 `KEEP` / `SHRINK` / `DEFER` 三类处置（未开始任务才会被 `DEFER`），`services/replanPreview.ts` 提供 `previewReplan()`（零写）与 `confirmReplan()`（幂等键 + 事务）。`domain/carryover.ts` 的 `carryoverPolicy()` 产出 `PROMOTE` / `DEMOTE` / `BACKLOG` / `ABANDON` 四类裁决（单日条数/分钟上限、顺延次数上限）。v2.7 时 `services/carryoverApply.ts` 尚未接线；**v2.7.1 已接入日/周 GENERATE 的预览与单事务确认，并保护 replan 中的滚入任务**，详见 `docs/47` §6 与 `docs/51-v2.7.1-phase-c-test-report.md`。
 
 ### AI 建议层（T14）
 

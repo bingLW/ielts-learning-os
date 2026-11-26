@@ -10,6 +10,7 @@
  * 不使用客户端路由状态 —— 刷新/分享/后退结果一致。
  */
 
+import { businessToday } from '@/lib/businessTime';
 import { getAiPanel } from '@/lib/queries/ai';
 import { getAnalytics, getDailyMinutesBudget } from '@/lib/queries/analytics';
 import { getGlobalFilterOptions, parseGlobalFilter, type RawSearchParams } from '@/lib/queries/filters';
@@ -42,8 +43,8 @@ function one(params: RawSearchParams, key: string): string {
 }
 
 /** 解析周次；非法输入一律回落到「本周」，绝不因为手改 URL 而报错。 */
-function parseWeek(params: RawSearchParams): { isoYear: number; isoWeek: number } {
-  const current = currentIsoWeek();
+function parseWeek(params: RawSearchParams, nowDate: string): { isoYear: number; isoWeek: number } {
+  const current = currentIsoWeek(nowDate);
   const yearRaw = Number(one(params, 'year'));
   const weekRaw = Number(one(params, 'week'));
   const isoYear =
@@ -57,11 +58,12 @@ function parseWeek(params: RawSearchParams): { isoYear: number; isoWeek: number 
 
 export default async function WeeklyPage({ searchParams }: PageProps) {
   const params = await searchParams;
+  const nowDate = await businessToday();
   const tab: WeeklyTabKey = one(params, TAB_QUERY_KEY) === ANALYTICS_TAB ? ANALYTICS_TAB : 'review';
-  const { isoYear, isoWeek } = parseWeek(params);
+  const { isoYear, isoWeek } = parseWeek(params, nowDate);
 
   if (tab === ANALYTICS_TAB) {
-    const filter = parseGlobalFilter(params);
+    const filter = parseGlobalFilter(params, nowDate);
     const [analytics, options, ai, dailyMinutes] = await Promise.all([
       getAnalytics(filter),
       getGlobalFilterOptions(),
@@ -78,12 +80,13 @@ export default async function WeeklyPage({ searchParams }: PageProps) {
           options={options}
           ai={ai}
           dailyMinutes={dailyMinutes}
+          businessDate={nowDate}
         />
       </div>
     );
   }
 
-  const current = currentIsoWeek();
+  const current = currentIsoWeek(nowDate);
   const [review, options, mistakeStats, trackStats, budget, delta] = await Promise.all([
     getWeeklyReview(isoYear, isoWeek),
     listWeekOptions(10),

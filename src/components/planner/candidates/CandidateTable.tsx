@@ -39,7 +39,10 @@ export function CandidateTable({ rows }: { rows: CandidateRowDto[] }) {
             </span>
             <span className="text-[11px] text-inkMuted">{row.moduleLabel}</span>
             <span className="text-[11px] text-inkMuted">{row.targetSkill}</span>
-            <span className="tabular text-[11px] text-inkMuted">预计 {row.estMinutes} 分钟</span>
+            <span className="tabular text-[11px] text-inkMuted">
+              预计 {row.estimate ? `${row.estimate.minMinutes}–${row.estimate.maxMinutes}` : row.estMinutes} 分钟
+              {row.estimate?.basis === 'CALIBRATED' ? ` · 历史校准 ${row.estimate.sampleCount} 样本` : ' · 估计'}
+            </span>
             {row.decision && <EligibilityTag code={row.decision.eligibility} />}
             {row.isAiSuggested && <span className="rounded bg-violet-50 px-1 text-[10px] text-violet-700">AI 建议</span>}
             {row.decision && row.decision.priority !== 'P0' && (
@@ -51,6 +54,15 @@ export function CandidateTable({ rows }: { rows: CandidateRowDto[] }) {
             {row.sourceRef ? ` · ${row.sourceRef}` : ''}
             {row.decision ? ` · 分数 ${row.decision.score.toFixed(4)}` : ''}
             {row.minMinutes !== row.estMinutes ? ` · 可拆到 ${row.minMinutes} 分钟` : ''}
+            {row.estimate ? ` · 模型 ${row.estimate.modelVersion} / 规则 ${row.estimate.ruleVersion}` : ''}
+            {row.question
+              ? ` · 阶段元数据 ${row.question.targetLevelMin ?? '—'}–${row.question.targetLevelMax ?? row.question.difficultyEstimate ?? '—'}（无权威阶段门槛）`
+              : ''}
+            {row.mistake
+              ? row.mistake.status === 'ATTRIBUTED'
+                ? ` · 错题归属学习记录 ${row.mistake.studyRecordId?.slice(0, 10)} / ${row.mistake.skill ?? '未知技能'}`
+                : ' · 错题未归属学习记录（技能归 META）'
+              : ''}
             {row.decision?.blockedReason ? ` · ${row.decision.blockedReason}` : ''}
           </div>
           <details className="mt-1">

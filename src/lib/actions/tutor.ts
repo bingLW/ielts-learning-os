@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { revalidatePath } from 'next/cache';
 import {
   AI_ASSESSMENT_DISCLAIMER_ZH,
@@ -41,7 +41,8 @@ import type {
   HintResult,
   TaskSpec,
 } from '@/lib/ai/structured';
-import { today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { toBusinessDate } from '@/lib/date';
 import { maxEvidenceScore } from '@/lib/domain/evidence';
 import { prisma } from '@/lib/prisma';
 import { getEffectiveBudget } from '@/lib/queries/budget';
@@ -60,6 +61,7 @@ import {
   submitBaselineSchema,
   submitRetestSchema,
   updateAiEngineSettingsSchema,
+  updateExternalAiConsentSchema,
   updateAiModelConfigSchema,
 } from '@/lib/schema/tutor';
 import type { ActionResult, AssistanceLevel } from '@/lib/types';
@@ -233,7 +235,8 @@ export async function startAiSessionAction(
       loadEngineConfig(prisma),
     ]);
 
-  const todayStr = today();
+  const timeZone = await getBusinessTimezone();
+  const todayStr = await businessToday();
   const planned = await prisma.planTask.aggregate({
     where: { planDate: todayStr, status: { in: ['TODO', 'IN_PROGRESS', 'PARTIAL'] } },
     _sum: { plannedMinutes: true },
@@ -254,7 +257,7 @@ export async function startAiSessionAction(
     errors: mistakes.map((item) => ({
       category: item.errorCategory,
       summary: item.originalQuestion.slice(0, 120),
-      occurredOn: item.createdAt.toISOString().slice(0, 10),
+      occurredOn: toBusinessDate(item.createdAt, timeZone),
     })),
     evidence: evidenceRows.map((item) => ({
       skill: item.skill,
@@ -444,6 +447,7 @@ export async function submitBaselineAction(
 
   const task = taskSpecOf(session.taskSpecJson);
   const createdAt = new Date();
+  const timeZone = await getBusinessTimezone();
 
   const result = await prisma.$transaction(async (tx) => {
     const turnId = await appendUserTurn(
@@ -487,7 +491,7 @@ export async function submitBaselineAction(
       evidenceType: 'BASELINE',
       chainRootId: null,
       createdAt,
-    });
+    }, timeZone);
     return { turnId, evidenceId: evidence.id };
   });
 
@@ -797,6 +801,7 @@ export async function submitImmediateRetestAction(
     ? baselineEvidence.chainRootId ?? baselineEvidence.id
     : null;
   const createdAt = new Date();
+  const timeZone = await getBusinessTimezone();
 
   const evidenceId = await prisma.$transaction(async (tx) => {
     const evidence = await tx.evidenceRecord.create({
@@ -834,7 +839,7 @@ export async function submitImmediateRetestAction(
       evidenceType: 'IMMEDIATE_RETEST',
       chainRootId,
       createdAt,
-    });
+    }, timeZone);
     // 基线排期中的「即时复测」已由本次 AI 复测完成，避免复测页出现重复待办。
     if (chainRootId) {
       const pendingImmediate = await tx.retestSchedule.findFirst({
@@ -885,6 +890,7 @@ export async function scheduleDelayedRetestAction(
 
   const rootId = evidence.chainRootId ?? evidence.id;
   const createdAt = evidence.createdAt;
+  const timeZone = await getBusinessTimezone();
 
   if (evidence.evidenceType === 'BASELINE') {
     await prisma.$transaction(async (tx) => {
@@ -894,7 +900,7 @@ export async function scheduleDelayedRetestAction(
         evidenceType: evidence.evidenceType,
         chainRootId: evidence.chainRootId,
         createdAt,
-      });
+      }, timeZone);
       await tx.aILearningSession.update({
         where: { id: sessionId },
         data: { status: 'DELAYED_RETEST_SCHEDULED' },
@@ -1094,13 +1100,60 @@ export async function updateAiEngineSettingsAction(
 ): Promise<ActionResult<{ updated: true }>> {
   const parsed = updateAiEngineSettingsSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
-  await prisma.aIEngineSetting.upsert({
-    where: { id: 'default' },
-    create: { id: 'default', ...parsed.data },
-    update: parsed.data,
-  });
+  const { expectedUpdatedAt, ...data } = parsed.data;
+  try {
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.aIEngineSetting.findUnique({ where: { id: 'default' } });
+      if (!existing) {
+        await tx.aIEngineSetting.create({ data: { id: 'default', ...data } });
+        return;
+      }
+      // 只更新设置字段，绝不写 budgetReservedUsd；带版本时以 updatedAt 做 CAS。
+      const updated = await tx.aIEngineSetting.updateMany({
+        where: {
+          id: 'default',
+          ...(expectedUpdatedAt ? { updatedAt: expectedUpdatedAt } : {}),
+        },
+        data,
+      });
+      if (updated.count !== 1) throw new Error('SETTINGS_CAS_CONFLICT');
+    });
+  } catch (error) {
+    if (
+      (error instanceof Error && error.message === 'SETTINGS_CAS_CONFLICT') ||
+      (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')
+    ) {
+      return fail('CONFLICT', '引擎设置已被其他操作更改，请刷新后重试');
+    }
+    throw error;
+  }
   revalidatePath('/ai-coach/admin');
   refreshAiPages();
+  return ok({ updated: true });
+}
+
+/** 外发同意是独立授权，externalAiEnabled 技术开关不能代替它。 */
+export async function updateExternalAiConsentAction(
+  raw: unknown,
+): Promise<ActionResult<{ updated: true }>> {
+  const parsed = updateExternalAiConsentSchema.safeParse(raw);
+  if (!parsed.success) return failValidation(parsed.error);
+  const { acknowledged: _acknowledged, ...consent } = parsed.data;
+  const updated = await prisma.learnerProfile.updateMany({
+    where: { id: 'default' },
+    data: consent,
+  });
+  if (updated.count === 0) {
+    try {
+      await prisma.learnerProfile.create({ data: { id: 'default', ...consent } });
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002')) {
+        throw error;
+      }
+      await prisma.learnerProfile.updateMany({ where: { id: 'default' }, data: consent });
+    }
+  }
+  revalidatePath('/ai-coach/admin');
   return ok({ updated: true });
 }
 

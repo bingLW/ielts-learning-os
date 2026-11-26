@@ -6,6 +6,8 @@
  */
 
 import { HORIZON_DAYS } from '@/lib/services/planBuild';
+import { businessToday } from '@/lib/businessTime';
+import { isValidDateString } from '@/lib/date';
 import { getBuilderContext, getDraft } from '@/lib/queries/planner';
 import { PlanBuilderBody } from '@/components/planner/build/PlanBuilderBody';
 
@@ -19,15 +21,35 @@ function parseHorizon(raw: string | undefined): number {
 export default async function PlannerBuildPage({
   searchParams,
 }: {
-  searchParams: Promise<{ horizon?: string; draft?: string }>;
+  searchParams: Promise<{ horizon?: string; draft?: string; date?: string; budget?: string; proposal?: string }>;
 }) {
   const params = await searchParams;
-  const horizonDays = parseHorizon(params.horizon);
+  const proposalId = params.proposal?.trim() || undefined;
+  const horizonDays = proposalId ? 7 : parseHorizon(params.horizon);
+  const asOfDate = params.date && isValidDateString(params.date) ? params.date : await businessToday();
+  const parsedBudget = Number(params.budget);
+  const budgetOverrideMinutes =
+    params.budget !== undefined &&
+    params.budget.trim() !== '' &&
+    Number.isInteger(parsedBudget) &&
+    parsedBudget >= 0 &&
+    parsedBudget <= 600
+      ? parsedBudget
+      : undefined;
 
   const [context, draft] = await Promise.all([
-    getBuilderContext(horizonDays),
+    getBuilderContext(horizonDays, asOfDate),
     params.draft ? getDraft(params.draft) : Promise.resolve(null),
   ]);
 
-  return <PlanBuilderBody context={context} horizonDays={horizonDays} draft={draft} />;
+  return (
+    <PlanBuilderBody
+      context={context}
+      horizonDays={horizonDays}
+      draft={draft}
+      asOfDate={asOfDate}
+      budgetOverrideMinutes={budgetOverrideMinutes}
+      proposalId={proposalId}
+    />
+  );
 }

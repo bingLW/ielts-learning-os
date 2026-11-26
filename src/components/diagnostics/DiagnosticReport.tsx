@@ -6,7 +6,7 @@ import { useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  activatePlanAction,
+  confirmDiagnosticPlanAction,
   deleteDiagnosticSessionAction,
   requestReviewAction,
   retestAction,
@@ -41,17 +41,18 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
     (snapshot) => !['LISTENING', 'READING', 'SPEAKING', 'WRITING'].includes(snapshot.skill),
   );
 
-  function activate() {
-    if (!report.proposal) return;
+  function continueToBuilder() {
+    const proposalId = report.proposal?.id;
+    if (!proposalId) return;
     startTransition(async () => {
-      const result = await activatePlanAction({
-        proposalId: report.proposal!.id,
+      const result = await confirmDiagnosticPlanAction({
+        proposalId,
         tasks: phases.map((phase) => ({
           window: phase.window as '7D' | '30D' | '90D',
           focus: phase.focus,
           tasks: phase.tasks.map((task) => ({
             title: task.title,
-            minutes: Number(task.minutes) || 15,
+            minutes: task.minutes,
             skill: task.skill,
             evidenceRef: task.evidenceRef,
             reason: task.reason,
@@ -62,8 +63,7 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
         show(result.error, 'error');
         return;
       }
-      show('计划草案已确认并标记为 ACTIVE；不会自动创建今日任务，请在计划页手动排入。');
-      router.refresh();
+      router.push(`/planner/build?horizon=7&proposal=${encodeURIComponent(proposalId)}`);
     });
   }
 
@@ -163,7 +163,7 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
                 范围 {snapshot.levelRange?.join('–') ?? '—'} · 证据 {snapshot.evidenceCount} 条
               </div>
               <div className="text-inkMuted">
-                覆盖 {Math.round(snapshot.coverageRatio * 100)}% · 置信度{' '}
+                覆盖 {snapshot.coverageRatio === null ? '未知' : `${Math.round(snapshot.coverageRatio * 100)}%`} · 置信度{' '}
                 {DIAG_CONFIDENCE_LABEL_ZH[snapshot.confidence as keyof typeof DIAG_CONFIDENCE_LABEL_ZH] ?? snapshot.confidence}
               </div>
               {snapshot.needsFollowUp && (
@@ -253,6 +253,11 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
                   AI 辅助估计 {attempt.estimatedLevel}（{attempt.levelRange?.join('–') ?? '—'}，置信度 {attempt.confidence}）
                 </p>
               )}
+              {attempt.aiAudit && (
+                <p className="mt-0.5 text-inkMuted">
+                  AI 审计：模型 {attempt.aiAudit.modelId ?? '未记录'} · Prompt {attempt.aiAudit.promptVersionId ?? '未记录'} · Rubric {attempt.aiAudit.rubricVersion ?? '未记录'} · 调用 {attempt.aiAudit.callLogId ?? '未记录'}
+                </p>
+              )}
               {attempt.limitations.length > 0 && (
                 <p className="mt-0.5 text-inkMuted">限制：{attempt.limitations.join('；')}</p>
               )}
@@ -264,7 +269,7 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
       {report.proposal && (
         <Card
           title="学习计划草案"
-          description={`每周预算 ${report.proposal.budget?.weeklyMinutes ?? '—'} 分钟（${report.proposal.budget?.source ?? '未知来源'}）；确认后仅标记 ACTIVE，不自动创建今日任务。`}
+          description={`每周预算 ${report.proposal.budget?.weeklyMinutes ?? '—'} 分钟（${report.proposal.budget?.source ?? '未知来源'}）；保存后进入 Planner 预览，再次确认才写入正式计划。`}
         >
           {report.proposal.notes.length > 0 && (
             <ul className="mb-2 list-disc pl-4 text-xs text-inkMuted">
@@ -289,7 +294,6 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
                           value={task.minutes}
                           onChange={(event) => updateTask(phase.window, index, Number(event.target.value))}
                           className="w-16 rounded border border-line px-1 py-0.5 text-xs"
-                          disabled={report.proposal?.status === 'ACTIVE'}
                         />
                         <span className="text-inkMuted">分钟 · 关联 {task.evidenceRef}</span>
                       </div>
@@ -301,15 +305,14 @@ export function DiagnosticReport({ report }: DiagnosticReportProps) {
             ))}
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {report.proposal.status === 'ACTIVE' ? (
-              <span className="text-xs text-emerald-700">
-                已确认（{report.proposal.activatedAt?.slice(0, 16).replace('T', ' ') ?? ''}）。如需调整，请到计划页修改。
+            {report.proposal.status === 'ACTIVE' && (
+              <span className="text-xs text-amber-700">
+                此草案已完成 Planner 确认；正式任务与版本请以 Planner 记录为准，不能重复激活。
               </span>
-            ) : (
-              <Button variant="primary" onClick={activate} disabled={pending}>
-                {pending ? '正在确认…' : '确认并启用计划草案'}
-              </Button>
             )}
+            <Button variant="primary" onClick={continueToBuilder} disabled={pending || report.proposal.status === 'ACTIVE'}>
+              {pending ? '正在保存…' : '保存草案并进入 Planner'}
+            </Button>
           </div>
         </Card>
       )}

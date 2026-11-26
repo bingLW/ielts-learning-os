@@ -20,55 +20,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 import type { BuildPlanResult } from '@/lib/services/planBuild';
 
-const { prisma, path } = await createTestDb([
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'studySessionDaySplit',
-  'evidenceRecord',
-  'studySession',
-  'skillProfile',
-  'goalMilestone',
-  'learningGoal',
-  'weeklyFocus',
-  'learningCycle',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'planningSnapshot',
-  'planTask',
-  'planVersion',
-  'dailyBudget',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'plannerSettings',
-  'skillAllocationProfile',
-  'stageAcceptanceItem',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma, cleanup } = await createTestDb();
 
 const { buildPlan } = await import('@/lib/services/planBuild');
 
@@ -177,8 +129,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('T07 explanation 不重算（§4.4）', () => {

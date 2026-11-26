@@ -1,11 +1,15 @@
 #!/bin/bash
 # =============================================================================
-# IELTS Learning OS —— SQLite 一致性备份
+# IELTS Learning OS —— SQLite + storage/uploads 一致性备份 bundle
 # -----------------------------------------------------------------------------
 # 用法：
 #   bash scripts/backup.sh                     # 生成一份备份并自检；绝不删除任何已有备份
 #   bash scripts/backup.sh --prune            # 同上，并额外列出可清理的旧备份（仍不删除）
-#   bash scripts/backup.sh --prune --yes      # 生成备份后，打印待删清单并逐文件清理旧备份
+#   bash scripts/backup.sh --prune --yes      # 生成备份后，打印待删清单并成对清理旧 bundle
+#
+# 新产物：dev-<timestamp>.tar + dev-<timestamp>.tar.sha256（两者缺一不可）。
+# tar 内必须有 manifest.json（逐文件相对路径/大小/sha256、schema/AppMigration、
+# 创建时间、全表行数）与 checksums.sha256；外部 .sha256 校验整个 tar。
 #
 # 为什么不能用 cp 复制正在被写入的库（本脚本存在的核心理由）：
 #   1) WAL 模式下，SQLite 数据库由 dev.db + dev.db-wal + dev.db-shm 三者共同构成。
@@ -30,24 +34,26 @@
 #     同样是一致性快照，但直接写目标文件、不需要回滚日志。可用 IELTS_SNAPSHOT_METHOD
 #     指定 auto（默认）/ backup / vacuum，便于演练与排障。
 #
-# 依赖：仅 /usr/bin/sqlite3 与 POSIX shell 工具（date/mkdir/mv/rm/wc/tr 等）。
-#      绝不调用 node / npm / npx / tsx / prisma —— 用户自己的终端可能根本没有 Node。
+# 依赖：/usr/bin/sqlite3、Node.js（仅内置模块）与 POSIX shell 工具。
+#      不调用 npm / npx / tsx / prisma，不引入新依赖。Node 路径可用 NODE_BIN 指定。
 # 兼容：macOS 自带 /bin/bash 3.2；不使用 ${var,,}、mapfile、&>> 等 bash 4+ 特性。
 #
 # 环境变量：
 #   IELTS_DB_PATH      源库路径，默认 $PROJECT_ROOT/prisma/dev.db
 #   IELTS_BACKUP_DIR   备份目录，默认 $PROJECT_ROOT/backups
-#   IELTS_BACKUP_KEEP  保留份数上限，默认 14（只用于统计/清理，默认不删除）
+#   IELTS_UPLOADS_DIR  uploads 源目录，默认 $PROJECT_ROOT/storage/uploads
+#   IELTS_BACKUP_KEEP  保留份数上限，默认 14（只统计完整 bundle，默认不删除）
 #   IELTS_SNAPSHOT_METHOD  auto（默认，.backup 失败自动退化 VACUUM INTO）/ backup / vacuum
 # =============================================================================
 
 set -euo pipefail
 
 # launchd / cron 的默认 PATH 极窄，这里显式钉死系统路径，保证 sqlite3、date 等可找到。
-PATH=/usr/bin:/bin:/usr/sbin:/sbin
+PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-SQLITE3=/usr/bin/sqlite3
+SQLITE3="${IELTS_SQLITE3:-/usr/bin/sqlite3}"
+NODE_BIN="${NODE_BIN:-node}"
 KEY_TABLES="stage stageAcceptanceItem resource studySession"
 KEEP="${IELTS_BACKUP_KEEP:-14}"
 METHOD="${IELTS_SNAPSHOT_METHOD:-auto}"
@@ -55,12 +61,17 @@ METHOD="${IELTS_SNAPSHOT_METHOD:-auto}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DB_PATH="${IELTS_DB_PATH:-$PROJECT_ROOT/prisma/dev.db}"
+UPLOADS_DIR="${IELTS_UPLOADS_DIR:-$PROJECT_ROOT/storage/uploads}"
 BACKUP_DIR="${IELTS_BACKUP_DIR:-$PROJECT_ROOT/backups}"
+BUNDLE_HELPER="$SCRIPT_DIR/backup-bundle.mjs"
 
 PRUNE_FLAG=0
 YES_FLAG=0
 PARTIAL=""
 ABORTED_PARTIAL=""
+CHECKSUM_PARTIAL=""
+SNAPSHOT_PARTIAL=""
+PUBLISHED_ARCHIVE=""
 
 usage() {
   printf '%s\n' \
@@ -70,7 +81,8 @@ usage() {
     "  --prune           额外列出超出保留上限的旧备份（仍不删除）" \
     "  --prune --yes     两者同时给出时，先打印完整待删清单，再逐文件 rm -f 清理" \
     "" \
-    "环境变量：IELTS_DB_PATH / IELTS_BACKUP_DIR / IELTS_BACKUP_KEEP / IELTS_SNAPSHOT_METHOD"
+    "环境变量：IELTS_DB_PATH / IELTS_UPLOADS_DIR / IELTS_BACKUP_DIR / IELTS_BACKUP_KEEP" \
+    "          IELTS_SNAPSHOT_METHOD / NODE_BIN / IELTS_SQLITE3"
 }
 
 # 把可能是相对路径的入参解析成绝对路径；后面会 cd 进备份目录，相对路径会失效。
@@ -98,10 +110,14 @@ sq() {
 # 把快照截断（本机实测过）。因此旁路文件必须与主文件同生共死。
 cleanup() {
   local f
-  set -- "$PARTIAL" "$PARTIAL-journal" "$PARTIAL-wal" "$PARTIAL-shm"
+  set -- "$PARTIAL" "$PARTIAL-journal" "$PARTIAL-wal" "$PARTIAL-shm" "$CHECKSUM_PARTIAL" \
+    "$SNAPSHOT_PARTIAL" "$SNAPSHOT_PARTIAL-journal" "$SNAPSHOT_PARTIAL-wal" "$SNAPSHOT_PARTIAL-shm"
   if [ -n "$ABORTED_PARTIAL" ]; then
     set -- "$@" "$ABORTED_PARTIAL" "$ABORTED_PARTIAL-journal" \
       "$ABORTED_PARTIAL-wal" "$ABORTED_PARTIAL-shm"
+  fi
+  if [ -n "$PUBLISHED_ARCHIVE" ] && [ -e "$PUBLISHED_ARCHIVE" ]; then
+    set -- "$@" "$PUBLISHED_ARCHIVE"
   fi
   for f in "$@"; do
     if [ -n "$f" ] && [ -e "$f" ]; then
@@ -118,7 +134,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# 对新生成的快照做完整自检：integrity_check 必须为 ok，且四张关键表行数与源库一致。
+# 对新生成的快照做完整自检：integrity/FK 必须通过，且四张关键表行数与源库一致。
 verify_snapshot() {
   local src="$1" dst="$2" chk tbl n_src n_dst
   chk="$(sq "$dst" "PRAGMA integrity_check;" 2>/dev/null)" || {
@@ -130,6 +146,16 @@ verify_snapshot() {
     return 1
   fi
   printf '  integrity_check = ok\n'
+  local fk
+  fk="$(sq "$dst" "PRAGMA foreign_key_check;" 2>/dev/null)" || {
+    printf '自检失败：无法执行 PRAGMA foreign_key_check\n' >&2
+    return 1
+  }
+  if [ -n "$fk" ]; then
+    printf '自检失败：foreign_key_check 存在违规：%s\n' "$fk" >&2
+    return 1
+  fi
+  printf '  foreign_key_check = 无违规\n'
   for tbl in $KEY_TABLES; do
     n_src="$(sq "$src" "SELECT count(*) FROM \"$tbl\";" 2>/dev/null)" || {
       printf '自检失败：无法读取源库表 %s 行数\n' "$tbl" >&2
@@ -163,6 +189,14 @@ if [ ! -x "$SQLITE3" ]; then
   printf '错误：找不到可执行的 %s\n' "$SQLITE3" >&2
   exit 1
 fi
+if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+  printf '错误：找不到 Node：%s（可用 NODE_BIN 指定绝对路径）\n' "$NODE_BIN" >&2
+  exit 1
+fi
+if [ ! -f "$BUNDLE_HELPER" ]; then
+  printf '错误：缺少 bundle helper：%s\n' "$BUNDLE_HELPER" >&2
+  exit 1
+fi
 DB_PATH="$(abs_path "$DB_PATH")" || {
   printf '错误：无法解析源库路径 %s\n' "$DB_PATH" >&2
   exit 1
@@ -171,6 +205,10 @@ if [ ! -f "$DB_PATH" ]; then
   printf '错误：源库不存在：%s\n' "$DB_PATH" >&2
   exit 1
 fi
+UPLOADS_DIR="$(abs_path "$UPLOADS_DIR")" || {
+  printf '错误：无法解析 uploads 路径 %s\n' "$UPLOADS_DIR" >&2
+  exit 1
+}
 if ! mkdir -p "$BACKUP_DIR"; then
   printf '错误：无法创建备份目录：%s\n' "$BACKUP_DIR" >&2
   exit 1
@@ -184,6 +222,14 @@ src_chk="$(sq "$DB_PATH" "PRAGMA integrity_check;" 2>/dev/null)" || {
 }
 if [ "$src_chk" != "ok" ]; then
   printf '错误：源库 PRAGMA integrity_check 返回「%s」，已中止备份\n' "$src_chk" >&2
+  exit 1
+fi
+src_fk="$(sq "$DB_PATH" "PRAGMA foreign_key_check;" 2>/dev/null)" || {
+  printf '错误：源库无法执行 PRAGMA foreign_key_check，已中止备份\n' >&2
+  exit 1
+}
+if [ -n "$src_fk" ]; then
+  printf '错误：源库 foreign_key_check 存在违规，已中止备份：%s\n' "$src_fk" >&2
   exit 1
 fi
 
@@ -209,80 +255,106 @@ cd "$BACKUP_DIR" || {
 }
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-NAME="dev-$STAMP.db"
-PARTIAL="dev-$STAMP.db.partial"
+NAME="dev-$STAMP.tar"
+PARTIAL="dev-$STAMP.tar.partial"
+CHECKSUM_PARTIAL="$PARTIAL.sha256"
+SNAPSHOT_PARTIAL="dev-$STAMP.db.partial"
 SEQ=2
-while [ -e "$NAME" ] || [ -e "$PARTIAL" ]; do
-  NAME="dev-$STAMP-$SEQ.db"
-  PARTIAL="dev-$STAMP-$SEQ.db.partial"
+while [ -e "$NAME" ] || [ -e "$NAME.sha256" ] || [ -e "$PARTIAL" ] || [ -e "$CHECKSUM_PARTIAL" ] || [ -e "$SNAPSHOT_PARTIAL" ]; do
+  NAME="dev-$STAMP-$SEQ.tar"
+  PARTIAL="dev-$STAMP-$SEQ.tar.partial"
+  CHECKSUM_PARTIAL="$PARTIAL.sha256"
+  SNAPSHOT_PARTIAL="dev-$STAMP-$SEQ.db.partial"
   SEQ=$((SEQ + 1))
 done
 
-printf 'IELTS Learning OS / SQLite 一致性备份\n'
+printf 'IELTS Learning OS / SQLite + uploads 一致性备份\n'
 printf '  源库      ：%s\n' "$DB_PATH"
 printf '  备份目录  ：%s\n' "$BACKUP_DIR"
 printf '  目标文件  ：%s\n' "$NAME"
-printf '  生成方式  ：sqlite3 .backup / VACUUM INTO（一致性快照，非 cp）\n'
+printf '  uploads   ：%s\n' "$UPLOADS_DIR"
+printf '  生成方式  ：sqlite3 .backup / VACUUM INTO + 安全 ustar bundle（非 cp）\n'
 printf '\n'
 
 SNAPSHOT_OK=0
 if [ "$METHOD" != "vacuum" ]; then
-  if sq "$DB_PATH" ".backup '$PARTIAL'" 2>/dev/null; then
+  if sq "$DB_PATH" ".backup '$SNAPSHOT_PARTIAL'" 2>/dev/null; then
     SNAPSHOT_OK=1
   else
-    ABORTED_PARTIAL="$PARTIAL"
+    ABORTED_PARTIAL="$SNAPSHOT_PARTIAL"
     printf '提示：.backup 未成功，自动改用等价的一致性快照方案 VACUUM INTO 重试…\n' >&2
   fi
 fi
 
 if [ "$SNAPSHOT_OK" -ne 1 ]; then
-  VAC_PARTIAL="dev-$STAMP-vacuum.db.partial"
+  VAC_PARTIAL="$SNAPSHOT_PARTIAL.vacuum"
   VSEQ=2
   while [ -e "$VAC_PARTIAL" ]; do
-    VAC_PARTIAL="dev-$STAMP-vacuum-$VSEQ.db.partial"
+    VAC_PARTIAL="$SNAPSHOT_PARTIAL.vacuum-$VSEQ"
     VSEQ=$((VSEQ + 1))
   done
   if [ "$METHOD" != "backup" ] && sq "$DB_PATH" "VACUUM INTO '$VAC_PARTIAL';" 2>/dev/null; then
-    PARTIAL="$VAC_PARTIAL"
+    SNAPSHOT_PARTIAL="$VAC_PARTIAL"
     SNAPSHOT_OK=1
   fi
 fi
 
-if [ "$SNAPSHOT_OK" -ne 1 ] || [ ! -f "$PARTIAL" ]; then
+if [ "$SNAPSHOT_OK" -ne 1 ] || [ ! -f "$SNAPSHOT_PARTIAL" ]; then
   printf '错误：一致性快照生成失败，未产出任何备份\n' >&2
   exit 1
 fi
 
 printf '== 备份自检 ==\n'
-if verify_snapshot "$DB_PATH" "$PARTIAL"; then
+if verify_snapshot "$DB_PATH" "$SNAPSHOT_PARTIAL"; then
   printf '自检通过。\n\n'
 else
   printf '错误：备份自检未通过，已放弃本次产物（不会留在 backups/）。\n' >&2
   exit 1
 fi
 
-# 二次防覆盖：mv 之前再确认目标名不存在，绝不覆盖已有备份。
-if [ -e "$NAME" ]; then
+# 在私有暂存目录固化 uploads，再生成 manifest/checksums 和安全 ustar。
+# helper 会拒绝 symlink/特殊文件/超限文件，并验证全表行数、integrity、FK、版本账本。
+printf '== 生成 DB + uploads bundle ==\n'
+if ! "$NODE_BIN" "$BUNDLE_HELPER" create \
+  --db "$SNAPSHOT_PARTIAL" --uploads "$UPLOADS_DIR" --output "$PARTIAL" \
+  --checksum-name "$NAME"; then
+  printf '错误：bundle 生成或自检失败，未发布任何备份\n' >&2
+  exit 1
+fi
+if [ ! -s "$PARTIAL" ] || [ ! -s "$CHECKSUM_PARTIAL" ]; then
+  printf '错误：bundle 或整体 checksum 缺失，拒绝发布\n' >&2
+  exit 1
+fi
+
+# 二次防覆盖：archive 与整体 checksum 必须成对发布；中途失败由 trap 撤销 archive。
+if [ -e "$NAME" ] || [ -e "$NAME.sha256" ]; then
   printf '错误：目标文件在生成期间已出现（%s），为避免覆盖已中止\n' "$NAME" >&2
   exit 1
 fi
 mv -f "$PARTIAL" "$NAME"
+PUBLISHED_ARCHIVE="$NAME"
+mv -f "$CHECKSUM_PARTIAL" "$NAME.sha256"
+CHECKSUM_PARTIAL=""
+PUBLISHED_ARCHIVE=""
 SIZE="$(wc -c < "$NAME" | tr -d ' ')"
 printf '== 备份完成 ==\n'
 printf '  文件：%s/%s\n' "$BACKUP_DIR" "$NAME"
+printf '  整体 checksum：%s/%s.sha256\n' "$BACKUP_DIR" "$NAME"
+printf '  内置清单：manifest.json + checksums.sha256（缺一不可）\n'
 printf '  大小：%s 字节\n\n' "$SIZE"
 
 # ------------------------------ 保留策略 ------------------------------------
 # 默认绝不删除任何已有备份；只有 --prune 与 --yes 同时具备时才进入清理分支。
 shopt -s nullglob
 BACKUP_FILES=()
-for cand in dev-*.db; do
-  # 只统计真正的备份文件：必须是当前备份目录内的普通文件且非空。
-  # 这样中断残留的 0 字节文件、同名目录、符号链接都不会被算成一份备份。
-  if [ -f "$cand" ] && [ -s "$cand" ]; then
+for cand in dev-*.tar; do
+  # 只有 archive + 整体 checksum 同时存在的完整 bundle 才参与保留策略。
+  # 旧版 dev-*.db 与孤立半成品永不自动删除。
+  if [ -f "$cand" ] && [ ! -L "$cand" ] && [ -s "$cand" ] && \
+     [ -f "$cand.sha256" ] && [ ! -L "$cand.sha256" ] && [ -s "$cand.sha256" ]; then
     BACKUP_FILES[${#BACKUP_FILES[@]}]="$cand"
   else
-    printf '警告：跳过非普通/空文件，未计入备份份数：%s/%s\n' "$BACKUP_DIR" "$cand" >&2
+    printf '警告：跳过不完整/非普通 bundle，未计入份数且不会删除：%s/%s\n' "$BACKUP_DIR" "$cand" >&2
   fi
 done
 shopt -u nullglob
@@ -290,9 +362,9 @@ TOTAL="${#BACKUP_FILES[@]}"
 
 # 按「时间戳 + 同秒序号」真实生成顺序排序后再取最旧的一批。
 # 不能直接用 glob 字典序：ASCII '-'(0x2D) < '.'(0x2E)，同秒较新的
-# dev-<STAMP>-2.db 会排到 dev-<STAMP>.db 之前，被误当成最旧而优先删除。
+# dev-<STAMP>-2.tar 会排到 dev-<STAMP>.tar 之前，被误当成最旧而优先删除。
 # 用 awk 拆出「时间戳<TAB>序号<TAB>文件名」三列，再 sort -k1,1 -k2,2n：
-# 无后缀视为序号 0，dev-YYYYMMDD-HHMMSS-N.db 视为序号 N（N>=2）。
+# 无后缀视为序号 0，dev-YYYYMMDD-HHMMSS-N.tar 视为序号 N（N>=2）。
 # 不依赖 mtime（哨兵文件可能有相同 mtime）；C locale 保证字节序确定。
 if [ "$TOTAL" -gt 0 ]; then
   SORTED_FILES=()
@@ -307,7 +379,7 @@ if [ "$TOTAL" -gt 0 ]; then
         name = $0
         body = name
         sub(/^dev-/, "", body)
-        sub(/\.db$/, "", body)
+        sub(/\.tar$/, "", body)
         ts = body
         seq = 0
         if (body ~ /^[0-9]+-[0-9]+-[0-9]+$/) {
@@ -338,15 +410,15 @@ if [ "$TOTAL" -gt "$KEEP" ]; then
     DELETED=0
     while [ "$I" -lt "$EXCESS" ]; do
       F="${BACKUP_FILES[$I]}"
-      # 三重约束：当前备份目录内（相对名不含 /）、普通文件、文件名匹配 dev-*.db。
+      # 约束：当前备份目录内、普通文件、文件名匹配 dev-*.tar；checksum 成对删除。
       case "$F" in
         */*)
           printf '  跳过（路径越界）：%s\n' "$F" >&2
           ;;
-        dev-*.db)
-          if [ -f "$F" ]; then
-            printf '  删除：%s/%s\n' "$BACKUP_DIR" "$F"
-            rm -f "$F"
+        dev-*.tar)
+          if [ -f "$F" ] && [ ! -L "$F" ] && [ -f "$F.sha256" ] && [ ! -L "$F.sha256" ]; then
+            printf '  删除：%s/%s 与 %s/%s.sha256\n' "$BACKUP_DIR" "$F" "$BACKUP_DIR" "$F"
+            rm -f "$F" "$F.sha256"
             DELETED=$((DELETED + 1))
           fi
           ;;

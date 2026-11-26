@@ -36,7 +36,7 @@ import {
   type PriorityFactorKey,
 } from '../constants';
 import { diffDays } from '../date';
-import type { LearningTrack, ModuleId, SkillId, TaskPriority } from '../types';
+import type { LearningTrack, ModuleId, SkillId, TaskEstimate, TaskPriority } from '../types';
 import { clamp01, type SkillGapDraft } from './skillGap';
 import {
   evaluatePrerequisites,
@@ -128,6 +128,10 @@ export type Eligibility =
 export interface DecisionMeta {
   estMinutesSource: 'SOURCE' | 'DERIVED';
   derivedFrom?: string;
+  /** 生成时的估时快照；AI 只能改 rationale，不得改此字段。 */
+  estimate?: TaskEstimate;
+  /** 候选归属/阶段元数据，随决策快照保存。 */
+  candidateMeta?: TaskCandidateDraft['meta'];
   skillGapKey: string | null;
   /** 支撑该缺口的证据 id（可追溯，AC-8）。无缺口时为空数组。 */
   evidenceRefs: string[];
@@ -331,6 +335,14 @@ const PRIORITY_RANK: Record<TaskPriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3
 export function compareDecisions(a: TaskPriorityDecisionDraft, b: TaskPriorityDecisionDraft): number {
   const byPriority = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
   if (byPriority !== 0) return byPriority;
+  const aProposalOrder = a.meta.candidateMeta?.diagnosticProposal?.order;
+  const bProposalOrder = b.meta.candidateMeta?.diagnosticProposal?.order;
+  const aIsProposal = aProposalOrder !== undefined;
+  const bIsProposal = bProposalOrder !== undefined;
+  if (aIsProposal !== bIsProposal) return aIsProposal ? -1 : 1;
+  if (aIsProposal && bIsProposal && aProposalOrder !== bProposalOrder) {
+    return aProposalOrder - bProposalOrder;
+  }
   if (a.score !== b.score) return b.score - a.score;
   return a.candidateKey < b.candidateKey ? -1 : a.candidateKey > b.candidateKey ? 1 : 0;
 }
@@ -376,7 +388,11 @@ function rationaleOf(
 ): string {
   const dominant = dominantFactor(factors, ctx.weights);
   const head = priority === 'P0' ? '到期任务，固定 P0' : `${FACTOR_LABEL_ZH[dominant]} ${factors[dominant].toFixed(2)} 主导`;
-  return `${head}；预计 ${candidate.estMinutes} 分钟，今日预算 ${ctx.budgetMinutes} 分钟`;
+  const range = candidate.meta.estimate
+    ? `${candidate.meta.estimate.minMinutes}–${candidate.meta.estimate.maxMinutes}`
+    : `${candidate.estMinutes}`;
+  const calibration = candidate.meta.estimate?.basis === 'CALIBRATED' ? '，历史校准' : '，估计';
+  return `${head}；预计 ${range} 分钟${calibration}，今日预算 ${ctx.budgetMinutes} 分钟`;
 }
 
 /**
@@ -457,7 +473,9 @@ export function scoreCandidate(
     factors,
     score,
     priority,
-    rationale: rationaleOf(candidate, factors, ctx, priority),
+    rationale: candidate.meta.diagnosticProposal
+      ? `USER_EDIT：${candidate.meta.diagnosticProposal.userReason}`
+      : rationaleOf(candidate, factors, ctx, priority),
     consequenceIfSkipped: consequenceOf(candidate, gap),
     // 评分层只判"前置条件是否满足"。`OVER_BUDGET` / `DUPLICATE` 属于装箱与去重层：
     // 它们需要知道"能不能拆""同一件事是否已被别的候选占了"，这里两者都不知道，
@@ -467,8 +485,12 @@ export function scoreCandidate(
     meta: {
       estMinutesSource: candidate.meta.estMinutesSource,
       ...(candidate.meta.derivedFrom ? { derivedFrom: candidate.meta.derivedFrom } : {}),
+      ...(candidate.meta.estimate ? { estimate: candidate.meta.estimate } : {}),
+      candidateMeta: candidate.meta,
       skillGapKey: candidate.skillGapKey,
-      evidenceRefs: gap?.evidenceIds ?? [],
+      evidenceRefs: candidate.meta.diagnosticProposal
+        ? [candidate.meta.diagnosticProposal.evidenceRef]
+        : gap?.evidenceIds ?? [],
       noObservation: recurrence.noObservation,
     },
   };

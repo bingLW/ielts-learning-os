@@ -36,8 +36,9 @@ export interface VocabRetestSeed {
 export async function ensureVocabularyRetest(
   tx: Tx,
   seed: VocabRetestSeed,
+  timeZone: string,
 ): Promise<{ completed: number; created: number }> {
-  const businessDate = toBusinessDate(seed.createdAt);
+  const businessDate = toBusinessDate(seed.createdAt, timeZone);
   const prefix = vocabRetestNotePrefix(seed.itemId, seed.dimension);
 
   // 先结清到期排期，再排新阶梯：新一轮从这条证据的日期起算。

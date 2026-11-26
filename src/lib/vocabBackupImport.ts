@@ -45,6 +45,7 @@ export interface BackupImportResult {
 export async function importTypeWordsBackupInTx(
   tx: Tx,
   input: BackupImportInput,
+  timeZone: string,
 ): Promise<BackupImportResult> {
   const { backup } = input;
   const warnings = [...backup.warnings];
@@ -80,7 +81,7 @@ export async function importTypeWordsBackupInTx(
   }
 
   const assignmentDates = new Set(
-    backup.sessions.map((session) => toBusinessDate(new Date(session.startedAt))),
+    backup.sessions.map((session) => toBusinessDate(new Date(session.startedAt), timeZone)),
   );
   const assignments = await tx.vocabularyAssignment.findMany({
     where: { assignmentDate: { in: [...assignmentDates] } },
@@ -116,7 +117,7 @@ export async function importTypeWordsBackupInTx(
     const counted = input.countTime ? effectiveSeconds(interval, claimed) : 0;
     if (input.countTime) claimed.push(interval);
 
-    const assignment = assignmentByDate.get(toBusinessDate(new Date(session.startedAt)));
+    const assignment = assignmentByDate.get(toBusinessDate(new Date(session.startedAt), timeZone));
 
     const created = await tx.vocabularyPracticeSession.create({
       data: {
@@ -151,10 +152,10 @@ export async function importTypeWordsBackupInTx(
 
     const activeMinutes = counted > 0 ? Math.max(1, Math.round(counted / 60)) : 0;
     if (activeMinutes > 0) {
-      const splits = splitAcrossMidnight(session.startedAt, activeMinutes);
+      const splits = splitAcrossMidnight(session.startedAt, activeMinutes, timeZone);
       const dominant = splits.reduce(
         (best, part) => (part.minutes > best.minutes ? part : best),
-        { date: toBusinessDate(new Date(session.startedAt)), minutes: 0 },
+        { date: toBusinessDate(new Date(session.startedAt), timeZone), minutes: 0 },
       );
       const study = await tx.studySession.create({
         data: {

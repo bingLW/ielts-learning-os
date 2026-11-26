@@ -78,9 +78,28 @@ import type {
 
 // ───────────────────────── 系统 ─────────────────────────
 
-/** Asia/Singapore 无夏令时，固定 +08:00。全站唯一时区。 */
-export const TZ_OFFSET_MINUTES = 480;
+/** 首次配置的默认 IANA 时区；实际业务时区来自 UserProfile.timezone。 */
 export const TZ_NAME = 'Asia/Singapore';
+export const BUSINESS_TIMEZONE_OPTIONS = [
+  'Asia/Shanghai',
+  'Asia/Singapore',
+  'Asia/Hong_Kong',
+  'Asia/Taipei',
+  'Asia/Tokyo',
+  'Asia/Kolkata',
+  'Asia/Dubai',
+  'Europe/London',
+  'Europe/Berlin',
+  'Europe/Paris',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Toronto',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+  'UTC',
+] as const;
 export const SCHEMA_VERSION = 1;
 export const BACKUP_KEEP = 7;
 
@@ -2879,6 +2898,10 @@ export const AUDIO_ALLOWED_EXTENSIONS = ['mp3', 'm4a', 'wav', 'webm', 'ogg', 'aa
 
 /** 上传音频大小上限（字节）。 */
 export const AUDIO_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+/** 上传音源时长上限（30 分钟）；录音另有更严格的 90 秒限制。 */
+export const AUDIO_MAX_SECONDS = 30 * 60;
+export const ASSET_DELETE_CONFIRM_TEXT = '确认删除';
+export const ASSET_DELETE_PREVIEW_TTL_MS = 10 * 60 * 1000;
 
 /** 录音单条上限：约 1.6MB / 90 秒（延续 v2.4.1 约定）。 */
 export const RECORDING_MAX_BYTES = 1_600_000;

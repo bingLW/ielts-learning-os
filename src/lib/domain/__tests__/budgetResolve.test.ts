@@ -10,21 +10,12 @@
  * §2 的等价性用例是这条契约的**唯一**防线：以后谁在壳里加一个 `if`，它就会红。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 import { resolveEffectiveBudget, type BudgetResolveInput } from '../budget';
 import { addDays } from '../../date';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-budget-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
-
-const { prisma } = await import('@/lib/prisma');
+const { prisma, cleanup } = await createTestDb();
 const { getBudgetRange, getEffectiveBudget } = await import('@/lib/queries/budget');
 
 /** 一个"没有 DailyBudget 行"的输入。 */
@@ -177,7 +168,7 @@ describe('getBudgetRange 与 getEffectiveBudget 的逐字段等价性', () => {
   const dates = Array.from({ length: 30 }, (_, index) => addDays('2025-10-01', index));
 
   beforeAll(async () => {
-    // 清干净，保证本文件不依赖 dev.db 里的既有配置
+    // 显式构造无预算配置场景，不依赖任何外部数据库
     await prisma.dailyBudget.deleteMany({});
     await prisma.plannerSettings.deleteMany({});
   });
@@ -186,6 +177,7 @@ describe('getBudgetRange 与 getEffectiveBudget 的逐字段等价性', () => {
     await prisma.dailyBudget.deleteMany({});
     await prisma.plannerSettings.deleteMany({});
     await prisma.$disconnect();
+    cleanup();
   });
 
   /** 三种配置状态 × 断言逐字段相等。 */

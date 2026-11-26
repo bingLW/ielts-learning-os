@@ -6,15 +6,17 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import type { SpeakingPromptDto, SpeakingSessionDto } from '@/lib/queries/listening';
+import type { SpeakingPromptDto, SpeakingSessionDto, SpeakingRecordingDto } from '@/lib/queries/listening';
 import { SPEAKING_TASK_TYPE_LABELS_ZH, type SpeakingTaskType } from '@/lib/constants';
+import { AssetDeleteButton } from '@/components/listening/AssetDeleteButton';
 
 interface Props {
   prompts: SpeakingPromptDto[];
   sessions: SpeakingSessionDto[];
+  unassignedRecordings?: SpeakingRecordingDto[];
 }
 
-export function SpeakingPageBody({ prompts, sessions }: Props) {
+export function SpeakingPageBody({ prompts, sessions, unassignedRecordings = [] }: Props) {
   const [recording, setRecording] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -23,6 +25,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   const startRecording = useCallback(async () => {
@@ -33,6 +36,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
       const recorder = new MediaRecorder(stream);
       recorderRef.current = recorder;
       chunksRef.current = [];
+      startedAtRef.current = Date.now();
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
@@ -61,6 +65,7 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
       const blob = await fetch(audioUrl).then((res) => res.blob());
       const formData = new FormData();
       formData.append('file', blob, 'recording.webm');
+      formData.append('durationSec', String(startedAtRef.current ? Math.round((Date.now() - startedAtRef.current) / 1000) : 0));
       const res = await fetch('/api/upload-recording', { method: 'POST', body: formData });
       const json = await res.json();
       if (!json.ok) setMessage(json.error ?? '上传失败');
@@ -149,6 +154,21 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
         </div>
       </div>
 
+      {unassignedRecordings.length > 0 && (
+        <div className="rounded-xl border border-ink/10 p-4">
+          <h2 className="mb-3 text-sm font-medium text-ink">未关联会话的录音</h2>
+          <div className="flex flex-col gap-2">
+            {unassignedRecordings.map((recording) => (
+              <div key={recording.id} className="rounded bg-ink/5 p-2">
+                <audio src={`/api/recordings/${recording.id}`} controls preload="none" className="w-full" />
+                <p className="text-xs text-inkMuted">Take {recording.takeNumber}{recording.durationSec != null ? ` · ${recording.durationSec}s` : ''}</p>
+                <AssetDeleteButton kind="recording" assetId={recording.id} title={`未关联会话录音 Take ${recording.takeNumber}`} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="rounded-xl border border-ink/10 p-4">
         <h2 className="mb-3 text-sm font-medium text-ink">会话记录</h2>
         {sessions.length === 0 ? (
@@ -165,6 +185,13 @@ export function SpeakingPageBody({ prompts, sessions }: Props) {
                     <span className="mr-2 text-xs text-inkMuted">{turn.role === 'USER' ? '我' : 'AI'}</span>
                     {turn.text ?? '(录音)'}
                   </p>
+                ))}
+                {session.recordings.map((recording) => (
+                  <div key={recording.id} className="mt-2 rounded bg-ink/5 p-2">
+                    <audio src={`/api/recordings/${recording.id}`} controls preload="none" className="w-full" />
+                    <p className="text-xs text-inkMuted">Take {recording.takeNumber}{recording.durationSec != null ? ` · ${recording.durationSec}s` : ''}</p>
+                    <AssetDeleteButton kind="recording" assetId={recording.id} title={`会话录音 Take ${recording.takeNumber}`} />
+                  </div>
                 ))}
               </div>
             ))}

@@ -577,6 +577,18 @@ export interface GateResult {
 // ───────────────────────── 读模型 DTO ─────────────────────────
 // 所有 DTO 都是「已算好的普通对象」，Prisma 原始 model 不出 Server。
 
+/** 任务估时快照：估计区间、校准来源与模型版本；不是实际耗时。 */
+export interface TaskEstimate {
+  pointMinutes: number;
+  minMinutes: number;
+  maxMinutes: number;
+  basis: 'ESTIMATE' | 'CALIBRATED';
+  modelVersion: string;
+  ruleVersion: string;
+  sampleCount: number;
+  calibrationKey: string | null;
+}
+
 /** 计划任务行 DTO（计划页列表视图用）。 */
 export interface PlanTaskDto {
   id: string;
@@ -602,6 +614,12 @@ export interface PlanTaskDto {
   priority: TaskPriority;
   /** 是否允许分段执行。 */
   splittable: boolean;
+  /** 最小可执行块（分钟）。 */
+  minChunkMinutes: number;
+  /** 生成时的估时快照；历史任务不按新模型重算。 */
+  estimate: TaskEstimate | null;
+  /** 生成时保存的预期产出；历史任务只读 decisionJson。 */
+  expectedOutput: string | null;
   /** 生成/重排时的计划版本。 */
   planVersion: number;
   /** 首次被安排到的日期（顺延、重排后不变）。 */
@@ -871,7 +889,13 @@ export interface DashboardDto {
     doneTasks: number;
     totalTasks: number;
     remainingMinutes: number;
-    nextTask: { id: string; label: string; plannedMinutes: number } | null;
+    nextTask: {
+      id: string;
+      label: string;
+      plannedMinutes: number;
+      expectedOutput: string | null;
+      estimate: TaskEstimate | null;
+    } | null;
   };
   week: {
     weekStart: string;

@@ -47,16 +47,29 @@ export function TodayCard({ data }: { data: DashboardDto['today'] }) {
       {!hasTasks ? (
         <p className="mt-2 text-xs text-inkMuted">
           今天还没有计划任务。{' '}
-          <Link href="/plan" className="text-brand hover:underline">
+          <Link href="/planner/build?horizon=1" className="text-brand hover:underline">
             去生成今日计划 →
           </Link>
         </p>
       ) : data.nextTask ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <Link href="/plan" className={buttonClass('primary', 'sm')}>
-            <Icon name="play" size={12} />
-            下一个任务：{data.nextTask.label}（{data.nextTask.plannedMinutes} 分钟）
-          </Link>
+        <div className="mt-2 space-y-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Link href="/plan" className={buttonClass('primary', 'sm')}>
+              <Icon name="play" size={12} />
+              下一个任务：{data.nextTask.label}（{data.nextTask.plannedMinutes} 分钟）
+            </Link>
+            {data.nextTask.estimate && (
+              <span className="text-[11px] text-inkMuted">
+                估时 {data.nextTask.estimate.minMinutes}–{data.nextTask.estimate.maxMinutes} 分钟
+                {data.nextTask.estimate.basis === 'CALIBRATED'
+                  ? ` · 历史校准 ${data.nextTask.estimate.sampleCount} 样本`
+                  : ' · 估计'}
+              </span>
+            )}
+          </div>
+          {data.nextTask.expectedOutput && (
+            <p className="text-[11px] text-inkMuted">预期产出：{data.nextTask.expectedOutput}</p>
+          )}
         </div>
       ) : (
         <p className="mt-2 text-xs text-emerald-700">今天的任务都已完成。</p>

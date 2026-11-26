@@ -6,7 +6,7 @@
  */
 
 import Link from 'next/link';
-import { AI_ROADMAP_NOTE, ANALYTICS_WINDOW_DAYS } from '@/lib/constants';
+import { AI_ROADMAP_NOTE } from '@/lib/constants';
 import { formatDurationZh } from '@/lib/format';
 import type {
   AiScope,
@@ -29,6 +29,7 @@ export interface AnalyticsPageBodyProps {
   options: GlobalFilterOptionsDto;
   ai: { enabled: boolean; scopes: { scope: AiScope; label: string; latest: AiSuggestionDto | null }[] };
   dailyMinutes: number;
+  businessDate: string;
 }
 
 /** 三色扇区（GREEN / YELLOW / RED，顺序与 egiuColors 一致）。 */
@@ -40,6 +41,7 @@ export function AnalyticsPageBody({
   options,
   ai,
   dailyMinutes,
+  businessDate,
 }: AnalyticsPageBodyProps) {
   const totalMinutes = analytics.dailyMinutes.reduce((sum, point) => sum + (point.value ?? 0), 0);
   const activeDays = analytics.dailyMinutes.filter((point) => (point.value ?? 0) > 0).length;
@@ -56,7 +58,7 @@ export function AnalyticsPageBody({
       </header>
 
       <Card title="全局筛选" description="筛选条件写在 URL 里，刷新与分享结果一致">
-        <FilterBar filter={filter} options={options} />
+        <FilterBar filter={filter} options={options} businessDate={businessDate} />
       </Card>
 
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
@@ -92,7 +94,6 @@ export function AnalyticsPageBody({
           title="每日净学习时长"
           description="只统计有效计时段（误触与挂机已剔除）"
           points={analytics.dailyMinutes}
-          emptyHint={`最近 ${ANALYTICS_WINDOW_DAYS} 天没有计时数据：先去「学习计划」里跑一次计时`}
         />
         <BarChartCard
           title="每周净学习时长"

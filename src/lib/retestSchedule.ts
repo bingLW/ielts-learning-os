@@ -31,6 +31,7 @@ export interface RetestSeedEvidence {
 export async function ensureRetestChain(
   tx: Tx,
   evidence: RetestSeedEvidence,
+  timeZone: string,
 ): Promise<number> {
   if (!RETEST_AUTO_PARENT_TYPES.includes(evidence.evidenceType as LearningEvidenceType)) {
     return 0;
@@ -43,7 +44,7 @@ export async function ensureRetestChain(
   });
   if (existing) return 0;
 
-  const baseDate = toBusinessDate(evidence.createdAt);
+  const baseDate = toBusinessDate(evidence.createdAt, timeZone);
   const plan = buildRetestPlan(rootId, evidence.evidenceType as LearningEvidenceType, baseDate);
   if (plan.length === 0) return 0;
 

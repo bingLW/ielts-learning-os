@@ -31,8 +31,8 @@ import {
   listDateRange,
   startOfIsoWeek,
   toUtcInstant,
-  today,
 } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
 import { weightedAccuracy } from '@/lib/domain/accuracy';
 import { completionRate } from '@/lib/domain/completion';
 import { skillMinutes } from '@/lib/domain/duration';
@@ -82,9 +82,10 @@ function weekBuckets(from: string, to: string): string[] {
  * @param filter 已解析的全局筛选（URL searchParams → GlobalFilterDto）
  */
 export async function getAnalytics(filter: GlobalFilterDto): Promise<AnalyticsDto> {
+  const timeZone = await getBusinessTimezone();
   const { from, to } = filter;
-  const startInstant = toUtcInstant(from);
-  const endInstant = endOfBusinessDay(to);
+  const startInstant = toUtcInstant(from, '00:00', timeZone);
+  const endInstant = endOfBusinessDay(to, timeZone);
 
   const taskWhere: Prisma.PlanTaskWhereInput = {};
   if (filter.stageId) taskWhere.stageId = filter.stageId;
@@ -137,7 +138,7 @@ export async function getAnalytics(filter: GlobalFilterDto): Promise<AnalyticsDt
     }),
     prisma.mistake.groupBy({
       by: ['errorCategory'],
-      where: { archivedAt: null, createdAt: { gte: startInstant, lte: endInstant } },
+      where: { archivedAt: null, createdAt: { gte: startInstant, lt: endInstant } },
       _count: { _all: true },
     }),
     prisma.studyRecord.groupBy({
@@ -296,7 +297,7 @@ export function masteryLevelCounts(): { level: string; label: string }[] {
 
 /** 分析窗口内「非休息日有效预算」的日均（图表页「目标」提示用）。 */
 export async function getDailyMinutesBudget(): Promise<number> {
-  const todayStr = today();
+  const todayStr = await businessToday();
   const from = addDays(todayStr, -(ANALYTICS_WINDOW_DAYS - 1));
   const dates = listDateRange(from, todayStr);
   const budgets = await getBudgetRange(dates);

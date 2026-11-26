@@ -13,18 +13,9 @@
  * 4. 幂等命中时不重复调用、不重复记账（抽取前就在 `runAiTurn` 里，位置未变）。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-orch-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -32,8 +23,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { runAiCompletion, runAiTurn } = await import('@/lib/ai/orchestrator');
 const { ensurePromptRegistry } = await import('@/lib/ai/registry');
@@ -42,6 +32,9 @@ const BASELINE = 'Last year I go to the beach with my family. We are very happy.
 
 beforeAll(async () => {
   await ensurePromptRegistry(prisma);
+  await prisma.aIEngineSetting.create({
+    data: { id: 'default', externalAiEnabled: false, dailyBudgetUsd: 5, monthlyBudgetUsd: 20 },
+  });
   // 强制 mock 通道；预算默认给足，具体用例再单独收紧
   await prisma.aIEngineSetting.updateMany({
     data: { externalAiEnabled: false, dailyBudgetUsd: 5, monthlyBudgetUsd: 20 },
@@ -49,15 +42,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (process.env.MATERIALS_TEST_CLEANUP !== '0') {
-    try {
-      await rm(workDb, { force: true });
-    } catch {
-      // 忽略
-    }
-  }
   await prisma.$disconnect();
-}, 60_000);
+  cleanup();
+});
 
 /** 建一个最小可用的教学会话（只填必填列）。 */
 async function createSession(): Promise<string> {
@@ -77,9 +64,9 @@ async function createSession(): Promise<string> {
   return session.id;
 }
 
-/** 把当日预算打到 0 并制造一笔支出 → `evaluateBudget` 判 EXCEEDED。 */
+/** 把当日正预算用一笔模拟支出打满 → `evaluateBudget` 判 EXCEEDED。 */
 async function exhaustDailyBudget(): Promise<void> {
-  await prisma.aIEngineSetting.updateMany({ data: { dailyBudgetUsd: 0 } });
+  await prisma.aIEngineSetting.updateMany({ data: { dailyBudgetUsd: 0.01 } });
   await prisma.aICallLog.create({
     data: {
       provider: 'mock',

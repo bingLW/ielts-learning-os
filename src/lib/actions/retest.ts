@@ -16,11 +16,15 @@ import {
   RETEST_PLAN_MODULE,
   RETEST_PLAN_PRIORITY,
 } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
 import { previewOutput } from '@/lib/domain/evidence';
 import { getActiveStage } from '@/lib/queries/stages';
 import { prisma } from '@/lib/prisma';
 import { ensureRetestChain } from '@/lib/retestSchedule';
+import {
+  appendTaskFromCandidateInTransaction,
+  BudgetGateError,
+} from '@/lib/services/planWrite';
 import { fail, failValidation, ok } from '@/lib/result';
 import {
   addRetestToPlanSchema,
@@ -28,7 +32,7 @@ import {
   skipRetestSchema,
 } from '@/lib/schema/retest';
 import { nullIfEmpty } from '@/lib/schema/common';
-import type { ActionResult, ModuleId, PrimarySkill } from '@/lib/types';
+import type { ActionResult, ModuleId, PrimarySkill, TaskPriority } from '@/lib/types';
 
 function revalidateRetestPages() {
   revalidatePath('/retest');
@@ -65,7 +69,8 @@ export async function scheduleRetestAction(
   if (!evidence) return fail('NOT_FOUND', '证据不存在或已被删除');
   if (evidence.archivedAt) return fail('PRECONDITION', '已归档证据不再排复测');
 
-  const created = await prisma.$transaction((tx) => ensureRetestChain(tx, evidence));
+  const timeZone = await getBusinessTimezone();
+  const created = await prisma.$transaction((tx) => ensureRetestChain(tx, evidence, timeZone));
   revalidateRetestPages();
   return ok({ created });
 }
@@ -116,7 +121,7 @@ export async function addRetestToPlanAction(
     return fail('PRECONDITION', '只有待完成的复测才能加入计划');
   }
 
-  const todayStr = today();
+  const todayStr = await businessToday();
   if (schedule.dueDate > todayStr) {
     return fail('PRECONDITION', '该复测尚未到期，到期后再加入当天计划');
   }
@@ -132,37 +137,62 @@ export async function addRetestToPlanAction(
   const stage = await getActiveStage();
   if (!stage) return fail('PRECONDITION', '请先在「阶段与验收」页激活一个阶段');
 
-  const preview = previewOutput(schedule.parent.outputText ?? schedule.parent.note, 40);
   const moduleMeta = MODULE_META[RETEST_PLAN_MODULE as ModuleId];
 
-  const planTaskId = await prisma.$transaction(async (tx) => {
-    const maxSort = await tx.planTask.aggregate({
-      where: { planDate: todayStr },
-      _max: { sortOrder: true },
-    });
-    const created = await tx.planTask.create({
-      data: {
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const current = await tx.retestSchedule.findUnique({
+        where: { id: schedule.id },
+        include: { parent: { select: { skill: true, outputText: true, note: true } } },
+      });
+      if (!current) return { ok: false as const, code: 'NOT_FOUND', error: '复测排期不存在' };
+      if (current.status !== 'PENDING') {
+        return { ok: false as const, code: 'PRECONDITION', error: '只有待完成的复测才能加入计划' };
+      }
+      if (current.dueDate > todayStr) {
+        return { ok: false as const, code: 'PRECONDITION', error: '该复测尚未到期，到期后再加入当天计划' };
+      }
+      if (current.planTaskId) {
+        const exists = await tx.planTask.findUnique({
+          where: { id: current.planTaskId },
+          select: { id: true },
+        });
+        if (exists) return { ok: true as const, planTaskId: exists.id };
+      }
+
+      const currentPreview = previewOutput(current.parent.outputText ?? current.parent.note, 40);
+      const appended = await appendTaskFromCandidateInTransaction(tx, {
         stageId: stage.id,
         planDate: todayStr,
         module: RETEST_PLAN_MODULE,
         skill: moduleMeta?.skill ?? 'META',
-        plannedMinutes: schedule.estMinutes,
-        sortOrder: (maxSort._max.sortOrder ?? 0) + 1,
-        priority: `P${RETEST_PLAN_PRIORITY}`,
+        plannedMinutes: current.estMinutes,
+        priority: `P${RETEST_PLAN_PRIORITY}` as TaskPriority,
         sourceKind: 'REVIEW',
         track: MODULE_TRACK[RETEST_PLAN_MODULE as ModuleId] ?? 'GENERAL_ENGLISH',
-        primarySkill: PLAN_PRIMARY_SKILL[schedule.parent.skill] ?? 'FOUNDATION',
-        note: preview ? `证据复测：${preview}` : '证据复测',
-      },
-      select: { id: true },
+        primarySkill: PLAN_PRIMARY_SKILL[current.parent.skill] ?? 'FOUNDATION',
+        note: currentPreview ? `证据复测：${currentPreview}` : '证据复测',
+        origin: 'RETEST_ADD',
+        idempotencyKey: `retest:${current.id}`,
+      });
+      await tx.retestSchedule.update({
+        where: { id: current.id },
+        data: { planTaskId: appended.taskId },
+      });
+      return { ok: true as const, planTaskId: appended.taskId };
     });
-    await tx.retestSchedule.update({
-      where: { id: schedule.id },
-      data: { planTaskId: created.id },
-    });
-    return created.id;
-  });
 
-  revalidateRetestPages();
-  return ok({ planTaskId });
+    if (!result.ok) return fail(result.code as 'NOT_FOUND' | 'PRECONDITION', result.error);
+    revalidateRetestPages();
+    return ok({ planTaskId: result.planTaskId });
+  } catch (error) {
+    if (error instanceof BudgetGateError) return fail('PRECONDITION', error.message);
+    if (
+      typeof error === 'object' && error !== null && 'code' in error
+      && ['P2002', 'P2028'].includes((error as { code?: unknown }).code as string)
+    ) {
+      return fail('CONFLICT', '计划写入发生并发冲突，请刷新后重试');
+    }
+    throw error;
+  }
 }

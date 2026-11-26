@@ -12,7 +12,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma, cleanup } = await createTestDb(['planVersion']);
+const { prisma, cleanup } = await createTestDb();
 const { restorePlanVersionAction } = await import('../planner');
 
 afterAll(() => cleanup());

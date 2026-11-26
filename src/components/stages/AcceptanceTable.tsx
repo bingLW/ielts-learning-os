@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
 import { evaluateGateAction } from '@/lib/actions/gate';
 import { updateAcceptanceItemAction } from '@/lib/actions/stages';
 import { VERDICT_LABEL_ZH, VERDICTS } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { AcceptanceItemDto, Verdict } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { FormField, inputClass, textareaClass } from '@/components/ui/FormField';
@@ -29,6 +29,7 @@ export function AcceptanceTable({
   stageName: string;
   onToast: (message: string, tone: 'success' | 'error') => void;
 }) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -38,7 +39,7 @@ export function AcceptanceTable({
   const [myResult, setMyResult] = useState('');
   const [evidence, setEvidence] = useState('');
   const [verdict, setVerdict] = useState<Verdict>('PENDING');
-  const [judgedAt, setJudgedAt] = useState(today());
+  const [judgedAt, setJudgedAt] = useState(businessDate);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const open = (item: AcceptanceItemDto) => {
@@ -46,7 +47,7 @@ export function AcceptanceTable({
     setMyResult(item.myResult ?? '');
     setEvidence(item.evidence ?? '');
     setVerdict(item.verdict);
-    setJudgedAt(item.judgedAt ?? today());
+    setJudgedAt(item.judgedAt ?? businessDate);
     setFieldErrors({});
   };
 

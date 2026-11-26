@@ -5,8 +5,6 @@
  * 所以每格都标「草稿」，避免用户误以为已经写进了今天。
  */
 
-import { MODULE_META } from '@/lib/constants';
-import type { ModuleId } from '@/lib/types';
 import type { BuildPlanResult } from '@/lib/services/planBuild';
 
 export function SevenDayGrid({ days }: { days: BuildPlanResult['days'] }) {
@@ -29,10 +27,24 @@ export function SevenDayGrid({ days }: { days: BuildPlanResult['days'] }) {
             <ul className="space-y-1 px-2 py-1.5">
               {day.tasks.map((task, index) => (
                 <li key={`${day.date}:${index}`} className="text-[11px]">
-                  <span className="text-ink">{MODULE_META[task.module as ModuleId]?.labelZh ?? task.module}</span>
+                  <span className="text-ink">{task.title}</span>
                   <span className="ml-1 text-inkMuted">
                     {task.priority} · {task.plannedMinutes} 分钟
                   </span>
+                  {task.explanation.estimate && (
+                    <p className="text-[10px] text-inkMuted">
+                      估时 {task.explanation.estimate.minMinutes}–{task.explanation.estimate.maxMinutes} 分钟
+                      {task.explanation.estimate.basis === 'CALIBRATED'
+                        ? ` · 历史校准 ${task.explanation.estimate.sampleCount} 样本`
+                        : ' · 估计'}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-inkMuted">
+                    {task.splittable ? `可拆 · 最小 ${task.minChunkMinutes} 分钟` : '不可拆'}
+                  </p>
+                  {task.explanation.expectedOutput && (
+                    <p className="text-[10px] text-inkMuted">产出：{task.explanation.expectedOutput}</p>
+                  )}
                 </li>
               ))}
             </ul>

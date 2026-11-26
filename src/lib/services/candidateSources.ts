@@ -50,9 +50,12 @@ import {
   gapKeyOf,
   sourceRefOf,
   type CandidateSourceKind,
+  type MistakeAttribution,
   type Prerequisite,
+  type QuestionStageMetadata,
   type TaskCandidateDraft,
 } from '@/lib/domain/taskCandidate';
+import { defaultTaskEstimate } from '@/lib/domain/taskEstimate';
 import { prisma } from '@/lib/prisma';
 import type { IntervalCode, ModuleId, SkillId, TargetType } from '@/lib/types';
 
@@ -308,6 +311,8 @@ interface DraftInit {
   difficultyScore?: number | null;
   expectedOutput?: string | null;
   meta: TaskCandidateDraft['meta'];
+  question?: QuestionStageMetadata;
+  mistake?: MistakeAttribution;
 }
 
 /**
@@ -339,9 +344,28 @@ function makeDraft(init: DraftInit): TaskCandidateDraft {
     // **初始恒 false**：只有 AI 层可以置 true（UI 必须能区分"系统派的"与"AI 建议的"）
     isAiSuggested: false,
     aiCallLogId: null,
-    expectedOutput: init.expectedOutput ?? null,
-    meta: init.meta,
+    expectedOutput: init.expectedOutput ?? expectedOutputOf(init.sourceKind, init.title),
+    meta: {
+      ...init.meta,
+      estimate: defaultTaskEstimate(init.estMinutes),
+      ...(init.question ? { question: init.question } : {}),
+      ...(init.mistake ? { mistake: init.mistake } : {}),
+    },
   };
+}
+
+/** 预期产出是任务验收描述，不是对已完成结果的伪造。 */
+function expectedOutputOf(kind: CandidateSourceKind, title: string): string {
+  switch (kind) {
+    case 'REVIEW': return `完成「${title}」并记录复习结果`;
+    case 'RETEST':
+    case 'PROBE': return `完成「${title}」并提交答案，形成可追溯复测证据`;
+    case 'VOCAB': return `完成「${title}」并记录各词的掌握状态`;
+    case 'MATERIAL': return `完成「${title}」并提交可检查的练习产出`;
+    case 'QUESTION': return `完成「${title}」并提交答案或口语/写作产出`;
+    case 'LAB': return `完成「${title}」并保存练习或录音产出`;
+    case 'EGIU': return `完成「${title}」并记录单元复习结果`;
+  }
 }
 
 function truncate(text: string, max = 48): string {
@@ -360,6 +384,7 @@ function truncate(text: string, max = 48): string {
 interface ReviewRow {
   id: string;
   targetType: string;
+  targetId: string;
   targetLabel: string;
   estMinutes: number;
   dueDate: string;
@@ -382,13 +407,17 @@ interface DiagnosticRow {
   sourceType: string;
   prompt: string;
   difficulty: number;
+  targetLevelMin: string;
+  targetLevelMax: string;
 }
 
 interface ExerciseRow {
   id: string;
   type: string;
   targetSkill: string;
+  subskill: string | null;
   prompt: string;
+  difficultyEstimate: string | null;
 }
 
 interface VocabRow {
@@ -444,13 +473,25 @@ export async function collectReviewCandidates(
     where: { status: 'PENDING', dueDate: { lte: input.asOfDate } },
     orderBy: [{ dueDate: 'asc' }, { id: 'asc' }],
   });
+  const mistakeIds = rows.filter((row) => row.targetType === 'MISTAKE').map((row) => row.targetId);
+  const mistakes = mistakeIds.length > 0
+    ? await prisma.mistake.findMany({
+        where: { id: { in: mistakeIds } },
+        select: { id: true, studyRecordId: true, studyRecord: { select: { skill: true } } },
+      })
+    : [];
+  const attributionByTargetId = new Map(mistakes.map((row) => [row.id, row] as const));
   return rows.flatMap((row) => {
-    const draft = reviewDraftOf(row, sink);
+    const draft = reviewDraftOf(row, attributionByTargetId.get(row.targetId) ?? null, sink);
     return draft ? [draft] : [];
   });
 }
 
-function reviewDraftOf(row: ReviewRow, sink: SkipSink): TaskCandidateDraft | null {
+function reviewDraftOf(
+  row: ReviewRow,
+  mistake: { studyRecordId: string | null; studyRecord: { skill: string } | null } | null,
+  sink: SkipSink,
+): TaskCandidateDraft | null {
   const sourceRef = sourceRefOf('REVIEW', row.id);
   if (!isTargetType(row.targetType)) {
     sink({ sourceKind: 'REVIEW', sourceRef, why: `未知的复习目标类型 ${row.targetType}，无法确定模块` });
@@ -459,11 +500,22 @@ function reviewDraftOf(row: ReviewRow, sink: SkipSink): TaskCandidateDraft | nul
   // `ReviewTask` 没有 skill/subskill 列 —— 绝大多数复习项的缺口键天生为空，
   // 于是它们的 `dedupeGroup` 回落 `candidateKey`，各走各的（不许合并成一条）。
   const minutes = sourceMinutesOf('REVIEW', row.estMinutes);
+  const studyRecordId = mistake?.studyRecordId ?? null;
+  const recordSkill = mistake?.studyRecord?.skill ?? null;
+  const attributedSkill = recordSkill && isAxesSkill(recordSkill) ? AXES_BY_SKILL[recordSkill] : null;
+  const attribution: MistakeAttribution | undefined = row.targetType === 'MISTAKE'
+    ? {
+        studyRecordId,
+        skill: recordSkill,
+        status: attributedSkill ? 'ATTRIBUTED' : studyRecordId ? 'UNKNOWN_SKILL' : 'UNATTRIBUTED',
+      }
+    : undefined;
+  const unattributed = row.targetType === 'MISTAKE' && !attributedSkill;
   return makeDraft({
     sourceKind: 'REVIEW',
     sourceRef,
-    axes: AXES_BY_TARGET_TYPE[row.targetType],
-    title: `${TARGET_TYPE_LABEL_ZH[row.targetType]}复习：${row.targetLabel}`,
+    axes: attributedSkill ?? AXES_BY_TARGET_TYPE[row.targetType],
+    title: `${TARGET_TYPE_LABEL_ZH[row.targetType]}复习：${row.targetLabel}${unattributed ? '（未归属学习记录）' : ''}`,
     estMinutes: minutes.estMinutes,
     // 到期日决定 `urgency` 与 P0 判定 —— 只有采集层知道
     dueDate: row.dueDate,
@@ -471,6 +523,7 @@ function reviewDraftOf(row: ReviewRow, sink: SkipSink): TaskCandidateDraft | nul
     minMinutes: minutes.estMinutes,
     validationStatus: 'VERIFIED',
     meta: minutes.meta,
+    ...(attribution ? { mistake: attribution } : {}),
   });
 }
 
@@ -760,7 +813,8 @@ function materialAxesOf(module: string, targetSkill: string): Axes | null {
  * ⚠️ 规格（`41 §2.3.2`）给 QUESTION 的前置条件写的是 `{STAGE_AT_LEAST}`，但全仓
  * **没有**「技能 → 最低阶段」的真值表（`STAGE_META` 只有 `allowedEgiu`）。凭空补一张
  * 表会在 S0/S1 静默挡掉全部题库候选，而那种"候选池突然空了"没人能归因。所以这里
- * 前置条件留空，并登记到 `docs/47-known-limits.md`。
+ * 阶段元数据（CEFR targetLevel / difficultyEstimate）原样保留在 candidate.meta.question。
+ * CEFR 不是 StageCode，且没有权威换算政策，因此 prerequisites 仍为空，不虚构门槛。
  */
 export async function collectQuestionCandidates(
   // 题库候选不受日期限制（题在库里就能练），`input` 只为统一签名而保留
@@ -808,6 +862,15 @@ function diagnosticDraftOf(row: DiagnosticRow, sink: SkipSink): TaskCandidateDra
     // 生成的练习题会和有标准答案的题库题长得一模一样
     validationStatus: diagnosticValidationStatusOf(row.sourceType),
     difficultyScore: difficultyScoreOf(row.difficulty),
+    question: {
+      chain: 'diagnostic',
+      taskType: row.taskType,
+      subskill: row.subskill,
+      targetLevelMin: row.targetLevelMin,
+      targetLevelMax: row.targetLevelMax,
+      difficultyEstimate: null,
+      stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY',
+    },
     meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
   });
 }
@@ -827,6 +890,15 @@ function exerciseDraftOf(row: ExerciseRow, sink: SkipSink): TaskCandidateDraft |
     title: `材料题：${truncate(row.prompt)}`,
     estMinutes: minutes.estMinutes,
     minMinutes: minutes.estMinutes,
+    question: {
+      chain: 'material_exercise',
+      taskType: row.type,
+      subskill: row.subskill,
+      targetLevelMin: null,
+      targetLevelMax: null,
+      difficultyEstimate: row.difficultyEstimate,
+      stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY',
+    },
     validationStatus: 'VERIFIED',
     meta: { estMinutesSource: 'DERIVED', derivedFrom: minutes.derivedFrom },
   });
@@ -869,8 +941,7 @@ function questionMinutesOf(
 /**
  * 听说 Lab：`ListeningExercise`（需 `CONFIRMED` 转写）+ `SpeakingPrompt`。
  *
- * `SpeakingPrompt` 没有 `active` 列（`41 §2.3.2` 写的"新增默认 true"在 Phase A 未落地），
- * 因此不过滤 —— 全部入池。这条差异登记在 `docs/47-known-limits.md`。
+ * `SpeakingPrompt.active=false` 的题目不入池；历史口语 session 不受影响。
  */
 export async function collectLabCandidates(
   // 听说候选不受日期限制（练习存在即可排），`input` 只为统一签名而保留
@@ -878,10 +949,12 @@ export async function collectLabCandidates(
   sink: SkipSink = NOOP_SINK,
 ): Promise<TaskCandidateDraft[]> {
   const listening: ListeningRow[] = await prisma.listeningExercise.findMany({
+    where: { audioAsset: { deletedAt: null } },
     orderBy: [{ mode: 'asc' }, { id: 'asc' }],
   });
   const confirmed = await confirmedAudioAssetIds(listening);
   const prompts: SpeakingRow[] = await prisma.speakingPrompt.findMany({
+    where: { active: true },
     orderBy: [{ taskType: 'asc' }, { id: 'asc' }],
   });
   return [

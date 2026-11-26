@@ -12,7 +12,7 @@
 
 import Link from 'next/link';
 import type { GateResult } from '@/lib/types';
-import { today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
 import { getDashboard } from '@/lib/queries/dashboard';
 import { getGoalCards } from '@/lib/queries/goals';
 import { getVocabDashboardSummary } from '@/lib/queries/vocabIntegration';
@@ -37,12 +37,13 @@ import { VocabEngineCard } from '@/components/dashboard/VocabEngineCard';
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const nowDate = today();
-  const [data, goals, vocab, diagnostic] = await Promise.all([
+  const nowDate = await businessToday();
+  const [data, goals, vocab, diagnostic, timeZone] = await Promise.all([
     getDashboard(nowDate),
     getGoalCards(nowDate),
     getVocabDashboardSummary(),
     getDiagnosticBaselineState(),
+    getBusinessTimezone(),
   ]);
   const gateResult: GateResult | null = data.gate?.gate ?? null;
 
@@ -119,10 +120,10 @@ export default async function DashboardPage() {
           description="Dashboard 的时长、完成率、正确率、薄弱点全部由真实记录聚合而来，没有记录时不会显示任何假数据。先完成基线诊断并留下第一条记录。"
           dependencies={[
             '阶段已激活（阶段零只生成基线诊断任务）',
-            '计划页生成当日任务并开始计时',
+            '在 Planner 预览并确认当日任务，再开始计时',
             '记录页留下至少 1 条带产出的学习记录',
           ]}
-          primary={{ label: '去生成今日计划', href: '/plan' }}
+          primary={{ label: '去 Planner 生成今日计划', href: '/planner/build?horizon=1' }}
           secondary={{ label: '手动补录一条记录', href: '/records?new=1' }}
         />
       )}
@@ -174,7 +175,7 @@ export default async function DashboardPage() {
 
         {/* ⑥b 词汇引擎（v2.3）：只给可核对数字，七维在词汇页分开看 */}
         <section aria-label="区块⑥b词汇引擎">
-          <VocabEngineCard data={vocab} />
+          <VocabEngineCard data={vocab} timeZone={timeZone} />
         </section>
 
         {/* ⑦ 待复习 */}

@@ -9,7 +9,8 @@
  */
 
 import type { PrismaClient } from '@prisma/client';
-import { AI_ENGINE_DEFAULTS } from '@/lib/constants';
+import { AI_ENGINE_DEFAULTS, TZ_NAME } from '@/lib/constants';
+import { isValidTimeZone } from '@/lib/date';
 import {
   resolveProviderCredentials,
   type ProviderCredentials,
@@ -101,16 +102,19 @@ export interface ResolvedEngineConfig {
   credentials: ProviderCredentials;
   providerMode: ProviderMode;
   providerReason: ProviderReason;
+  /** 预算日/月窗口使用的用户 IANA 时区。 */
+  timeZone: string;
 }
 
 export async function loadEngineConfig(prisma: PrismaClient): Promise<ResolvedEngineConfig> {
-  const [settingRow, modelRow, credentialRow] = await Promise.all([
+  const [settingRow, modelRow, credentialRow, profile] = await Promise.all([
     prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
     prisma.aIModelConfig.findFirst({
       where: { isDefault: true, active: true },
       orderBy: { updatedAt: 'desc' },
     }),
     prisma.aIProviderCredential.findUnique({ where: { id: 'default' } }),
+    prisma.userProfile.findUnique({ where: { id: 1 }, select: { timezone: true } }),
   ]);
 
   const setting: EngineSettingLike = settingRow
@@ -143,7 +147,14 @@ export async function loadEngineConfig(prisma: PrismaClient): Promise<ResolvedEn
     baseUrl: credentials.baseUrl,
   });
 
-  return { setting, modelConfig, credentials, providerMode: mode, providerReason: reason };
+  return {
+    setting,
+    modelConfig,
+    credentials,
+    providerMode: mode,
+    providerReason: reason,
+    timeZone: profile?.timezone && isValidTimeZone(profile.timezone) ? profile.timezone : TZ_NAME,
+  };
 }
 
 export function createProvider(

@@ -6,6 +6,7 @@
  */
 
 import { NextResponse } from 'next/server';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { buildDomainExport, isDomainExportKind, toDomainCsv } from '@/lib/export/domain';
 import { DOMAIN_EXPORT_KINDS } from '@/lib/constants';
 
@@ -28,7 +29,7 @@ export async function GET(
     );
   }
 
-  const report = await buildDomainExport(kind);
+  const report = await buildDomainExport(kind, await getBusinessTimezone());
   const url = new URL(request.url);
   const format = url.searchParams.get('format') ?? 'csv';
 

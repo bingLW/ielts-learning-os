@@ -118,6 +118,7 @@ export const planPreviewSchema = z
     budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
     allowAi: z.boolean().optional(),
     draftId: z.string().nullable().optional(),
+    proposalId: z.string().min(1).max(64).optional(),
   })
   .strict();
 
@@ -135,6 +136,7 @@ export const planConfirmSchema = z
     planDate: dateString.optional(),
     budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
     allowAi: z.boolean().optional(),
+    proposalId: z.string().min(1).max(64).optional(),
   })
   .strict();
 
@@ -150,6 +152,7 @@ export const planDraftSchema = z
     planDate: dateString.optional(),
     budgetOverrideMinutes: z.number().int().min(0).max(600).optional(),
     allowAi: z.boolean().optional(),
+    proposalId: z.string().min(1).max(64).optional(),
   })
   .strict();
 

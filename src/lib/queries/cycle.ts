@@ -5,6 +5,7 @@
  */
 
 import { countCycleEvidence } from '@/lib/cycleCounts';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { toBusinessDate } from '@/lib/date';
 import { computeCycleProgress } from '@/lib/domain/cycle';
 import { previewOutput } from '@/lib/domain/evidence';
@@ -86,6 +87,7 @@ function mapCycle(row: CycleRow, todayStr: string): LearningCycleDto {
 
 /** 页面一次性取数：进行中周期、历史周期、证据选项、周期内计数。 */
 export async function getCycleBoard(todayStr: string): Promise<CycleBoardDto> {
+  const timeZone = await getBusinessTimezone();
   const rows = await prisma.learningCycle.findMany({
     where: { archivedAt: null },
     orderBy: [{ startDate: 'desc' }],
@@ -117,11 +119,11 @@ export async function getCycleBoard(todayStr: string): Promise<CycleBoardDto> {
     evidenceType: row.evidenceType as LearningEvidenceType,
     level: row.level as EvidenceLevel,
     preview: previewOutput(row.outputText ?? row.note, 50),
-    businessDate: toBusinessDate(row.createdAt),
+    businessDate: toBusinessDate(row.createdAt, timeZone),
   }));
 
   const counts = active
-    ? await countCycleEvidence(active.startDate, active.endDate)
+    ? await countCycleEvidence(active.startDate, active.endDate, timeZone)
     : { comparableOutputs: 0, deliveryEvidence: 0 };
 
   return {

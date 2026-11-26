@@ -10,16 +10,15 @@
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/prisma';
 import { ok, fail, failValidation } from '@/lib/result';
+import type { ActionResult } from '@/lib/types';
 import {
-  isAllowedExtension,
+  deleteUploadedFile,
   writeUploadedFile,
 } from '@/lib/storage';
 import {
-  AUDIO_MAX_UPLOAD_BYTES,
-  RECORDING_MAX_BYTES,
-} from '@/lib/constants';
-import {
   audioAssetCreateSchema,
+  assetDeletionPreviewSchema,
+  assetDeletionConfirmSchema,
   listeningExerciseCreateSchema,
   listeningAttemptSubmitSchema,
   listeningErrorCreateSchema,
@@ -39,6 +38,15 @@ import type {
   SpeakingTurnCreateInput,
 } from '@/lib/schema/listening';
 import { hasNoListeningOutput } from '@/lib/domain/listening';
+import { AUDIO_MAX_UPLOAD_BYTES, RECORDING_MAX_BYTES } from '@/lib/constants';
+import { validateAudioUpload, AudioValidationError } from '@/lib/services/audioStorage';
+import {
+  previewAssetDeletion,
+  confirmAssetDeletion,
+  type PreviewDeletionData,
+  type ConfirmDeletionData,
+  type AssetReference,
+} from '@/lib/services/assetDeletion';
 
 // ───────────────────────── 音频资产 ─────────────────────────
 
@@ -52,6 +60,7 @@ export async function uploadAudioAction(formData: FormData): Promise<
 > {
   const file = formData.get('file');
   if (!(file instanceof File)) return fail('VALIDATION', '缺少音频文件');
+  if (file.size > AUDIO_MAX_UPLOAD_BYTES) return fail('VALIDATION', '文件超过 50MB 上限');
 
   const metaRaw = formData.get('meta');
   let meta: AudioAssetCreateInput;
@@ -62,39 +71,48 @@ export async function uploadAudioAction(formData: FormData): Promise<
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
-  if (bytes.byteLength === 0) return fail('VALIDATION', '文件为空');
-  if (bytes.byteLength > AUDIO_MAX_UPLOAD_BYTES) {
-    return fail('VALIDATION', `文件超过上限（${Math.round(AUDIO_MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`);
+  const fileName = meta.fileName ?? file.name;
+  const declaredMimeType = meta.mimeType ?? file.type;
+  if (meta.mimeType && file.type && meta.mimeType.split(';', 1)[0].trim().toLowerCase() !== file.type.split(';', 1)[0].trim().toLowerCase()) {
+    return fail('VALIDATION', '文件与元数据声明的 MIME 不一致');
   }
-
-  const ext = meta.fileName
-    ? meta.fileName.slice(meta.fileName.lastIndexOf('.') + 1)
-    : file.name.slice(file.name.lastIndexOf('.') + 1);
-  if (!isAllowedExtension(ext)) return fail('VALIDATION', '不支持的音频格式');
+  let validated;
+  try {
+    validated = validateAudioUpload({ bytes, fileName, declaredFileName: meta.fileName, declaredMimeType, declaredDurationSec: meta.durationSec });
+  } catch (error) {
+    return fail('VALIDATION', error instanceof AudioValidationError ? error.message : '音频校验失败');
+  }
 
   let stored;
   try {
-    stored = writeUploadedFile(bytes, ext);
+    stored = writeUploadedFile(bytes, validated.extension);
   } catch {
     return fail('INTERNAL', '音频落盘失败');
   }
 
-  const asset = await prisma.audioAsset.create({
-    data: {
-      title: meta.title,
-      source: meta.source ?? 'UPLOAD',
-      sourceUrl: null,
-      filePath: stored.relativePath,
-      fileName: meta.fileName ?? file.name,
-      mimeType: meta.mimeType ?? file.type,
-      sizeBytes: stored.sizeBytes,
-      sha256: stored.sha256,
-      durationSec: meta.durationSec,
-      language: meta.language,
-      dialectTag: meta.dialectTag,
-      rightsInfo: meta.rightsInfo,
-    },
-  });
+  let asset;
+  try {
+    asset = await prisma.audioAsset.create({
+      data: {
+        title: meta.title,
+        source: meta.source ?? 'UPLOAD',
+        sourceUrl: null,
+        filePath: stored.relativePath,
+        fileName,
+        mimeType: validated.inspection.mimeType,
+        sizeBytes: stored.sizeBytes,
+        sha256: stored.sha256,
+        durationSec: validated.durationSec,
+        language: meta.language,
+        dialectTag: meta.dialectTag,
+        rightsInfo: meta.rightsInfo,
+      },
+    });
+  } catch {
+    // DB 写入失败时只清理本次刚创建的文件，不能留下孤立文件。
+    deleteUploadedFile(stored.relativePath);
+    return fail('INTERNAL', '音频登记失败');
+  }
 
   revalidatePath('/listening');
   return ok({ id: asset.id, filePath: asset.filePath, sha256: stored.sha256, sizeBytes: stored.sizeBytes });
@@ -107,32 +125,53 @@ export async function uploadRecordingAction(formData: FormData): Promise<
 > {
   const file = formData.get('file');
   if (!(file instanceof File)) return fail('VALIDATION', '缺少录音文件');
+  if (file.size > RECORDING_MAX_BYTES) return fail('VALIDATION', '文件超过 1.6MB 上限');
   const sessionIdRaw = formData.get('sessionId');
   const durationRaw = formData.get('durationSec');
 
   const bytes = Buffer.from(await file.arrayBuffer());
-  if (bytes.byteLength === 0) return fail('VALIDATION', '录音为空');
-  if (bytes.byteLength > RECORDING_MAX_BYTES) return fail('VALIDATION', '录音超过 1.6MB 上限');
+  const durationValue = durationRaw === null || durationRaw === '' ? undefined : Number(durationRaw);
+  let validated;
+  try {
+    validated = validateAudioUpload({
+      bytes,
+      fileName: file.name || 'recording.webm',
+      declaredMimeType: file.type,
+      declaredDurationSec: durationValue,
+      recording: true,
+    });
+  } catch (error) {
+    return fail('VALIDATION', error instanceof AudioValidationError ? error.message : '录音校验失败');
+  }
+  if (sessionIdRaw) {
+    const session = await prisma.speakingSession.findUnique({ where: { id: String(sessionIdRaw) }, select: { id: true } });
+    if (!session) return fail('NOT_FOUND', '口语会话不存在');
+  }
 
   let stored;
   try {
-    stored = writeUploadedFile(bytes, 'webm');
+    stored = writeUploadedFile(bytes, validated.extension);
   } catch {
     return fail('INTERNAL', '录音落盘失败');
   }
 
-  const durationSec = durationRaw ? Number(durationRaw) : undefined;
-  const recording = await prisma.recordingAsset.create({
-    data: {
-      sessionId: sessionIdRaw ? String(sessionIdRaw) : null,
-      filePath: stored.relativePath,
-      mimeType: file.type || 'audio/webm',
-      sizeBytes: stored.sizeBytes,
-      sha256: stored.sha256,
-      durationSec: durationSec && Number.isFinite(durationSec) ? Math.round(durationSec) : undefined,
-      takeNumber: await nextTakeNumber(sessionIdRaw ? String(sessionIdRaw) : null),
-    },
-  });
+  let recording;
+  try {
+    recording = await prisma.recordingAsset.create({
+      data: {
+        sessionId: sessionIdRaw ? String(sessionIdRaw) : null,
+        filePath: stored.relativePath,
+        mimeType: validated.inspection.mimeType,
+        sizeBytes: stored.sizeBytes,
+        sha256: stored.sha256,
+        durationSec: validated.durationSec,
+        takeNumber: await nextTakeNumber(sessionIdRaw ? String(sessionIdRaw) : null),
+      },
+    });
+  } catch {
+    deleteUploadedFile(stored.relativePath);
+    return fail('INTERNAL', '录音登记失败');
+  }
 
   revalidatePath('/speaking');
   return ok({ id: recording.id, filePath: recording.filePath, durationSec: recording.durationSec ?? undefined });
@@ -152,7 +191,7 @@ export async function createListeningExerciseAction(
   const parsed = listeningExerciseCreateSchema.safeParse(input);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const asset = await prisma.audioAsset.findUnique({ where: { id: parsed.data.audioAssetId } });
+  const asset = await prisma.audioAsset.findFirst({ where: { id: parsed.data.audioAssetId, deletedAt: null } });
   if (!asset) return fail('NOT_FOUND', '音频资产不存在');
 
   const exercise = await prisma.listeningExercise.create({
@@ -174,7 +213,9 @@ export async function submitListeningAttemptAction(
   const parsed = listeningAttemptSubmitSchema.safeParse(input);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const exercise = await prisma.listeningExercise.findUnique({ where: { id: parsed.data.exerciseId } });
+  const exercise = await prisma.listeningExercise.findFirst({
+    where: { id: parsed.data.exerciseId, audioAsset: { deletedAt: null } },
+  });
   if (!exercise) return fail('NOT_FOUND', '听力练习不存在');
 
   // 首听与辅助后结果分离保存；两者都空则无有效产出，仍记录但状态 DRAFT。
@@ -204,7 +245,9 @@ export async function createListeningErrorAction(
   const parsed = listeningErrorCreateSchema.safeParse(input);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const attempt = await prisma.listeningAttempt.findUnique({ where: { id: parsed.data.attemptId } });
+  const attempt = await prisma.listeningAttempt.findFirst({
+    where: { id: parsed.data.attemptId, exercise: { audioAsset: { deletedAt: null } } },
+  });
   if (!attempt) return fail('NOT_FOUND', '听力作答不存在');
 
   const error = await prisma.listeningError.create({
@@ -227,6 +270,15 @@ export async function upsertTranscriptAction(
 ): Promise<{ ok: true; data: { id: string } } | { ok: false; code: string; error: string; fieldErrors?: Record<string, string> }> {
   const parsed = transcriptUpsertSchema.safeParse(input);
   if (!parsed.success) return failValidation(parsed.error);
+  if (!parsed.data.audioAssetId && !parsed.data.recordingAssetId) return fail('VALIDATION', '转写必须关联音频或录音');
+  if (parsed.data.audioAssetId) {
+    const audio = await prisma.audioAsset.findFirst({ where: { id: parsed.data.audioAssetId, deletedAt: null }, select: { id: true } });
+    if (!audio) return fail('NOT_FOUND', '音频资产不存在或已删除');
+  }
+  if (parsed.data.recordingAssetId) {
+    const recording = await prisma.recordingAsset.findFirst({ where: { id: parsed.data.recordingAssetId, deletedAt: null }, select: { id: true } });
+    if (!recording) return fail('NOT_FOUND', '录音资产不存在或已删除');
+  }
 
   const transcript = await prisma.transcript.create({
     data: {
@@ -297,6 +349,20 @@ export async function addSpeakingTurnAction(
 
   const session = await prisma.speakingSession.findUnique({ where: { id: parsed.data.sessionId } });
   if (!session) return fail('NOT_FOUND', '口语会话不存在');
+  if (parsed.data.recordingAssetId) {
+    const recording = await prisma.recordingAsset.findFirst({ where: { id: parsed.data.recordingAssetId, deletedAt: null }, select: { id: true } });
+    if (!recording) return fail('NOT_FOUND', '录音资产不存在或已删除');
+  }
+  if (parsed.data.transcriptId) {
+    const transcript = await prisma.transcript.findFirst({
+      where: { id: parsed.data.transcriptId, OR: [
+        { audioAsset: { deletedAt: null } },
+        { recordingAsset: { deletedAt: null } },
+      ] },
+      select: { id: true },
+    });
+    if (!transcript) return fail('NOT_FOUND', '转写不存在或关联资产已删除');
+  }
 
   const maxSeq = await prisma.speakingTurn.aggregate({
     where: { sessionId: parsed.data.sessionId },
@@ -315,6 +381,28 @@ export async function addSpeakingTurnAction(
   });
 
   return ok({ id: turn.id });
+}
+
+// ───────────────────────── 音频资产 tombstone 删除 ─────────────────────────
+
+/** 只读影响预览：包含将被保留的子记录数量，以及必须阻止删除的证据/诊断引用 ID。 */
+export async function previewAudioAssetDeletionAction(input: unknown): Promise<ActionResult<PreviewDeletionData> & { references?: AssetReference[] }> {
+  const parsed = assetDeletionPreviewSchema.safeParse(input);
+  if (!parsed.success) return failValidation<PreviewDeletionData>(parsed.error);
+  const result = await previewAssetDeletion(prisma, parsed.data.kind, parsed.data.assetId, parsed.data.reason);
+  if (!result.ok) return fail<PreviewDeletionData>(result.code, result.error);
+  return ok(result.data);
+}
+
+/** 二次确认 + 事务重新检查引用；不接收路径，不物理删除行或文件。 */
+export async function confirmAssetDeletionAction(input: unknown): Promise<ActionResult<ConfirmDeletionData> & { references?: AssetReference[] }> {
+  const parsed = assetDeletionConfirmSchema.safeParse(input);
+  if (!parsed.success) return failValidation<ConfirmDeletionData>(parsed.error);
+  const result = await confirmAssetDeletion(prisma, parsed.data);
+  if (!result.ok) return { ...result };
+  revalidatePath('/listening');
+  revalidatePath('/speaking');
+  return ok(result.data);
 }
 
 // ───────────────────────── 退出系统 ─────────────────────────

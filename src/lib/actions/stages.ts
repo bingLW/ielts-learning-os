@@ -9,6 +9,7 @@
  */
 
 import { revalidatePath } from 'next/cache';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { stringify } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
@@ -69,6 +70,7 @@ export async function transitionStageAction(
   }
 
   const now = new Date();
+  const timeZone = await getBusinessTimezone();
 
   const log = await prisma.$transaction((tx) =>
     applyStageTransition(tx, {
@@ -81,7 +83,7 @@ export async function transitionStageAction(
         toStage: target.code,
         note: '由用户手动确认；系统仅提供建议，未自动切换',
       }),
-    }),
+    }, timeZone),
   );
 
   revalidatePath('/');

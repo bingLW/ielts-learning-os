@@ -13,7 +13,8 @@ import {
   MISTAKE_SOURCE_LABEL_ZH,
   REVIEW_INTERVAL_DAYS,
 } from '@/lib/constants';
-import { addDays, diffDays, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { addDays, diffDays } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
 import { nullIfEmpty } from '@/lib/schema/common';
@@ -50,7 +51,7 @@ export async function createMistakeAction(
   const stage = await prisma.stage.findUnique({ where: { id: input.stageId } });
   if (!stage) return fail('NOT_FOUND', '阶段不存在');
 
-  const todayStr = today();
+  const todayStr = await businessToday();
   const natural = addDays(todayStr, REVIEW_INTERVAL_DAYS.D1);
   const explicit = nullIfEmpty(input.nextReviewAt);
   const candidate = explicit ?? natural;
@@ -187,7 +188,7 @@ export async function generateMistakeReviewAction(
   if (!parsed.success) return failValidation(parsed.error);
 
   const intervalDays = parsed.data.intervalDays ?? REVIEW_INTERVAL_DAYS.MANUAL;
-  const dueDate = addDays(today(), intervalDays);
+  const dueDate = addDays(await businessToday(), intervalDays);
 
   const mistakes = await prisma.mistake.findMany({
     where: { id: { in: parsed.data.ids }, archivedAt: null },

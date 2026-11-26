@@ -11,7 +11,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { createIeltsAssessmentAction } from '@/lib/actions/assessment';
 import { IELTS_TEST_TYPES, IELTS_TEST_TYPE_LABEL_ZH } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { IeltsTestType } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -58,10 +58,11 @@ function BandInput({
 
 export function IeltsAssessmentForm({ onToast, onSaved }: IeltsAssessmentFormProps) {
   const router = useRouter();
+  const businessDate = useBusinessToday();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const [testDate, setTestDate] = useState(today());
+  const [testDate, setTestDate] = useState(businessDate);
   const [testType, setTestType] = useState<IeltsTestType>('MOCK');
   const [overallBand, setOverallBand] = useState('');
   const [listeningBand, setListeningBand] = useState('');

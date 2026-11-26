@@ -12,11 +12,21 @@
  */
 
 import { revalidatePath } from 'next/cache';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { prisma } from '@/lib/prisma';
-import { addDays, listDateRange } from '@/lib/date';
-import { getBudgetRange } from '@/lib/queries/budget';
+import { addDays, listDateRange, toBusinessDate } from '@/lib/date';
+import { getBudgetRange, getEffectiveBudget } from '@/lib/queries/budget';
 import { isoWeekStart } from '@/lib/queries/weekly';
-import { appendTaskFromCandidate } from '@/lib/services/planWrite';
+import {
+  appendTaskFromCandidateInTransaction,
+  appendTaskBatchInTransaction,
+  validateBatchBudget,
+} from '@/lib/services/planWrite';
+import {
+  applyCarryoverInTransaction,
+  CarryoverConflictError,
+} from '@/lib/services/carryoverApply';
+import type { CarryoverPreview, CarryoverResult } from '@/lib/domain/carryover';
 import {
   buildPlan,
   layerOf,
@@ -25,12 +35,13 @@ import {
   type PlanLayer,
 } from '@/lib/services/planBuild';
 import { buildPlanningSnapshot } from '@/lib/services/planningSnapshot';
+import { loadPlanInventory } from '@/lib/services/planInventory';
 import { nextPlanVersion } from '@/lib/queries/planning';
 import { persistReadinessReview } from '@/lib/services/readiness';
 import { applyStageTransition } from '@/lib/services/stageTransition';
 import { fail, failValidation, ok } from '@/lib/result';
 import type { ActionResult, TaskPriority } from '@/lib/types';
-import type { ReadinessOutcome } from '@/lib/domain/readiness';
+import { isReadyOutcome, type ReadinessOutcome } from '@/lib/domain/readiness';
 import {
   candidatePromoteSchema,
   cycleRecalibrateSchema,
@@ -45,6 +56,7 @@ import {
   weeklySuggestionSchema,
 } from '@/lib/schema/planner';
 import { confirmReplan, previewReplan, type ReplanPreviewResult } from '@/lib/services/replanPreview';
+import { diagnosticProposalFingerprint } from '@/lib/diagnostic/planProposal';
 
 /** 预览返回值：`BuildPlanResult` + 无状态预览令牌。 */
 export type BuildPlanPreviewResult = Awaited<ReturnType<typeof buildPlan>> extends ActionResult<infer R>
@@ -62,12 +74,21 @@ export async function generatePlanPreviewAction(
   const parsed = planPreviewSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const built = await buildPlan(parsed.data as BuildPlanInput);
+  const timeZone = await getBusinessTimezone();
+  const built = await buildPlan({ ...parsed.data, timeZone, persistSnapshot: false } as BuildPlanInput);
   if (!built.ok) return fail(built.code, built.error);
 
   return ok({
     ...built.data,
-    previewToken: previewTokenOf(built.data.snapshotId, built.data.inputHash, parsed.data.budgetOverrideMinutes),
+    previewToken: previewTokenOf(
+      built.data.snapshotId,
+      built.data.inputHash,
+      parsed.data.budgetOverrideMinutes,
+      built.data.carryover?.fingerprint,
+      built.data.inventoryFingerprint,
+      built.data.draftFingerprint,
+      built.data.proposal?.fingerprint,
+    ),
   });
 }
 
@@ -89,35 +110,100 @@ async function resolveParentVersionId(layer: PlanLayer, _asOfDate: string): Prom
   return cycle?.id ?? null;
 }
 
+class PlanConfirmError extends Error {
+  constructor(readonly code: 'PRECONDITION' | 'CONFLICT', message: string) {
+    super(message);
+    this.name = 'PlanConfirmError';
+  }
+}
+
 /**
- * 确认计划版本：校验 token → 复用同一 `snapshotId` → 逐条 `appendTaskFromCandidate`
- * → 写 1 条带 `snapshotId` 与 `layer` 的 `PlanVersion`。同 token 重复确认 → `CONFLICT`。
+ * 确认计划版本： token 校验 → 同一事务应用 carryover、批量写任务与版本头。
  */
 export async function confirmPlanVersionAction(
   raw: unknown,
-): Promise<ActionResult<{ version: number; versionId: string; warnings: string[] }>> {
+): Promise<ActionResult<{
+  version: number;
+  versionId: string;
+  warnings: string[];
+  writtenTaskCount: number;
+  carryover: CarryoverPreview | null;
+}>> {
   const parsed = planConfirmSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
-  const { snapshotId, previewToken, ...buildInput } = parsed.data;
+  const { snapshotId: previewSnapshotId, previewToken, ...buildInput } = parsed.data;
 
-  const snapshot = await prisma.planningSnapshot.findUnique({
-    where: { id: snapshotId },
-    select: { inputHash: true },
-  });
-  if (!snapshot) return fail('NOT_FOUND', '预览快照不存在或已被清理');
-
-  if (previewTokenOf(snapshotId, snapshot.inputHash, buildInput.budgetOverrideMinutes) !== previewToken) {
-    return fail('CONFLICT', '计划在预览后已变化，请刷新预览再确认');
+  const timeZone = await getBusinessTimezone();
+  if (buildInput.proposalId) {
+    const proposal = await prisma.planProposal.findUnique({
+      where: { id: buildInput.proposalId },
+      select: { status: true, report: { select: { status: true, createdAt: true } } },
+    });
+    if (!proposal || proposal.status !== 'DRAFT') {
+      return fail('CONFLICT', '诊断草案在预览后已变化或已启用，请返回报告重新预览');
+    }
+    if (proposal.report.status === 'SUPERSEDED') {
+      return fail('CONFLICT', '诊断报告在预览后已被取代，请返回报告重新预览');
+    }
+    if (toBusinessDate(proposal.report.createdAt, timeZone) !== buildInput.asOfDate) {
+      return fail('CONFLICT', '诊断草案在预览后已过期，请返回报告重新预览');
+    }
+  }
+  const built = await buildPlan({ ...buildInput, timeZone, persistSnapshot: false } as BuildPlanInput);
+  if (!built.ok) return fail(built.code, built.error);
+  if (previewTokenOf(
+    built.data.snapshotId,
+    built.data.inputHash,
+    buildInput.budgetOverrideMinutes,
+    built.data.carryover?.fingerprint,
+    built.data.inventoryFingerprint,
+    built.data.draftFingerprint,
+    built.data.proposal?.fingerprint,
+  ) !== previewToken || built.data.snapshotId !== previewSnapshotId) {
+    return fail('CONFLICT', '计划或上期任务在预览后已变化，请刷新预览再确认');
   }
 
-  const already = await prisma.planVersion.findUnique({ where: { idempotencyKey: previewToken } });
+  if (built.data.proposal && (
+    built.data.proposal.scheduledTaskCount !== built.data.proposal.taskCount
+    || built.data.proposal.scheduledMinutes !== built.data.proposal.totalMinutes
+  )) {
+    const remaining = built.data.proposal.totalMinutes - built.data.proposal.scheduledMinutes;
+    return fail(
+      'PRECONDITION',
+      `诊断草案还有 ${remaining} 分钟未排入（已排入 ${built.data.proposal.scheduledTaskCount}/${built.data.proposal.taskCount} 项）；请调整预算或日期后重新预览，未完整排入时不能激活草案`,
+    );
+  }
+
+  const already = await prisma.planVersion.findUnique({
+    where: { idempotencyKey: previewToken },
+    select: { id: true },
+  });
   if (already) return fail('CONFLICT', '该预览已确认过，请刷新预览再确认');
 
-  const built = await buildPlan(buildInput as BuildPlanInput);
-  if (!built.ok) return fail(built.code, built.error);
-  if (built.data.snapshotId !== snapshotId) {
-    return fail('CONFLICT', '输入与预览不一致，请刷新预览再确认');
+  let persisted;
+  try {
+    persisted = await buildPlanningSnapshot({
+      purpose: buildInput.purpose,
+      asOfDate: buildInput.asOfDate,
+      timeZone,
+      horizonDays: buildInput.horizonDays,
+      stageId: buildInput.stageId,
+      planDate: buildInput.planDate,
+      proposalId: buildInput.proposalId,
+    });
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error
+      && (error as { code?: unknown }).code === 'P2002') {
+      console.error('计划确认唯一约束冲突', { code: 'P2002' });
+      return fail('CONFLICT', '计划确认发生并发冲突，请刷新预览后重试');
+    }
+    throw error;
   }
+  if (!persisted.ok) return fail(persisted.code, persisted.error);
+  if (persisted.data.inputHash !== built.data.inputHash) {
+    return fail('CONFLICT', '计划输入在确认时已变化，请刷新预览再确认');
+  }
+  const snapshotId = persisted.data.snapshotId;
 
   const stage = await resolveStage(buildInput.stageId);
   if (!stage) return fail('PRECONDITION', '请先激活一个学习阶段再确认计划');
@@ -139,35 +225,41 @@ export async function confirmPlanVersionAction(
   const candidateIdByKey = new Map(candidateRows.map((row) => [row.candidateKey, row.id] as const));
   const decisionRows = await prisma.taskPriorityDecision.findMany({
     where: { candidateId: { in: [...candidateIdByKey.values()] } },
-    select: { candidateId: true, factorsJson: true, score: true, priority: true, rationale: true },
+    select: { candidateId: true, factorsJson: true, score: true, priority: true, rationale: true, weightsVersion: true },
   });
   const decisionByCandidateId = new Map(
     decisionRows.map((row) => [row.candidateId, row] as const),
   );
 
-  // 逐条写入（唯一写入者：每条约自己的事务 + 预算闸门 + 版本审计）
-  for (const task of drafts) {
+  const writeInputs: Parameters<typeof appendTaskFromCandidateInTransaction>[1][] = drafts.map((task) => {
     const candidateId = task.candidateKey ? (candidateIdByKey.get(task.candidateKey) ?? null) : null;
-    let decisionJson: string | null = null;
+    let factors: unknown = null;
+    let score: number | null = null;
+    let weightsVersion: string | null = null;
     if (candidateId) {
       const decision = decisionByCandidateId.get(candidateId);
       if (decision) {
-        let factors: unknown = null;
         try {
           factors = JSON.parse(decision.factorsJson);
         } catch {
           factors = null;
         }
-        decisionJson = JSON.stringify({
-          factors,
-          score: decision.score,
-          priority: decision.priority,
-          rationale: decision.rationale,
-        });
+        score = decision.score;
+        weightsVersion = decision.weightsVersion;
       }
     }
-
-    const appended = await appendTaskFromCandidate({
+    const decisionJson = JSON.stringify({
+      candidateKey: task.candidateKey,
+      factors,
+      score,
+      weightsVersion,
+      rationale: task.explanation.reason,
+      ...task.explanation,
+      estimate: task.explanation.estimate,
+      expectedOutput: task.explanation.expectedOutput,
+      candidateMeta: task.explanation.candidateMeta,
+    });
+    return {
       stageId: stage.id,
       planDate: task.planDate,
       module: task.module,
@@ -178,48 +270,231 @@ export async function confirmPlanVersionAction(
       track: task.track,
       primarySkill: task.primarySkill,
       minChunkMinutes: task.minChunkMinutes,
-      note: task.explanation.reason,
+      splittable: task.splittable,
+      note: task.explanation.origin === 'USER_EDIT'
+        ? `${task.title}；${task.explanation.reason}`
+        : task.explanation.reason,
       candidateId,
       decisionJson,
       origin: 'CANDIDATE_CONFIRM',
-    });
-    if (!appended.ok) return fail(appended.code, appended.error, appended.fieldErrors);
-  }
-
-  // 写 1 条带 snapshotId + layer 的「头」版本（MONTH 层承载 8 项结构）
-  const headerPlanDate = buildInput.planDate ?? buildInput.asOfDate;
-  const version = await nextPlanVersion(headerPlanDate);
-  const afterSnapshot =
-    layer === 'MONTH' || layer === 'CYCLE'
-      ? JSON.stringify(built.data.layerStructure ?? {})
-      : JSON.stringify({
-          taskCount: drafts.length,
-          totalMinutes: drafts.reduce((sum, t) => sum + t.plannedMinutes, 0),
-          layer,
-        });
-
-  const header = await prisma.planVersion.create({
-    data: {
-      planDate: headerPlanDate,
-      version,
-      changeSource: 'GENERATE',
-      reason: '候选任务确认写入计划',
-      budgetMinutes: buildInput.budgetOverrideMinutes ?? 0,
-      actualMinutesAtChange: 0,
-      beforeSnapshot: JSON.stringify({ taskCount: 0 }),
-      afterSnapshot,
+      budgetPrevalidated: true,
       idempotencyKey: previewToken,
-      snapshotId,
-      layer: layer === 'DAY' ? null : layer,
-      parentVersionId,
-    },
-    select: { id: true },
+    };
   });
 
-  revalidatePath('/');
-  revalidatePath('/plan');
-  revalidatePath('/planner');
-  return ok({ version, versionId: header.id, warnings });
+  const headerPlanDate = buildInput.planDate ?? buildInput.asOfDate;
+  const inventoryEndDate = addDays(buildInput.asOfDate, buildInput.horizonDays - 1);
+
+  const carryoverDecisions: CarryoverResult['decisions'] = built.data.carryover?.decisions.map((decision) => {
+    if (decision.action === 'PROMOTE') {
+      return { taskId: decision.taskId, overdueDays: decision.overdueDays, verdict: { action: 'PROMOTE', toPriority: decision.finalPriority!, reason: decision.reason } };
+    }
+    if (decision.action === 'DEMOTE') {
+      return { taskId: decision.taskId, overdueDays: decision.overdueDays, verdict: { action: 'DEMOTE', toPriority: decision.finalPriority!, reason: decision.reason } };
+    }
+    if (decision.action === 'BACKLOG') {
+      return { taskId: decision.taskId, overdueDays: decision.overdueDays, verdict: { action: 'BACKLOG', reason: decision.reason } };
+    }
+    return { taskId: decision.taskId, overdueDays: decision.overdueDays, verdict: { action: 'ABANDON', reason: decision.reason } };
+  }) ?? [];
+
+  try {
+    const committed = await prisma.$transaction(async (tx) => {
+      const duplicate = await tx.planVersion.findUnique({
+        where: { idempotencyKey: previewToken },
+        select: { id: true },
+      });
+      if (duplicate) throw new PlanConfirmError('CONFLICT', '该预览已确认过，请刷新预览再确认');
+
+      if (built.data.proposal) {
+        const proposal = await tx.planProposal.findUnique({
+          where: { id: built.data.proposal.id },
+          select: {
+            status: true,
+            tasksJson: true,
+            report: { select: { status: true, createdAt: true } },
+          },
+        });
+        const fingerprint = proposal
+          ? diagnosticProposalFingerprint({
+              id: built.data.proposal.id,
+              status: proposal.status,
+              asOfDate: buildInput.asOfDate,
+              tasksJson: proposal.tasksJson,
+            })
+          : null;
+        if (!proposal || proposal.status !== 'DRAFT' || fingerprint !== built.data.proposal.fingerprint) {
+          throw new PlanConfirmError('CONFLICT', '诊断草案在预览后已变化或已启用，请返回报告重新预览');
+        }
+        if (proposal.report.status === 'SUPERSEDED') {
+          throw new PlanConfirmError('CONFLICT', '诊断报告在预览后已被取代，请返回报告重新预览');
+        }
+        if (toBusinessDate(proposal.report.createdAt, timeZone) !== buildInput.asOfDate) {
+          throw new PlanConfirmError('CONFLICT', '诊断草案在预览后已过期，请返回报告重新预览');
+        }
+      }
+
+      const inventory = await loadPlanInventory(
+        buildInput.asOfDate,
+        inventoryEndDate,
+        tx,
+      );
+      if (inventory.fingerprint !== built.data.inventoryFingerprint) {
+        throw new PlanConfirmError('CONFLICT', '当日已有任务在预览后已变化，请刷新预览再确认');
+      }
+
+      if (built.data.carryover && built.data.carryover.decisions.length > 0) {
+        await applyCarryoverInTransaction(tx, {
+          targetDate: built.data.carryover.asOfDate,
+          decisions: carryoverDecisions,
+          expectedFingerprint: built.data.carryover.fingerprint,
+        });
+      }
+
+      const dates = [...new Set([headerPlanDate, ...writeInputs.map((task) => task.planDate)])];
+      const committedInventory = await loadPlanInventory(
+        buildInput.asOfDate,
+        inventoryEndDate,
+        tx,
+      );
+      const budgetDays = [];
+      for (const date of dates) {
+        const effective = await getEffectiveBudget(date, tx);
+        const minutes = date === buildInput.asOfDate && buildInput.budgetOverrideMinutes !== undefined
+          ? buildInput.budgetOverrideMinutes
+          : effective.minutes;
+        const isRestDay = date === buildInput.asOfDate && buildInput.budgetOverrideMinutes !== undefined
+          ? buildInput.budgetOverrideMinutes === 0
+          : effective.isRestDay;
+        const added = writeInputs
+          .filter((task) => task.planDate === date)
+          .reduce((sum, task) => sum + task.plannedMinutes, 0);
+        budgetDays.push({ date, minutes, isRestDay });
+        const check = validateBatchBudget(
+          [{ date, minutes: (committedInventory.reservedMinutesByDate.get(date) ?? 0) + added }],
+          [{ date, minutes, isRestDay }],
+        );
+        if (!check.ok) throw new PlanConfirmError('PRECONDITION', check.error);
+      }
+
+      const appended = await appendTaskBatchInTransaction(tx, writeInputs, {
+        primaryPlanDate: headerPlanDate,
+        budgetPrevalidated: true,
+      });
+      const writtenTaskIds = appended.taskIds;
+      let versionHeaders = appended.versions;
+      if (!versionHeaders.some((header) => header.planDate === headerPlanDate)) {
+        const headerDate = budgetDays.find((day) => day.date === headerPlanDate);
+        const net = await tx.studySessionDaySplit.aggregate({
+          where: { date: headerPlanDate },
+          _sum: { minutes: true },
+        });
+        const created = await tx.planVersion.create({
+          data: {
+            planDate: headerPlanDate,
+            version: await nextPlanVersion(headerPlanDate, tx),
+            changeSource: 'GENERATE',
+            reason: '候选任务确认写入计划',
+            budgetMinutes: headerDate?.minutes ?? 0,
+            actualMinutesAtChange: net._sum.minutes ?? 0,
+            beforeSnapshot: JSON.stringify({ carryover: built.data.carryover }),
+            afterSnapshot: '{}',
+            idempotencyKey: previewToken,
+            snapshotId,
+            layer: layer === 'DAY' ? 'DAY' : layer,
+            parentVersionId,
+          },
+          select: { id: true, planDate: true, version: true },
+        });
+        versionHeaders = [created];
+      }
+
+      const finalInventory = await loadPlanInventory(
+        buildInput.asOfDate,
+        inventoryEndDate,
+        tx,
+      );
+      for (const day of budgetDays) {
+        const check = validateBatchBudget(
+          [{ date: day.date, minutes: finalInventory.reservedMinutesByDate.get(day.date) ?? 0 }],
+          [day],
+        );
+        if (!check.ok) throw new PlanConfirmError('PRECONDITION', check.error);
+      }
+
+      for (const header of versionHeaders) {
+        const active = await tx.planTask.findMany({
+          where: { planDate: header.planDate, status: { notIn: ['CANCELLED', 'DEFERRED'] } },
+          select: { id: true, plannedMinutes: true },
+          orderBy: { sortOrder: 'asc' },
+        });
+        const isPrimary = header.planDate === headerPlanDate;
+        const afterSnapshot = isPrimary && (layer === 'MONTH' || layer === 'CYCLE')
+          ? built.data.layerStructure ?? {}
+          : {
+              taskCount: active.length,
+              newTaskCount: active.filter((task) => writtenTaskIds.includes(task.id)).length,
+              totalMinutes: finalInventory.reservedMinutesByDate.get(header.planDate) ?? 0,
+              taskIds: active.map((task) => task.id),
+              carryover: isPrimary ? built.data.carryover : null,
+              layer: layer === 'DAY' ? 'DAY' : layer,
+            };
+        await tx.planVersion.update({
+          where: { id: header.id },
+          data: {
+            budgetMinutes: budgetDays.find((day) => day.date === header.planDate)?.minutes ?? 0,
+            afterSnapshot: JSON.stringify(afterSnapshot),
+            snapshotId,
+            layer: layer === 'DAY' ? 'DAY' : layer,
+            parentVersionId,
+          },
+        });
+      }
+      if (built.data.proposal) {
+        const activated = await tx.planProposal.updateMany({
+          where: { id: built.data.proposal.id, status: 'DRAFT' },
+          data: { status: 'ACTIVE', activatedAt: new Date() },
+        });
+        if (activated.count !== 1) {
+          throw new PlanConfirmError('CONFLICT', '诊断草案已被处理，本次计划写入已回滚');
+        }
+      }
+      const primaryHeader = versionHeaders.find((header) => header.planDate === headerPlanDate)!;
+      return { version: primaryHeader.version, versionId: primaryHeader.id };
+    });
+
+    try {
+      revalidatePath('/');
+      revalidatePath('/plan');
+      revalidatePath('/planner');
+    } catch (error) {
+      console.error('计划已提交，但页面缓存刷新失败', {
+        name: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+    return ok({
+      ...committed,
+      warnings,
+      writtenTaskCount: writeInputs.length,
+      carryover: built.data.carryover,
+    });
+  } catch (error) {
+    if (error instanceof CarryoverConflictError) {
+      return fail('CONFLICT', error.message);
+    }
+    if (error instanceof PlanConfirmError) {
+      return fail(error.code, error.message);
+    }
+    if (typeof error === 'object' && error !== null && 'code' in error
+      && (error as { code?: unknown }).code === 'P2002') {
+      console.error('计划确认唯一约束冲突', { code: 'P2002' });
+      return fail('CONFLICT', '计划确认发生并发冲突，请刷新预览后重试');
+    }
+    console.error('计划确认失败', {
+      name: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return fail('INTERNAL', '计划确认失败，本次变更已回滚，请稍后重试');
+  }
 }
 
 /**
@@ -233,9 +508,11 @@ export async function saveDraftAction(raw: unknown): Promise<ActionResult<{ draf
   const snapshot = await buildPlanningSnapshot({
     purpose: parsed.data.purpose,
     asOfDate: parsed.data.asOfDate,
+    timeZone: await getBusinessTimezone(),
     horizonDays: parsed.data.horizonDays,
     stageId: parsed.data.stageId,
     planDate: parsed.data.planDate,
+    proposalId: parsed.data.proposalId,
   });
   if (!snapshot.ok) return fail(snapshot.code, snapshot.error);
 
@@ -348,7 +625,10 @@ export async function reviewReadinessAction(
   const parsed = readinessReviewSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const result = await persistReadinessReview(parsed.data);
+  const result = await persistReadinessReview({
+    ...parsed.data,
+    timeZone: await getBusinessTimezone(),
+  });
   if (!result.ok) return fail(result.code, result.error);
 
   revalidatePath('/planner');
@@ -375,15 +655,48 @@ export async function confirmStageTransitionAction(
   });
   if (!review) return fail('NOT_FOUND', 'readiness 评审不存在或已被清理');
   if (review.userConfirmed) return fail('CONFLICT', '该评审已确认过切换');
+  if (!isReadyOutcome(review.outcome)) {
+    return fail('PRECONDITION', '当前评审未达到可确认状态，不能确认切换');
+  }
+
+  let criteria: unknown;
+  try {
+    criteria = JSON.parse(review.criteriaJson) as unknown;
+  } catch {
+    return fail('PRECONDITION', '评审证据快照损坏，不能确认切换');
+  }
+  const dimensions = Array.isArray(criteria)
+    ? criteria
+    : criteria && typeof criteria === 'object' && 'dimensions' in criteria
+      ? (criteria as { dimensions?: unknown }).dimensions
+      : null;
+  const expectedCodes = [
+    'D1_EVIDENCE_COVERAGE', 'D2_CROSS_SOURCE_CONSISTENCY', 'D3_INDEPENDENT_COMPLETION',
+    'D4_DELAYED_RETENTION', 'D5_TRANSFER_EVIDENCE',
+  ];
+  if (!Array.isArray(dimensions) || dimensions.length !== expectedCodes.length) {
+    return fail('PRECONDITION', '评审五维证据快照不完整，不能确认切换');
+  }
+  const validDimensions = expectedCodes.every((code) => dimensions.some(
+    (row) => row && typeof row === 'object' && 'code' in row && 'status' in row
+      && row.code === code && row.status === 'PASS',
+  ));
+  if (!validDimensions) {
+    return fail('PRECONDITION', '五维证据未全部 PASS 或存在 READ_ERROR，不能确认切换');
+  }
 
   const target = await prisma.stage.findUnique({ where: { code: parsed.data.toStageCode } });
   if (!target) return fail('NOT_FOUND', '目标阶段不存在');
 
   const current = await prisma.stage.findFirst({ where: { status: 'ACTIVE' } });
-  if (current && current.id === target.id) {
+  if (!current || current.id !== review.stageId) {
+    return fail('PRECONDITION', '评审不属于当前进行中的阶段，请刷新评审');
+  }
+  if (current.id === target.id) {
     return fail('PRECONDITION', '目标阶段已经是当前进行中的阶段');
   }
 
+  const timeZone = await getBusinessTimezone();
   const log = await prisma.$transaction(async (tx) => {
     await tx.stageReadinessReview.update({
       where: { id: review.id },
@@ -401,7 +714,7 @@ export async function confirmStageTransitionAction(
       reason: parsed.data.reason.trim(),
       // criteriaJson 就是「当时凭什么说 Ready」的逐维证据快照
       evidenceSnapshot: review.criteriaJson,
-    });
+    }, timeZone);
   });
 
   revalidatePath('/');
@@ -445,6 +758,7 @@ export async function recalibrateCycleAction(
   const built = await buildPlan({
     purpose: 'GENERATE',
     asOfDate: parsed.data.asOfDate,
+    timeZone: await getBusinessTimezone(),
     horizonDays: 90,
     allowAi: false,
   });

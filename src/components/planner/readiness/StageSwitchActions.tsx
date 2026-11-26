@@ -4,8 +4,7 @@
  * 阶段切换动作（PRD §4.9④⑤）。
  *
  * - 「生成/刷新评审」只产出建议，不切阶段；
- * - 「确认进入下一阶段」必须填确认人与原因；非 Ready 结论时二次确认，
- *   并明确提示这是 User-approved transition（越权确认），证据结论不会被改写；
+ * - 「确认进入下一阶段」必须填确认人与原因，且仅 Ready for review 可确认；
  * - 「继续保持 / 安排补练 / 先补证据」都是不改阶段状态的出口。
  */
 
@@ -58,6 +57,10 @@ export function StageSwitchActions({
   };
 
   const confirm = () => {
+    if (!ready) {
+      setError('当前结论不是 Ready for review，已禁用确认切换。请先补齐证据并刷新评审。');
+      return;
+    }
     if (!reviewId) {
       setError('请先生成 readiness 评审，再确认切换');
       return;
@@ -69,12 +72,6 @@ export function StageSwitchActions({
     if (confirmedBy.trim().length === 0) {
       setError('请填写确认人');
       return;
-    }
-    if (!ready && typeof window !== 'undefined') {
-      const ok = window.confirm(
-        '系统建议暂不切换：当前结论不是 Ready for review。\n继续将被记录为 User-approved transition（越权确认），且不会改写证据结论。确定继续？',
-      );
-      if (!ok) return;
     }
     setError(null);
     startTransition(async () => {
@@ -115,8 +112,7 @@ export function StageSwitchActions({
         <p className="text-[11px] font-medium text-ink">确认进入下一阶段（当前 {currentStageCode}）</p>
         {!ready && (
           <p className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
-            系统建议暂不切换。确认按钮不隐藏也不禁用，但会走二次确认，并记录为
-            User-approved transition；证据结论仍是「未就绪」。
+            当前结论未就绪，已禁用确认切换。请先补齐证据并刷新评审；非就绪状态不能确认切换。
           </p>
         )}
         <div className="flex flex-wrap items-end gap-1.5">
@@ -172,9 +168,9 @@ export function StageSwitchActions({
           variant={ready ? 'primary' : 'secondary'}
           size="sm"
           onClick={confirm}
-          disabled={pending || !reviewId || toStageCode.length === 0}
+          disabled={pending || !ready || !reviewId || toStageCode.length === 0}
         >
-          {ready ? '确认进入下一阶段' : '确认进入下一阶段（越权确认）'}
+          确认进入下一阶段
         </Button>
       </div>
 

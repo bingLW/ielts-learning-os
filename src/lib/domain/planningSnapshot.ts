@@ -30,7 +30,7 @@ import type { SkillId } from '../types';
  * **规则一改必须递增**：它进 hash，是"旧快照不再适用"的唯一开关。
  * 改判定顺序、改权重默认值、改严重度公式，都属于"改规则"。
  */
-export const RULE_VERSION = 'v2.7.0';
+export const RULE_VERSION = 'v2.7.1';
 
 /** 计划层级（与 `PlanVersion.layer` 的取值一致，null 语义在 `periodOf` 里处理）。 */
 export const PLANNING_LAYERS = ['DAY', 'WEEK', 'MONTH', 'CYCLE'] as const;

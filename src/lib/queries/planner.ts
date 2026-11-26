@@ -21,9 +21,14 @@ import {
   TASK_PRIORITY_LABEL_ZH,
   TASK_STATUSES_EXCLUDED_FROM_RATE,
 } from '@/lib/constants';
-import { addDays, listDateRange, today, weekRange } from '@/lib/date';
+import { businessToday, resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, listDateRange, weekRange } from '@/lib/date';
 import { completionRate } from '@/lib/domain/completion';
-import type { CandidateSourceKind } from '@/lib/domain/taskCandidate';
+import type { CarryoverPreview } from '@/lib/domain/carryover';
+import type { ReadinessSnapshot } from '@/lib/domain/readiness';
+import type { CandidateSourceKind, MistakeAttribution, QuestionStageMetadata } from '@/lib/domain/taskCandidate';
+import { estimateOfTaskDecision, expectedOutputOfTaskDecision, parseTaskDecisionJson } from '@/lib/domain/taskDecision';
+import { parseTaskEstimate } from '@/lib/domain/taskEstimate';
 import { resolveSourceBadge } from '@/lib/domain/sourceBadge';
 import { parseJson, parseStringArray } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
@@ -144,6 +149,9 @@ export interface CandidateRowDto {
   skillGapId: string | null;
   title: string;
   estMinutes: number;
+  estimate: ReturnType<typeof parseTaskEstimate>;
+  question: QuestionStageMetadata | null;
+  mistake: MistakeAttribution | null;
   minMinutes: number;
   maxBlockMinutes: number | null;
   prerequisites: string[];
@@ -173,6 +181,8 @@ interface DecisionMetaShape {
   noObservation?: boolean;
   estMinutesSource?: string;
   derivedFrom?: string;
+  estimate?: unknown;
+  candidateMeta?: { question?: QuestionStageMetadata; mistake?: MistakeAttribution };
 }
 
 function toCandidateRow(row: {
@@ -221,6 +231,9 @@ function toCandidateRow(row: {
     skillGapId: row.skillGapId,
     title: row.title,
     estMinutes: row.estMinutes,
+    estimate: parseTaskEstimate(parsed.meta?.estimate),
+    question: parsed.meta?.candidateMeta?.question ?? null,
+    mistake: parsed.meta?.candidateMeta?.mistake ?? null,
     minMinutes: row.minMinutes,
     maxBlockMinutes: row.maxBlockMinutes,
     prerequisites: parseStringArray(row.prerequisitesJson),
@@ -297,7 +310,8 @@ export interface PlannerDashboardDto {
 }
 
 /** 仪表盘：一次取齐，避免页面自行拼 N+1（单用户可接受，但别在组件里再散查）。 */
-export async function getPlannerDashboard(asOfDate: string = today()): Promise<PlannerDashboardDto> {
+export async function getPlannerDashboard(asOfDateParam?: string): Promise<PlannerDashboardDto> {
+  const asOfDate = await resolveBusinessDate(asOfDateParam);
   const { weekStart, weekEnd } = weekRange(asOfDate);
   const weekDates = listDateRange(weekStart, weekEnd);
 
@@ -401,8 +415,12 @@ export async function getPlannerDashboard(asOfDate: string = today()): Promise<P
     .reduce((sum, task) => sum + task.actualMinutes, 0);
 
   const netByDate = new Map(weekSplits.map((row) => [row.date, row._sum.minutes ?? 0] as const));
-  const weekScheduled = weekTasks.filter((task) => isScheduledStatus(task.status));
-  const weekPlanned = weekScheduled.reduce((sum, task) => sum + task.plannedMinutes, 0);
+  const weekPlanned = weekDates.reduce(
+    (sum, date) => sum + weekTasks
+      .filter((task) => task.planDate === date && isScheduledStatus(task.status))
+      .reduce((daySum, task) => daySum + task.plannedMinutes, 0),
+    0,
+  );
   const weekNet = [...netByDate.values()].reduce((sum, value) => sum + value, 0);
   const capacityMinutes = weekDates.reduce(
     (sum, date) => sum + (weekBudgets.get(date)?.minutes ?? 0),
@@ -750,7 +768,8 @@ export interface BuilderContextDto {
 const LAYER_PERIOD_DAYS: Record<PlanLayer, number> = { DAY: 0, WEEK: 6, MONTH: 29, CYCLE: 89 };
 
 /** 构建器上下文：四层各自「最新一版」+ 上层版本 + 快照摘要。 */
-export async function getBuilderContext(horizonDays: number, asOfDate: string = today()): Promise<BuilderContextDto> {
+export async function getBuilderContext(horizonDays: number, asOfDateParam?: string): Promise<BuilderContextDto> {
+  const asOfDate = await resolveBusinessDate(asOfDateParam);
   const layer = layerOf(horizonDays);
 
   const [versions, latestSnapshot, evidenceCount, profileCount, budget] = await Promise.all([
@@ -790,10 +809,18 @@ export async function getBuilderContext(horizonDays: number, asOfDate: string = 
     (['DAY', 'WEEK'] as const).map(async (l) => {
       const row = latestByLayer.get(l);
       if (!row) return 0;
+      const taskIds = parseJson<{ taskIds?: unknown }>(row.afterSnapshot, {}).taskIds;
+      if (Array.isArray(taskIds) && taskIds.every((id): id is string => typeof id === 'string')) {
+        return prisma.planTask.count({ where: { id: { in: taskIds } } });
+      }
+      if (l === 'DAY') {
+        return prisma.planTask.count({ where: { planDate: row.planDate, planVersion: row.version } });
+      }
       return prisma.planTask.count({
         where: {
           planVersion: row.version,
           planDate: { gte: row.planDate, lte: addDays(row.planDate, days(l)) },
+          status: { notIn: ['CANCELLED', 'DEFERRED'] },
         },
       });
     }),
@@ -929,15 +956,16 @@ export interface PlanExplanationTaskDto {
     gapRef: { skillGapKey: string; evidenceRefs: string[] } | null;
     estMinutes: number | null;
     minMinutes: number | null;
+    estimate: ReturnType<typeof parseTaskEstimate>;
+    goalRef: string | null;
+    question: QuestionStageMetadata | null;
+    mistake: MistakeAttribution | null;
     prerequisites: string[];
-    /**
-     * 产出描述。`TaskCandidate.expectedOutput` 只在内存引擎里存在，**没有落列**，
-     * 历史版本无法回放 —— 这里恒为 null，UI 必须写「未记录」而不是编造。
-     */
+    /** 生成时保存的预期产出；历史版本没有该字段时显示未记录。 */
     expectedOutput: string | null;
     consequenceIfSkipped: string | null;
-    origin: 'RULE' | 'AI';
-    wordingSource: 'TEMPLATE';
+    origin: 'RULE' | 'AI' | 'USER_EDIT';
+    wordingSource: 'TEMPLATE' | 'AI_POLISHED';
   };
 }
 
@@ -959,6 +987,7 @@ export interface PlanExplanationDto {
    */
   goalRef: string | null;
   tasks: PlanExplanationTaskDto[];
+  carryover: CarryoverPreview | null;
   layerStructure: PlanLayerStructure | null;
   tradeoffs: {
     totalPlannedMinutes: number;
@@ -985,13 +1014,24 @@ export async function getPlanExplanation(versionId: string): Promise<PlanExplana
   const layer = (version.layer as PlanLayer | null) ?? 'DAY';
   const periodEnd = addDays(version.planDate, LAYER_PERIOD_DAYS[layer]);
   const hasDailyTasks = layer === 'DAY' || layer === 'WEEK';
+  const versionSnapshot = parseJson<{ taskIds?: unknown; carryover?: CarryoverPreview }>(
+    version.afterSnapshot,
+    {},
+  );
+  const taskIds = Array.isArray(versionSnapshot.taskIds)
+    ? versionSnapshot.taskIds.filter((id): id is string => typeof id === 'string')
+    : [];
 
   const [tasks, snapshot, decisions, goalRow] = await Promise.all([
     hasDailyTasks
       ? prisma.planTask.findMany({
           where: {
-            planVersion: version.version,
-            planDate: { gte: version.planDate, lte: periodEnd },
+            ...(taskIds.length > 0
+              ? { id: { in: taskIds } }
+              : {
+                  planVersion: version.version,
+                  planDate: { gte: version.planDate, lte: periodEnd },
+                }),
           },
           orderBy: [{ planDate: 'asc' }, { sortOrder: 'asc' }],
         })
@@ -1039,12 +1079,8 @@ export async function getPlanExplanation(versionId: string): Promise<PlanExplana
   const explanationTasks: PlanExplanationTaskDto[] = tasks.map((task) => {
     const candidate = task.candidateId ? (candidateById.get(task.candidateId) ?? null) : null;
     const decision = task.candidateId ? (decisionByCandidateId.get(task.candidateId) ?? null) : null;
-    const fromTask = parseJson<{
-      factors?: Record<string, number>;
-      score?: number;
-      priority?: string;
-      rationale?: string;
-    }>(task.decisionJson, {});
+    const fromTask = parseTaskDecisionJson(task.decisionJson);
+    const estimate = estimateOfTaskDecision(fromTask);
     const fromDecision = decision
       ? parseJson<{ factors?: Record<string, number>; meta?: DecisionMetaShape }>(decision.factorsJson, {})
       : {};
@@ -1075,20 +1111,24 @@ export async function getPlanExplanation(versionId: string): Promise<PlanExplana
         priority,
         score: fromTask.score ?? decision?.score ?? null,
         factors: fromTask.factors ?? fromDecision.factors ?? null,
-        weightsVersion: decision?.weightsVersion ?? null,
-        gapRef: fromDecision.meta?.skillGapKey
+        weightsVersion: fromTask.weightsVersion ?? decision?.weightsVersion ?? null,
+        gapRef: fromTask.gapRef ?? (fromDecision.meta?.skillGapKey
           ? {
               skillGapKey: fromDecision.meta.skillGapKey,
               evidenceRefs: fromDecision.meta.evidenceRefs ?? [],
             }
-          : null,
-        estMinutes: candidate?.estMinutes ?? null,
-        minMinutes: candidate?.minMinutes ?? null,
-        prerequisites: parseStringArray(candidate?.prerequisitesJson ?? null),
-        expectedOutput: null,
-        consequenceIfSkipped: decision?.consequenceIfSkipped ?? null,
-        origin: candidate?.isAiSuggested ? 'AI' : 'RULE',
-        wordingSource: 'TEMPLATE',
+          : null),
+        estMinutes: estimate?.pointMinutes ?? fromTask.estMinutes ?? candidate?.estMinutes ?? null,
+        minMinutes: fromTask.minMinutes ?? candidate?.minMinutes ?? null,
+        estimate,
+        goalRef: fromTask.goalRef ?? null,
+        question: fromTask.candidateMeta?.question ?? null,
+        mistake: fromTask.candidateMeta?.mistake ?? null,
+        prerequisites: fromTask.prerequisites?.map((item) => item.text) ?? parseStringArray(candidate?.prerequisitesJson ?? null),
+        expectedOutput: expectedOutputOfTaskDecision(fromTask),
+        consequenceIfSkipped: fromTask.consequenceIfSkipped ?? decision?.consequenceIfSkipped ?? null,
+        origin: fromTask.origin ?? (candidate?.isAiSuggested ? 'AI' : 'RULE'),
+        wordingSource: fromTask.wordingSource ?? 'TEMPLATE',
       },
     };
   });
@@ -1122,6 +1162,7 @@ export async function getPlanExplanation(versionId: string): Promise<PlanExplana
     snapshotMissing: Boolean(version.snapshotId) && !snapshot,
     goalRef: goalRow?.targetValue ?? null,
     tasks: explanationTasks,
+    carryover: versionSnapshot.carryover ?? null,
     layerStructure:
       layer === 'MONTH' || layer === 'CYCLE'
         ? parseJson<PlanLayerStructure | null>(version.afterSnapshot, null)
@@ -1190,7 +1231,9 @@ export async function getBudgetWeek(weekStart: string): Promise<BudgetWeekDto> {
   const days: BudgetDayRowDto[] = dates.map((date) => {
     const budget = budgets.get(date);
     const dayTasks = tasks.filter((task) => task.planDate === date);
-    const scheduled = dayTasks.filter((task) => isScheduledStatus(task.status));
+    const plannedMinutes = dayTasks
+      .filter((task) => isScheduledStatus(task.status))
+      .reduce((sum, task) => sum + task.plannedMinutes, 0);
     return {
       date,
       budgetMinutes: budget?.minutes ?? 0,
@@ -1198,7 +1241,7 @@ export async function getBudgetWeek(weekStart: string): Promise<BudgetWeekDto> {
       source: budget?.source ?? 'DEFAULT_SUGGESTION',
       tierCode: budget?.tierCode ?? null,
       isInitialSuggestion: budget?.isSuggestion ?? false,
-      plannedMinutes: scheduled.reduce((sum, task) => sum + task.plannedMinutes, 0),
+      plannedMinutes,
       netMinutes: netByDate.get(date) ?? 0,
       taskCount: dayTasks.length,
       doneCount: dayTasks.filter((task) => task.status === 'DONE').length,
@@ -1355,6 +1398,8 @@ export interface ReadinessDimensionRowDto {
   status: 'PASS' | 'FAIL' | 'INSUFFICIENT' | 'READ_ERROR';
   detail: string;
   evidenceRefs: string[];
+  /** v2 快照记录补测建议；历史数组没有该字段时为 null，不现场补写。 */
+  suggestion: string | null;
 }
 
 export interface ReadinessViewDto {
@@ -1368,8 +1413,10 @@ export interface ReadinessViewDto {
     confirmedAt: string | null;
     confirmedBy: string | null;
     note: string | null;
-    /** 五维证据明细（`StageReadinessReview.criteriaJson` 的原文回放）。 */
+    /** 五维证据明细（新格式取 `criteriaJson.dimensions`，旧格式回放数组）。 */
     criteria: ReadinessDimensionRowDto[];
+    /** v2 落库快照原文；历史评审没有快照时为 null，不从当前数据回算。 */
+    snapshot: ReadinessSnapshot | null;
     evidenceRefs: string[];
     unmet: string[];
   } | null;
@@ -1377,6 +1424,60 @@ export interface ReadinessViewDto {
   evidenceCount: number;
   /** 只用于展示：这些指标**不参与**判定（PRD §4.9③）；`value` 是它们的当前值。 */
   notConsidered: { label: string; value: string; note: string }[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : [];
+}
+
+function toReadinessDimensionRowDto(value: unknown): ReadinessDimensionRowDto | null {
+  if (!isRecord(value)) return null;
+  const status = value.status;
+  const legacyPassed = value.passed;
+  return {
+    code: typeof value.code === 'string' ? value.code : '',
+    label: typeof value.label === 'string' ? value.label : '',
+    status:
+      status === 'PASS' || status === 'FAIL' || status === 'INSUFFICIENT' || status === 'READ_ERROR'
+        ? status
+        : legacyPassed === true
+          ? 'PASS'
+          : legacyPassed === false
+            ? 'FAIL'
+            : 'INSUFFICIENT',
+    detail: typeof value.detail === 'string' ? value.detail : '',
+    evidenceRefs: stringArray(value.evidenceRefs),
+    suggestion: typeof value.suggestion === 'string' ? value.suggestion : null,
+  };
+}
+
+/** 只解析落库原文：v2 `{ schemaVersion: 2, dimensions, snapshot }` 与历史 dimensions 数组。 */
+function parseReadinessCriteriaJson(raw: string | null): {
+  criteria: ReadinessDimensionRowDto[];
+  snapshot: ReadinessSnapshot | null;
+} {
+  const parsed = parseJson<unknown>(raw, null);
+  if (Array.isArray(parsed)) {
+    return {
+      criteria: parsed
+        .map(toReadinessDimensionRowDto)
+        .filter((row): row is ReadinessDimensionRowDto => row !== null),
+      snapshot: null,
+    };
+  }
+  if (!isRecord(parsed)) return { criteria: [], snapshot: null };
+  return {
+    criteria: (Array.isArray(parsed.dimensions) ? parsed.dimensions : [])
+      .map(toReadinessDimensionRowDto)
+      .filter((row): row is ReadinessDimensionRowDto => row !== null),
+    snapshot: isRecord(parsed.snapshot) ? (parsed.snapshot as unknown as ReadinessSnapshot) : null,
+  };
 }
 
 /**
@@ -1397,6 +1498,7 @@ function buildNotConsidered(input: {
 
 /** 阶段就绪视图：只读最近一次评审快照 + 验收门禁；不在这里重算结论（G-7）。 */
 export async function getReadinessView(stageId: string): Promise<ReadinessViewDto | null> {
+  const todayStr = await businessToday();
   const stage = await prisma.stage.findUnique({ where: { id: stageId } });
   if (!stage) return null;
 
@@ -1413,7 +1515,7 @@ export async function getReadinessView(stageId: string): Promise<ReadinessViewDt
       _sum: { minutes: true },
     }),
     prisma.planTask.findMany({
-      where: { planDate: { gte: addDays(today(), -6) } },
+      where: { planDate: { gte: addDays(todayStr, -6) } },
       select: { status: true, plannedMinutes: true, actualMinutes: true, movedFromDate: true },
     }),
   ]);
@@ -1424,6 +1526,9 @@ export async function getReadinessView(stageId: string): Promise<ReadinessViewDt
   );
   const completionText =
     rate.byTime === null ? '近 7 天无计划任务' : `${Math.round(rate.byTime * 100)}%（近 7 天，按时长加权）`;
+  const readinessCriteria = review
+    ? parseReadinessCriteriaJson(review.criteriaJson)
+    : { criteria: [], snapshot: null };
 
   return {
     stage: {
@@ -1443,7 +1548,8 @@ export async function getReadinessView(stageId: string): Promise<ReadinessViewDt
           confirmedAt: review.confirmedAt ? review.confirmedAt.toISOString() : null,
           confirmedBy: review.confirmedBy,
           note: review.note,
-          criteria: parseJson<ReadinessDimensionRowDto[]>(review.criteriaJson, []),
+          criteria: readinessCriteria.criteria,
+          snapshot: readinessCriteria.snapshot,
           evidenceRefs: parseStringArray(review.evidenceRefsJson),
           unmet: parseStringArray(review.unmetJson),
         }

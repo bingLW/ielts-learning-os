@@ -7,7 +7,8 @@
  */
 
 import { AI_SCOPE_LABEL_ZH, AI_SCOPES, AI_STATUS_LABEL_ZH } from '@/lib/constants';
-import { addDays, today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays } from '@/lib/date';
 import { accumulatePrimaryMinutes, defaultAllocationFor } from '@/lib/domain/allocation';
 import { prisma } from '@/lib/prisma';
 import type { AiScope, AiSuggestionDto, SkillAllocation, StageProfileCode } from '@/lib/types';
@@ -87,10 +88,11 @@ export async function getAiPanel(): Promise<{
 // ───────────────────────── P5：数据源聚合 ─────────────────────────
 
 /** 本周四技能净时长 + 阶段建议配比（供「计划建议」scope）。 */
-export async function getPlanAllocationSnapshot(nowDate: string = today()): Promise<{
+export async function getPlanAllocationSnapshot(nowDateParam?: string): Promise<{
   minutes: ReturnType<typeof accumulatePrimaryMinutes>;
   target: SkillAllocation | null;
 }> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const { isoYear, isoWeek } = currentIsoWeek(nowDate);
   const weekStart = isoWeekStart(isoYear, isoWeek);
   const weekEnd = addDays(weekStart, 6);
@@ -115,7 +117,8 @@ export async function getPlanAllocationSnapshot(nowDate: string = today()): Prom
 }
 
 /** 本周周报原始输入（供「周报建议」scope）。 */
-export async function getWeeklySuggestionInput(nowDate: string = today()) {
+export async function getWeeklySuggestionInput(nowDateParam?: string) {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const { isoYear, isoWeek } = currentIsoWeek(nowDate);
   const weekStart = isoWeekStart(isoYear, isoWeek);
   const weekEnd = addDays(weekStart, 6);
@@ -123,6 +126,7 @@ export async function getWeeklySuggestionInput(nowDate: string = today()) {
 }
 
 /** 弱项排序（供「弱项分析」scope）。 */
-export async function getWeaknessSuggestionInput(nowDate: string = today()) {
+export async function getWeaknessSuggestionInput(nowDateParam?: string) {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   return getWeaknessRanking(nowDate);
 }

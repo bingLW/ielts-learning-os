@@ -16,7 +16,8 @@ import {
   CYCLE_WEEKS,
 } from '@/lib/constants';
 import { countCycleEvidence } from '@/lib/cycleCounts';
-import { addDays, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { addDays } from '@/lib/date';
 import {
   canReviewWeeklyFocus,
   checkCycleCompletion,
@@ -79,7 +80,7 @@ export async function createCycleAction(
   }
 
   const endDate = addDays(input.startDate, CYCLE_TOTAL_DAYS - 1);
-  const dayNumber = cycleDayNumber(input.startDate, today());
+  const dayNumber = cycleDayNumber(input.startDate, await businessToday());
   const status: CycleStatus =
     dayNumber > CYCLE_TOTAL_DAYS
       ? 'COMPLETED'
@@ -114,7 +115,7 @@ export async function advanceCyclePhaseAction(
   if (row.status === 'COMPLETED') return fail('CONFLICT', '周期已完成，不能继续推进');
   if (row.status === 'PAUSED') return fail('PRECONDITION', '周期已暂停，请先恢复再推进阶段');
 
-  const counts = await countCycleEvidence(row.startDate, row.endDate);
+  const counts = await countCycleEvidence(row.startDate, row.endDate, await getBusinessTimezone());
   const gate = checkPhaseAdvance(row.status as CyclePhaseCode, counts);
   if (!gate.ok) return fail('VALIDATION', gate.error);
 
@@ -152,7 +153,7 @@ export async function resumeCycleAction(
   if (!row || row.archivedAt) return fail('NOT_FOUND', '周期不存在或已归档');
   if (row.status !== 'PAUSED') return fail('PRECONDITION', '只有已暂停的周期才能恢复');
 
-  const progress = computeCycleProgress(row.startDate, today());
+  const progress = computeCycleProgress(row.startDate, await businessToday());
   const next: CyclePhaseCode = progress.phase ?? 'DELIVER';
 
   await prisma.learningCycle.update({ where: { id: row.id }, data: { status: next } });
@@ -170,8 +171,8 @@ export async function completeCycleAction(raw: unknown): Promise<ActionResult<{ 
   if (row.status === 'COMPLETED') return ok({ ok: true });
   if (row.status === 'PAUSED') return fail('PRECONDITION', '周期已暂停，请先恢复再完成');
 
-  const counts = await countCycleEvidence(row.startDate, row.endDate);
-  const progress = computeCycleProgress(row.startDate, today());
+  const counts = await countCycleEvidence(row.startDate, row.endDate, await getBusinessTimezone());
+  const progress = computeCycleProgress(row.startDate, await businessToday());
   const gate = checkCycleCompletion(progress.dayNumber, counts);
   if (!gate.ok) return fail('VALIDATION', gate.error);
 

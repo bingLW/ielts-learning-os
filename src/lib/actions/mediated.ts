@@ -15,6 +15,7 @@
  */
 
 import { revalidatePath } from 'next/cache';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { splitAcrossMidnight, toUtcInstant } from '@/lib/date';
 import {
   buildMediatedEvidenceDraft,
@@ -46,6 +47,7 @@ export async function createMediatedSessionAction(
   if (!parsed.success) return failValidation(parsed.error);
 
   const input = parsed.data;
+  const timeZone = await getBusinessTimezone();
   const outputs = [
     toOutput('', 'NOTE_EN', input.notesEn),
     toOutput('', 'SUMMARY_EN', input.summaryEn),
@@ -76,7 +78,7 @@ export async function createMediatedSessionAction(
     });
 
     // 2. StudySession：这段时长的唯一载体。无真实计时，起止用业务日 00:00 起算。
-    const startedAt = toUtcInstant(input.sessionDate);
+    const startedAt = toUtcInstant(input.sessionDate, '00:00', timeZone);
     const endedAt = new Date(startedAt.getTime() + input.durationMinutes * 60_000);
     const session = await tx.studySession.create({
       data: {
@@ -96,7 +98,7 @@ export async function createMediatedSessionAction(
     });
 
     // 3. 跨零点 DaySplit（净时长唯一来源）
-    const splits = splitAcrossMidnight(startedAt.toISOString(), input.durationMinutes);
+    const splits = splitAcrossMidnight(startedAt.toISOString(), input.durationMinutes, timeZone);
     if (splits.length > 0) {
       await tx.studySessionDaySplit.createMany({
         data: splits.map((split) => ({
@@ -155,7 +157,8 @@ export async function createMediatedEvidenceAction(
   if (!built.ok) return fail('VALIDATION', built.error);
 
   const draft = built.draft;
-  const createdAt = toUtcInstant(session.sessionDate);
+  const timeZone = await getBusinessTimezone();
+  const createdAt = toUtcInstant(session.sessionDate, '00:00', timeZone);
 
   const outcome = await prisma.$transaction(async (tx) => {
     // 唯一性在事务内再查一次，避免并发下重复生成重复计数。

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { ReadinessBody } from '../readiness/ReadinessBody';
-import { READY_OUTCOME } from '@/lib/domain/readiness';
+import { READY_OUTCOME, type ReadinessSnapshot } from '@/lib/domain/readiness';
 import type { ReadinessDimensionRowDto, ReadinessViewDto } from '@/lib/queries/planner';
 
 vi.mock('next/navigation', () => ({
@@ -24,6 +24,7 @@ function dimension(
     status,
     detail: `${label}的依据说明`,
     evidenceRefs: status === 'INSUFFICIENT' || status === 'READ_ERROR' ? [] : ['ev-1'],
+    suggestion: `${label}的补测建议`,
   };
 }
 
@@ -34,6 +35,116 @@ const DIMENSIONS: ReadinessDimensionRowDto[] = [
   dimension('INDEPENDENCE', '独立完成', 'PASS'),
   dimension('REVIEW', '复习稳定', 'PASS'),
 ];
+
+const INVALID_SAMPLE: ReadinessSnapshot['invalidSamples'][number] = {
+  id: 'attempt-invalid-1',
+  sourceType: 'ATTEMPT',
+  skill: 'LISTENING',
+  subskill: 'main_idea',
+  reason: '未评分',
+};
+
+const SNAPSHOT: ReadinessSnapshot = {
+  ruleVersion: 'v2.7.1-readiness-1',
+  dataSnapshotId: 'snapshot-readiness-1',
+  computedAt: '2026-11-24T09:00:00.123Z',
+  blueprint: {
+    id: 'blueprint-1',
+    code: 'DIAGNOSTIC_BLUEPRINT',
+    version: '2026.11',
+    stageProfileCode: 'A2_B1',
+  },
+  coverageBySkill: {
+    LISTENING: {
+      skill: 'LISTENING',
+      completed: 0,
+      required: 2,
+      coverageRatio: 0,
+      missingSubskills: ['main_idea', 'detail_scanning'],
+      dimensions: [
+        {
+          skill: 'LISTENING',
+          subskill: 'main_idea',
+          completed: false,
+          evidenceRefs: [],
+          sourceKinds: [],
+          itemCodes: ['L-MAIN'],
+        },
+        {
+          skill: 'LISTENING',
+          subskill: 'detail_scanning',
+          completed: false,
+          evidenceRefs: [],
+          sourceKinds: [],
+          itemCodes: ['L-DETAIL'],
+        },
+      ],
+      invalidSamples: [INVALID_SAMPLE],
+    },
+    READING: {
+      skill: 'READING',
+      completed: 1,
+      required: 2,
+      coverageRatio: 0.5,
+      missingSubskills: ['inference'],
+      dimensions: [
+        {
+          skill: 'READING',
+          subskill: 'detail_scanning',
+          completed: true,
+          evidenceRefs: ['ev-reading-1'],
+          sourceKinds: ['客观题', '技能复测'],
+          itemCodes: ['R-DETAIL'],
+        },
+        {
+          skill: 'READING',
+          subskill: 'inference',
+          completed: false,
+          evidenceRefs: [],
+          sourceKinds: [],
+          itemCodes: ['R-INFER'],
+        },
+      ],
+      invalidSamples: [],
+    },
+    SPEAKING: {
+      skill: 'SPEAKING',
+      completed: 0,
+      required: 0,
+      coverageRatio: null,
+      missingSubskills: [],
+      dimensions: [],
+      invalidSamples: [],
+    },
+    WRITING: {
+      skill: 'WRITING',
+      completed: 2,
+      required: 2,
+      coverageRatio: 1,
+      missingSubskills: [],
+      dimensions: [
+        {
+          skill: 'WRITING',
+          subskill: 'task_response',
+          completed: true,
+          evidenceRefs: ['ev-writing-1'],
+          sourceKinds: ['开放题'],
+          itemCodes: ['W-TASK'],
+        },
+        {
+          skill: 'WRITING',
+          subskill: 'cohesion',
+          completed: true,
+          evidenceRefs: ['ev-writing-2'],
+          sourceKinds: ['技能复测'],
+          itemCodes: ['W-COHESION'],
+        },
+      ],
+      invalidSamples: [],
+    },
+  },
+  invalidSamples: [INVALID_SAMPLE],
+};
 
 function view(overrides: Partial<ReadinessViewDto> = {}): ReadinessViewDto {
   return {
@@ -54,6 +165,7 @@ function view(overrides: Partial<ReadinessViewDto> = {}): ReadinessViewDto {
       confirmedBy: null,
       note: null,
       criteria: DIMENSIONS,
+      snapshot: SNAPSHOT,
       evidenceRefs: ['ev-1', 'ev-2'],
       unmet: [],
     },
@@ -125,5 +237,92 @@ describe('T13 渲染：/planner/readiness', () => {
     expect(html).toContain('id="switch-note"');
     expect(html).toContain('确认人');
     expect(html).toContain('备注（可选）');
+  });
+
+  it('⑪ 展示 computedAt、快照 ID、规则版本与蓝图版本', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody view={view()} asOfDate="2026-11-25" stages={STAGES} />,
+    );
+    expect(html).toContain('data-testid="readiness-snapshot"');
+    expect(html).toContain('2026-11-24T09:00:00.123Z');
+    expect(html).toContain('snapshot-readiness-1');
+    expect(html).toContain('v2.7.1-readiness-1');
+    expect(html).toContain('DIAGNOSTIC_BLUEPRINT · 2026.11');
+    expect(html).toContain('A2_B1 · blueprint-1');
+  });
+
+  it('⑫ 展示技能分子/分母、必测清单、缺失、Evidence IDs 与来源分类', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody view={view()} asOfDate="2026-11-25" stages={STAGES} />,
+    );
+    expect(html).toContain('data-testid="skill-coverage-LISTENING"');
+    expect(html).toContain('0/2 · 0%');
+    expect(html).toContain('1/2 · 50%');
+    expect(html).toContain('2/2 · 100%');
+    expect(html).toContain('缺失子维度：main_idea、detail_scanning');
+    expect(html).toContain('必测清单');
+    expect(html).toContain('L-MAIN');
+    expect(html).toContain('R-INFER');
+    expect(html).toContain('Evidence IDs：ev-reading-1');
+    expect(html).toContain('来源分类：客观题、技能复测');
+  });
+
+  it('⑬ null 覆盖率显示未知（未测），0 覆盖率仍显示 0%', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody view={view()} asOfDate="2026-11-25" stages={STAGES} />,
+    );
+    expect(html).toContain('data-testid="skill-coverage-SPEAKING"');
+    expect(html).toContain('0/0 · 未知（未测）');
+    expect(html).toContain('0/2 · 0%');
+    expect(html).not.toContain('null%');
+  });
+
+  it('⑭ 展示无效样本原因与每维补测建议', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody view={view()} asOfDate="2026-11-25" stages={STAGES} />,
+    );
+    expect(html).toContain('无效样本与原因');
+    expect(html).toContain('attempt-invalid-1 · ATTEMPT · LISTENING / main_idea：未评分');
+    expect(html).toContain('证据覆盖的补测建议');
+    expect(html).toContain('迁移表现的补测建议');
+  });
+
+  it('⑮ 历史评审没有快照/建议时明确标记，不现场回算', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody
+        view={view({
+          latestReview: {
+            ...view().latestReview!,
+            criteria: DIMENSIONS.map((row) => ({ ...row, suggestion: null })),
+            snapshot: null,
+          },
+        })}
+        asOfDate="2026-11-25"
+        stages={STAGES}
+      />,
+    );
+    expect(html).toContain('data-testid="readiness-snapshot-missing"');
+    expect(html).toContain('历史评审未记录就绪快照，不回算历史覆盖率');
+    expect(html).toContain('历史评审未记录补测建议');
+    expect(html).not.toContain('data-testid="skill-coverage-');
+  });
+
+  it('⑯ 非 READY 明确禁用确认切换，不再提供越权确认', () => {
+    const html = renderToStaticMarkup(
+      <ReadinessBody
+        view={view({
+          latestReview: {
+            ...view().latestReview!,
+            outcome: 'CONTINUE_CURRENT',
+          },
+        })}
+        asOfDate="2026-11-25"
+        stages={STAGES}
+      />,
+    );
+    expect(html).toContain('当前结论未就绪，已禁用确认切换');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>确认进入下一阶段<\/button>/);
+    expect(html).not.toContain('User-approved transition');
+    expect(html).not.toContain('越权确认');
   });
 });

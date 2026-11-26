@@ -23,10 +23,16 @@ export function PlanBuilderBody({
   context,
   horizonDays,
   draft,
+  asOfDate,
+  budgetOverrideMinutes,
+  proposalId,
 }: {
   context: BuilderContextDto;
   horizonDays: number;
   draft: DraftDto | null;
+  asOfDate: string;
+  budgetOverrideMinutes?: number;
+  proposalId?: string;
 }) {
   const layer = context.layer;
   const state = context.layers.find((row) => row.layer === layer);
@@ -39,8 +45,9 @@ export function PlanBuilderBody({
         <div>
           <h1 className="text-base font-semibold text-ink">计划构建</h1>
           <p className="text-xs text-inkMuted">
-            当前：{HORIZON_LABEL[horizonDays] ?? `${horizonDays} 天`}（{LAYER_LABEL[layer]}）· 基准日{' '}
-            {context.snapshot?.asOfDate ?? '无快照'} · 预算 {context.budget.minutes} 分钟
+            当前：{HORIZON_LABEL[horizonDays] ?? `${horizonDays} 天`}（{LAYER_LABEL[layer]}）· 基准日 {asOfDate}
+            {context.snapshot && context.snapshot.asOfDate !== asOfDate ? ` · 快照 ${context.snapshot.asOfDate}` : ''}
+            {' · '}预算 {context.budget.minutes} 分钟
             {context.budget.isRestDay ? '（休息日）' : ''}
             {context.budget.isSuggestion ? '（仍是初始建议值）' : ''}
           </p>
@@ -50,7 +57,18 @@ export function PlanBuilderBody({
         </Link>
       </div>
 
-      <LayerSwitcher activeHorizon={horizonDays} diagnosisReady={context.diagnosisReady} layers={context.layers} />
+      <LayerSwitcher
+        activeHorizon={horizonDays}
+        diagnosisReady={context.diagnosisReady}
+        layers={context.layers}
+        proposalId={proposalId}
+      />
+
+      {proposalId && (
+        <div data-testid="diagnostic-proposal-notice" className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+          正在使用诊断计划草案。预览只排草案任务与到期复习/复测，不自动添加模板任务；确认后草案标记为已启用。
+        </div>
+      )}
 
       {noDiagnosis && (
         <div data-testid="no-diagnosis-notice" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
@@ -127,8 +145,10 @@ export function PlanBuilderBody({
       ) : (
         <DraftActions
           horizonDays={horizonDays}
-          asOfDate={context.snapshot?.asOfDate ?? new Date().toISOString().slice(0, 10)}
+          asOfDate={asOfDate}
           purpose="GENERATE"
+          initialBudgetOverride={budgetOverrideMinutes}
+          proposalId={proposalId}
         />
       )}
     </div>

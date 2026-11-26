@@ -22,7 +22,7 @@ import {
   TRANSLATION_DEPENDENCIES,
   TRANSLATION_DEPENDENCY_LABEL_ZH,
 } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { MediatedIntensity, MediatedUnderstanding, PrimarySkill, TranslationDependency } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -35,11 +35,12 @@ export interface MediatedFormProps {
 }
 
 export function MediatedForm({ defaultSubject, onToast, onSaved }: MediatedFormProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const [sessionDate, setSessionDate] = useState(today());
+  const [sessionDate, setSessionDate] = useState(businessDate);
   const [subject, setSubject] = useState(defaultSubject);
   const [topic, setTopic] = useState('');
   const [sourceType, setSourceType] = useState<string>('COURSE');

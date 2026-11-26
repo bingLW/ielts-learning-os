@@ -13,6 +13,7 @@ import {
   initPromptRegistryAction,
   saveProviderCredentialAction,
   updateAiEngineSettingsAction,
+  updateExternalAiConsentAction,
   updateAiModelConfigAction,
 } from '@/lib/actions/tutor';
 import { Button, buttonClass } from '@/components/ui/Button';
@@ -58,7 +59,9 @@ export interface AiAdminProps {
     warnPercent: number;
     directTeachingDefault: boolean;
     explainLanguage: string;
+    updatedAt: Date | string;
   };
+  externalAiConsent: boolean;
   models: ModelRow[];
   templates: PromptRow[];
   promptVersionCount: number;
@@ -177,6 +180,24 @@ export function AiAdminBody(props: AiAdminProps) {
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState(props.credential.baseUrl);
   const [modelName, setModelName] = useState(props.credential.modelName);
+  const [consentAcknowledged, setConsentAcknowledged] = useState(false);
+
+  function saveConsent() {
+    if (!props.externalAiConsent && !consentAcknowledged) return;
+    startTransition(async () => {
+      const result = await updateExternalAiConsentAction({
+        externalAiConsent: !props.externalAiConsent,
+        acknowledged: true,
+      });
+      if (!result.ok) {
+        show(result.error, 'error');
+        return;
+      }
+      setConsentAcknowledged(false);
+      show(props.externalAiConsent ? '已撤回外部 AI 外发同意' : '已记录外部 AI 外发同意', 'success');
+      router.refresh();
+    });
+  }
 
   function saveCredential(clearApiKey = false) {
     startTransition(async () => {
@@ -210,6 +231,7 @@ export function AiAdminBody(props: AiAdminProps) {
         warnPercent: setting.warnPercent,
         directTeachingDefault: setting.directTeachingDefault,
         explainLanguage: setting.explainLanguage as 'ZH_MIXED' | 'ZH' | 'EN',
+        expectedUpdatedAt: props.setting.updatedAt,
       });
       if (!result.ok) {
         show(result.error, 'error');
@@ -235,6 +257,39 @@ export function AiAdminBody(props: AiAdminProps) {
           ← 返回 AI Learning Coach
         </Link>
       </header>
+
+      <Card title="首次外发告知与独立同意">
+        <div className="space-y-2 text-xs text-inkMuted">
+          <p>
+            启用外部 Provider 后，系统只会把本次诊断/练习所需的作答片段、题目与必要的学习上下文发往本页配置的第三方服务；不会发送 API Key、完整历史或与本次任务无关的材料。
+          </p>
+          <p>第三方调用可能产生费用，并受其数据处理政策约束。发送前会统一脱敏路径、邮箱、密钥与文件 URL。</p>
+          <p className="font-medium text-ink">
+            未单独同意时不会调用外部 Provider；“允许外部 AI”只是技术开关，不代表你已同意外发。
+          </p>
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={props.externalAiConsent || consentAcknowledged}
+              disabled={props.externalAiConsent}
+              onChange={(event) => setConsentAcknowledged(event.target.checked)}
+              className="mt-0.5"
+            />
+            <span>我已了解上述内容，并同意将必要作答片段发往配置的第三方 Provider。</span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={props.externalAiConsent ? 'secondary' : 'primary'}
+              size="sm"
+              disabled={pending || (!props.externalAiConsent && !consentAcknowledged)}
+              onClick={saveConsent}
+            >
+              {props.externalAiConsent ? '撤回外部 AI 外发同意' : '同意并保存'}
+            </Button>
+            <span>当前状态：{props.externalAiConsent ? '已同意' : '未同意（外部调用将被拦截）'}</span>
+          </div>
+        </div>
+      </Card>
 
       <Card title="Provider 状态">
         <ul className="space-y-1 text-xs">
@@ -324,7 +379,7 @@ export function AiAdminBody(props: AiAdminProps) {
                 setSetting((prev) => ({ ...prev, externalAiEnabled: event.target.checked }))
               }
             />
-            允许外部 AI（需已保存凭据）
+            允许外部 AI（技术开关，需凭据与独立外发同意）
           </label>
           <FormField label="每日预算（USD）">
             <input

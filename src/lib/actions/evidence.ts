@@ -16,6 +16,7 @@ import { nullIfEmpty } from '@/lib/schema/common';
 import { archiveEvidenceSchema, createEvidenceSchema } from '@/lib/schema/evidence';
 import { parseEvidenceCondition } from '@/lib/domain/evidence';
 import { checkRetestEvidence, checkTransferContext } from '@/lib/domain/retest';
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { toUtcInstant } from '@/lib/date';
 import type { ActionResult, EvidenceSkill, RetestType } from '@/lib/types';
 
@@ -121,7 +122,8 @@ export async function createEvidenceAction(
     if (!mediated) return fail('NOT_FOUND', '关联媒介学习记录不存在');
   }
 
-  const createdAt = input.createdAtDate ? toUtcInstant(input.createdAtDate) : new Date();
+  const timeZone = await getBusinessTimezone();
+  const createdAt = input.createdAtDate ? toUtcInstant(input.createdAtDate, '00:00', timeZone) : new Date();
 
   const evidenceId = await prisma.$transaction(async (tx) => {
     const created = await tx.evidenceRecord.create({
@@ -187,7 +189,7 @@ export async function createEvidenceAction(
       evidenceType: input.evidenceType,
       chainRootId,
       createdAt,
-    });
+    }, timeZone);
 
     return created.id;
   });

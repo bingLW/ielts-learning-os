@@ -7,13 +7,10 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { MODULE_META, MODULE_TO_PRIMARY, MODULE_TRACK, tierCodeOf } from '@/lib/constants';
-import { today } from '@/lib/date';
-import { generateDailyPlan } from '@/lib/domain/plan';
-import { generateAdaptivePlan } from '@/lib/domain/adaptivePlan';
-import { ensureVocabularyAssignment } from '@/lib/vocabAssignment';
+import { MODULE_META, MODULE_TO_PRIMARY, MODULE_TRACK } from '@/lib/constants';
+import { businessToday } from '@/lib/businessTime';
 import { prisma } from '@/lib/prisma';
-import { appendTaskFromCandidate } from '@/lib/services/planWrite';
+import { appendTaskFromCandidate, updatePlanTask } from '@/lib/services/planWrite';
 import { fail, failValidation, ok } from '@/lib/result';
 import {
   createPlanTaskSchema,
@@ -28,80 +25,16 @@ import type {
   ModuleId,
   PrimarySkill,
   SkillId,
-  StageCode,
 } from '@/lib/types';
-import { getActiveStage } from '@/lib/queries/stages';
-import { countTasksOfDate } from '@/lib/queries/plan';
-import {
-  activeAllocationFor,
-  SKILL_TO_SUBJECT,
-  loadPlanEngineContext,
-  nextPlanVersion,
-  primaryResourceMap,
-} from '@/lib/queries/planning';
 
-/** 生成当日计划（v2.0 兼容入口：240–300分钟固定引擎；v2.1 自适应引擎见下）。 */
+const LEGACY_GENERATE_MESSAGE = '旧计划生成入口已停用，请使用 /planner/build 预览并确认正式计划';
+/** Legacy v2.0 生成入口：保留签名，但禁止绕过统一 Planner 写入。 */
 export async function generatePlanAction(
   raw: unknown,
 ): Promise<ActionResult<{ taskCount: number; totalMinutes: number; warnings: string[] }>> {
   const parsed = generatePlanSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
-
-  const stage = parsed.data.stageId
-    ? await prisma.stage.findUnique({ where: { id: parsed.data.stageId } })
-    : await getActiveStage();
-  if (!stage) {
-    return fail('PRECONDITION', '请先在「阶段与验收」页激活一个阶段，再生成计划');
-  }
-
-  const existing = await countTasksOfDate(parsed.data.planDate);
-  if (existing > 0) {
-    return fail('CONFLICT', `${parsed.data.planDate} 已有 ${existing} 条任务，未重复生成`);
-  }
-
-  const allocation = await activeAllocationFor(stage.profileCode);
-
-  const plan = generateDailyPlan({
-    dailyMinutes: parsed.data.dailyMinutes,
-    stageCode: stage.code as StageCode,
-    allocation,
-  });
-  if (!plan.ok) {
-    if (plan.code === 'CAPACITY_EXCEEDED') {
-      return fail('PRECONDITION', plan.error);
-    }
-    return fail('VALIDATION', '每日可用分钟必须在 240–300 之间');
-  }
-
-  const resourceMap = await primaryResourceMap();
-
-  await prisma.$transaction(async (tx) => {
-    await tx.planTask.createMany({
-      data: plan.items.map((item) => {
-        const subject = SKILL_TO_SUBJECT[item.skill];
-        return {
-          stageId: stage.id,
-          planDate: parsed.data.planDate,
-          module: item.module,
-          skill: item.skill,
-          plannedMinutes: item.minutes,
-          sortOrder: item.sortOrder,
-          resourceId: subject ? (resourceMap[subject] ?? null) : null,
-          // v2.0：轨道与四技能粒度是任务的属性快照，聚合时不再依赖 module 反推
-          track: item.track,
-          primarySkill: item.primarySkill,
-        };
-      }),
-    });
-  });
-
-  revalidatePath('/');
-  revalidatePath('/plan');
-  return ok({
-    taskCount: plan.items.length,
-    totalMinutes: plan.totalMinutes,
-    warnings: plan.warnings,
-  });
+  return fail('PRECONDITION', LEGACY_GENERATE_MESSAGE);
 }
 
 /**
@@ -146,23 +79,22 @@ export async function updatePlanTaskAction(
   const parsed = updatePlanTaskSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const task = await prisma.planTask.findUnique({ where: { id: parsed.data.taskId } });
-  if (!task) return fail('NOT_FOUND', '任务不存在或已被删除');
+  const updated = await updatePlanTask({
+    taskId: parsed.data.taskId,
+    plannedMinutes: parsed.data.plannedMinutes,
+    resourceId: parsed.data.resourceId === '' ? null : parsed.data.resourceId,
+    note:
+      parsed.data.note === undefined
+        ? undefined
+        : parsed.data.note.trim()
+          ? parsed.data.note.trim()
+          : null,
+  });
+  if (!updated.ok) return fail(updated.code, updated.error, updated.fieldErrors);
 
-  const data: Record<string, unknown> = {};
-  if (parsed.data.plannedMinutes !== undefined) data.plannedMinutes = parsed.data.plannedMinutes;
-  if (parsed.data.resourceId !== undefined) {
-    data.resourceId = parsed.data.resourceId === '' ? null : parsed.data.resourceId;
-  }
-  if (parsed.data.note !== undefined) {
-    data.note = parsed.data.note.trim() ? parsed.data.note.trim() : null;
-  }
-  if (Object.keys(data).length === 0) return ok({ taskId: task.id });
-
-  await prisma.planTask.update({ where: { id: task.id }, data });
   revalidatePath('/plan');
   revalidatePath('/');
-  return ok({ taskId: task.id });
+  return ok({ taskId: updated.data.taskId });
 }
 
 /** 拖拽/上下移动后的顺序持久化（事务内按数组序重写 `sortOrder`）。 */
@@ -211,7 +143,7 @@ export async function deletePlanTaskAction(raw: unknown): Promise<ActionResult<{
 
 /** 今日日期（供客户端组件取业务日期，避免组件内 `new Date()`）。 */
 export async function todayAction(): Promise<ActionResult<{ today: string }>> {
-  return ok({ today: today() });
+  return ok({ today: await businessToday() });
 }
 
 /** 模块元数据（客户端渲染下拉时用，避免在组件里复制常量表）。 */
@@ -227,13 +159,7 @@ export async function modulesAction(): Promise<
   return ok(list);
 }
 
-/**
- * v2.1 自适应计划生成（支持 15–600 分钟任意预算）。
- *
- * 与 v2.0 `generatePlanAction` 的区别：
- * - v2.0 用固定引擎，240–300 分钟，9 模块；
- * - v2.1 用自适应引擎，1–600 分钟，动态模块数，带优先级/可拆分/弱项/到期复习。
- */
+/** Legacy v2.1 生成入口：保留签名，但禁止绕过统一 Planner 预览与确认。 */
 export async function generateAdaptivePlanAction(
   raw: unknown,
 ): Promise<
@@ -241,143 +167,5 @@ export async function generateAdaptivePlanAction(
 > {
   const parsed = generateAdaptivePlanSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
-  const { planDate, dailyMinutes, stageId } = parsed.data;
-
-  const [stage, existing] = await Promise.all([
-    stageId ? prisma.stage.findUnique({ where: { id: stageId } }) : getActiveStage(),
-    countTasksOfDate(planDate),
-  ]);
-
-  if (!stage) {
-    return fail('PRECONDITION', '请先在「阶段与验收」页激活一个阶段');
-  }
-  if (existing > 0) {
-    return fail('CONFLICT', `${planDate} 已有 ${existing} 条任务，未重复生成`);
-  }
-
-  // 零预算 = 休息日：不生成任务，也不写空版本（重复点会堆版本号）。
-  // 只看本次确认的分钟数 —— 之前存过休息日不该压过用户现在明确给出的时长。
-  if (dailyMinutes === 0) {
-    return ok({
-      taskCount: 0,
-      totalMinutes: 0,
-      warnings: ['休息日 / 零预算：不生成学习任务，本次不计为学习失败。'],
-      version: 0,
-    });
-  }
-
-  const context = await loadPlanEngineContext(planDate, stage);
-  const version = await nextPlanVersion(planDate);
-  // 档次只由本次确认的分钟数决定：75 分钟就是「自定义」，不借用已保存预算的档次模板
-  const tierCode = tierCodeOf(dailyMinutes);
-
-  const result = generateAdaptivePlan({
-    ...context,
-    budgetMinutes: dailyMinutes,
-    isRestDay: false,
-    tierCode,
-  });
-
-  if (!result.ok) {
-    return fail('VALIDATION', result.code === 'INVALID_BUDGET' ? '预算不合法' : '生成失败');
-  }
-
-  const resourceMap = await primaryResourceMap();
-
-  await prisma.$transaction(async (tx) => {
-    // 预算与计划同一事务落库：计划是按这个分钟数生成的，两者不能各说各话
-    const budgetData = {
-      plannedAvailableMinutes: dailyMinutes,
-      budgetType: tierCode === 'CUSTOM' ? 'CUSTOM' : 'PRESET',
-      tierCode,
-      isRestDay: false,
-      isInitialSuggestion: false,
-      source: 'USER',
-    };
-    await tx.dailyBudget.upsert({
-      where: { date: planDate },
-      update: budgetData,
-      create: { date: planDate, ...budgetData },
-    });
-
-    await tx.planTask.createMany({
-      data: result.items.map((item) => {
-        const subject = SKILL_TO_SUBJECT[item.skill];
-        return {
-          stageId: stage.id,
-          planDate,
-          module: item.module,
-          skill: item.skill,
-          plannedMinutes: item.minutes,
-          sortOrder: item.sortOrder,
-          track: item.track,
-          primarySkill: item.primarySkill,
-          priority: item.priority,
-          sourceKind: item.sourceKind,
-          splittable: item.splittable,
-          minChunkMinutes: item.minChunkMinutes,
-          planVersion: version,
-          originalScheduledDate: planDate,
-          resourceId: subject ? (resourceMap[subject] ?? null) : null,
-          note: item.rationale,
-          // v2.7：与唯一写入者保持同一字段集合（批量路径无候选上下文，显式 null）
-          candidateId: null,
-          decisionJson: null,
-        };
-      }),
-    });
-
-    // v2.3：词汇任务复用计划里的 VOCAB_REVIEW 分钟数，与 PlanTask 同事务落库
-    const vocabTask = await tx.planTask.findFirst({
-      where: { planDate, planVersion: version, module: 'VOCAB_REVIEW' },
-      select: { id: true, plannedMinutes: true },
-    });
-    if (vocabTask) {
-      await ensureVocabularyAssignment(tx, {
-        assignmentDate: planDate,
-        budgetMinutes: vocabTask.plannedMinutes,
-        planTaskId: vocabTask.id,
-      });
-    }
-
-    // v2.2：复测任务与排期同一事务关联，避免次日重复把同一批复测排进预算
-    const retestTask =
-      result.scheduledRetestIds.length > 0
-        ? await tx.planTask.findFirst({
-            where: { planDate, planVersion: version, module: 'EVIDENCE_RETEST' },
-            select: { id: true },
-          })
-        : null;
-    if (retestTask && result.scheduledRetestIds.length > 0) {
-      await tx.retestSchedule.updateMany({
-        where: { id: { in: result.scheduledRetestIds }, status: 'PENDING' },
-        data: { planTaskId: retestTask.id },
-      });
-    }
-
-    await tx.planVersion.create({
-      data: {
-        planDate,
-        version,
-        changeSource: 'GENERATE',
-        budgetMinutes: dailyMinutes,
-        actualMinutesAtChange: 0,
-        afterSnapshot: JSON.stringify({
-          taskCount: result.items.length,
-          totalMinutes: result.totalPlannedMinutes,
-          retestCount: result.scheduledRetestIds.length,
-          backlog: result.backlog,
-        }),
-      },
-    });
-  });
-
-  revalidatePath('/');
-  revalidatePath('/plan');
-  return ok({
-    taskCount: result.items.length,
-    totalMinutes: result.totalPlannedMinutes,
-    warnings: result.warnings,
-    version,
-  });
+  return fail('PRECONDITION', LEGACY_GENERATE_MESSAGE);
 }

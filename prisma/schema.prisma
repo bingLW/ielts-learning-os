@@ -59,6 +59,7 @@ model UserProfile {
    * /**
    * /**
    * /**
+   * /**
    * 长期通用英语目标等级（展示用，非官方认证）。
    */
   cefrTarget        String @default("B2")
@@ -148,6 +149,7 @@ model PlanTask {
    * /**
    * /**
    * /**
+   * /**
    * 优先级：P0 到期/逾期复习、P1 当前阶段核心、P2 有证据的弱项/目标差距、P3 拓展。
    * 取值固定 `P0`–`P3`（字符串，SQLite 无 enum）。
    */
@@ -188,6 +190,7 @@ model PlanTask {
    * /**
    * /**
    * /**
+   * /**
    * 主轨道。任务必须归属一个主轨道；允许加标签，但不允许一条学习时长被重复计入总时长。
    * GENERAL_ENGLISH | IELTS_PREPARATION | ENGLISH_MEDIATED_LEARNING
    */
@@ -212,15 +215,15 @@ model PlanTask {
   // 为什么放在字段列表末尾：SQLite 的 ALTER TABLE ADD COLUMN 只能追加到末尾，
   // 把新字段写在末尾，schema 顺序与物理列顺序一致（迁移后再 db push 是零变更）。
   /**
+   * /**
    * 生成这条任务时选中的候选（`TaskCandidate.id`）。
-   *
    * **普通 String?，不建跨域外键**：v2.7 的新表与既有 110 张表之间刻意不建立
    * 外键关系，避免一次数据层改动把级联删除语义扩散到整个计划域。
    * 溯源靠应用层查询，候选过期后这里只留一个"再也查不到"的 id（可接受）。
    */
-  candidateId           String?
+  candidateId  String?
   /// JSON：当时的优先级决策快照（factors/score/priority/rationale），可解释性溯源
-  decisionJson          String?
+  decisionJson String?
 
   stage                 Stage                       @relation(fields: [stageId], references: [id], onDelete: Restrict)
   resource              Resource?                   @relation(fields: [resourceId], references: [id], onDelete: SetNull)
@@ -374,14 +377,12 @@ model PlanVersion {
 
   // ── v2.7 计划层级与失效标记（纯加法，可空）──────────────────────────────
   /// 这次变更是基于哪一份输入快照算出来的（`PlanningSnapshot.id`，普通 String?，不建外键）
-  snapshotId            String?
+  snapshotId      String?
   /**
    * 计划层级（4 值）：DAY | WEEK | MONTH | CYCLE。null 读作 `DAY`
    * （v2.7 之前的数据全是日计划版本）。
-   *
    * 用可空 + 读取时回落，而不是加 `@default("DAY")` —— 有了默认值，v2.7 之前的
    * 日计划历史行就会被伪装成「v2.7 新语义写出来的日计划版本」，而它们只是日计划。
-   *
    * `MONTH` 是 30 天阶段计划层：`PlanVersion(layer='MONTH', planDate=阶段首日)`，
    * 那 8 项结构（阶段目标 / 4 个周里程碑 / 技能配比 / 每周测试 / 材料建议 /
    * 词汇语法范围 / 验收指标 / 调整条件）存在 `afterSnapshot` 里。
@@ -390,18 +391,17 @@ model PlanVersion {
    * 区间不落列：由纯函数 `periodOf()` 按 layer 派生（DAY→当天、WEEK→+6、
    * MONTH→+29、CYCLE→+89）。
    */
-  layer                 String?
+  layer           String?
   /**
    * 上层版本的来源（自引用，普通 String?，不建外键）。
-   *
    * 只允许指**上一层**：`DAY→WEEK` / `WEEK→MONTH` / `MONTH→CYCLE`。
    * 禁止父级指向自己的子级（那会让"这份版本基于什么算出来"失去方向）。
    */
-  parentVersionId       String?
+  parentVersionId String?
   /// 上游变化导致这份版本不再可直接执行的时间点（null = 仍然有效）
-  staleAt               DateTime?
+  staleAt         DateTime?
   /// 失效原因（人话：预算变更 / 候选过期 / 上游版本被替换 …）
-  staleReason           String?
+  staleReason     String?
 
   @@unique([planDate, version])
   @@index([planDate])
@@ -1377,11 +1377,11 @@ model LearningCycle {
 
   // ── v2.7 周期主题与阶段切换留痕（纯加法，可空）────────────────────────
   /// 本周期唯一主主题（90 天周期：1 个主主题 + 至多 2 个次主题）
-  primaryTheme         String?
+  primaryTheme        String?
   /// JSON string[]：次主题（≤2 条；与主主题一起构成"这 90 天在练什么"）
-  secondaryThemesJson  String?
+  secondaryThemesJson String?
   /// 最近一次 phase 切换（CALIBRATION→BUILD→DELIVER）的时间点，用于中途校准留痕
-  phaseChangedAt       DateTime?
+  phaseChangedAt      DateTime?
 
   weeklyFocus WeeklyFocus[]
   diagnoses   BarrierDiagnosis[]
@@ -2131,6 +2131,8 @@ model AIEngineSetting {
   externalAiEnabled     Boolean  @default(false)
   dailyBudgetUsd        Float    @default(1)
   monthlyBudgetUsd      Float    @default(20)
+  /// v2.7.1：进行中的外部调用预占；与实际支出一起参与原子预算检查
+  budgetReservedUsd     Float    @default(0)
   warnPercent           Int      @default(80)
   directTeachingDefault Boolean  @default(false)
   explainLanguage       String   @default("ZH_MIXED")
@@ -2310,23 +2312,26 @@ model DiagnosticAsset {
 
 // ── D7 评分结果（与原始作答分离） ──
 model AssessmentResult {
-  id               String   @id @default(cuid())
-  attemptId        String   @unique
-  skill            String
-  subskill         String
-  dimensionJson    String?
-  estimatedLevel   String?
-  levelRangeJson   String?
-  confidence       String   @default("LOW")
-  rubricVersion    String?
-  evidenceRefsJson String?
-  limitationsJson  String?
-  needsFollowUp    Boolean  @default(false)
+  id                String   @id @default(cuid())
+  attemptId         String   @unique
+  skill             String
+  subskill          String
+  dimensionJson     String?
+  estimatedLevel    String?
+  levelRangeJson    String?
+  confidence        String   @default("LOW")
+  rubricVersion     String?
+  evidenceRefsJson  String?
+  limitationsJson   String?
+  needsFollowUp     Boolean  @default(false)
   /**
    * AI | DETERMINISTIC | HUMAN
    */
-  assessorType     String   @default("AI")
-  createdAt        DateTime @default(now())
+  assessorType      String   @default("AI")
+  aiCallLogId       String?
+  aiModelId         String?
+  aiPromptVersionId String?
+  createdAt         DateTime @default(now())
 
   attempt DiagnosticAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
 }
@@ -2418,67 +2423,71 @@ model DiagnosticReviewRequest {
 
 // ── v2.5-A 音源（上传音频 / 材料音频 / 题库内部音频 / 外部链接） ──
 model AudioAsset {
-  id             String   @id @default(cuid())
-  title          String
+  id              String    @id @default(cuid())
+  title           String
   /**
    * UPLOAD | MATERIAL | INTERNAL | EXTERNAL_URL
    */
-  source         String   @default("UPLOAD")
-  sourceUrl      String?
+  source          String    @default("UPLOAD")
+  sourceUrl       String?
   /**
    * 相对路径（storage/uploads 下）或外部 URL；audio 二进制不写 DB。
    */
-  filePath       String
-  fileName       String?
-  mimeType       String?
-  sizeBytes      Int?
-  sha256         String?
-  durationSec    Int?
-  language       String?
+  filePath        String
+  fileName        String?
+  mimeType        String?
+  sizeBytes       Int?
+  sha256          String?
+  durationSec     Int?
+  language        String?
   /**
    * 方言/口音标签（仅素材描述，不作为能力推断依据）。
    */
-  dialectTag     String?
+  dialectTag      String?
   /**
    * 作者/权利信息（已知时填写）。
    */
-  rightsInfo     String?
+  rightsInfo      String?
   /**
    * ACTIVE | ARCHIVED
    */
-  permissionState String  @default("ACTIVE")
-  createdAt      DateTime @default(now())
+  permissionState String    @default("ACTIVE")
+  /// v2.7.1 tombstone：仅标记父资产；子行、证据索引与本地文件保留。
+  deletedAt       DateTime?
+  deletionReason  String?
+  createdAt       DateTime  @default(now())
 
   transcripts        Transcript[]
   listeningExercises ListeningExercise[]
 
   @@index([source])
   @@index([sha256])
+  @@index([deletedAt])
 }
 
 // ── v2.5-C 转写（机器原始 / 手动 / 用户修订，版本链分离） ──
 model Transcript {
-  id                String   @id @default(cuid())
-  audioAssetId      String?
-  recordingAssetId  String?
+  id                 String   @id @default(cuid())
+  audioAssetId       String?
+  recordingAssetId   String?
   /**
    * MACHINE | MANUAL | REVISED
    */
-  kind              String   @default("MACHINE")
+  kind               String   @default("MACHINE")
   parentTranscriptId String?
-  provider          String?
-  model             String?
-  language          String?
+  provider           String?
+  model              String?
+  language           String?
   /**
    * LOW | MEDIUM | HIGH
    */
-  confidence        String?
+  confidence         String?
   /**
    * DRAFT | CONFIRMED
    */
-  status            String   @default("DRAFT")
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  status             String   @default("DRAFT")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   segments TranscriptSegment[]
 
@@ -2490,7 +2499,7 @@ model Transcript {
 }
 
 model TranscriptSegment {
-  id           String   @id @default(cuid())
+  id           String  @id @default(cuid())
   transcriptId String
   seq          Int
   startMs      Int?
@@ -2524,9 +2533,9 @@ model ListeningExercise {
 }
 
 model ListeningAttempt {
-  id           String   @id @default(cuid())
-  exerciseId   String
-  evidenceId   String?
+  id                    String   @id @default(cuid())
+  exerciseId            String
+  evidenceId            String?
   /**
    * 首听结果 JSON（辅助前，不可被覆盖）。
    */
@@ -2535,12 +2544,12 @@ model ListeningAttempt {
    * 辅助后结果 JSON（与首听分离保存）。
    */
   assistedResultJson    String?
-  replayCount  Int      @default(0)
+  replayCount           Int      @default(0)
   /**
    * DRAFT | SUBMITTED
    */
-  status       String   @default("DRAFT")
-  createdAt    DateTime @default(now())
+  status                String   @default("DRAFT")
+  createdAt             DateTime @default(now())
 
   exercise ListeningExercise @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
   errors   ListeningError[]
@@ -2549,25 +2558,25 @@ model ListeningAttempt {
 }
 
 model ListeningError {
-  id           String   @id @default(cuid())
-  attemptId    String
+  id            String   @id @default(cuid())
+  attemptId     String
   /**
    * UNKNOWN_VOCABULARY | KNOWN_WORD_NOT_RECOGNIZED | SEGMENTATION |
    * REDUCED_FORMS | SENTENCE_STRUCTURE | DISCOURSE_MARKER | MISSED_DETAIL |
    * ATTENTION_LOAD | BACKGROUND_KNOWLEDGE | AUDIO_QUALITY | UNKNOWN
    */
-  errorType    String
+  errorType     String
   /**
    * RULE | AI | USER
    */
-  source       String   @default("USER")
-  note         String?
+  source        String   @default("USER")
+  note          String?
   /**
    * 技术质量/音频问题不计为英语能力错误。
    */
-  isTechnical  Boolean  @default(false)
-  userCorrected Boolean @default(false)
-  createdAt    DateTime @default(now())
+  isTechnical   Boolean  @default(false)
+  userCorrected Boolean  @default(false)
+  createdAt     DateTime @default(now())
 
   attempt ListeningAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
 
@@ -2576,16 +2585,17 @@ model ListeningError {
 
 // ── v2.5-D/E 口语题目、会话、录音、转写、评估 ──
 model SpeakingPrompt {
-  id           String   @id @default(cuid())
+  id            String   @id @default(cuid())
   /**
    * READ_ALOUD | SHORT_ANSWER | TOPIC_MONOLOGUE | PICTURE_DESCRIPTION |
    * RETELLING | ROLE_PLAY | FOLLOW_UP | CLARIFICATION | IELTS_PART
    */
-  taskType     String
-  title        String
-  prompt       String
+  taskType      String
+  title         String
+  prompt        String
+  active        Boolean  @default(true)
   rubricVersion String?
-  createdAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
 
   sessions SpeakingSession[]
 
@@ -2593,21 +2603,21 @@ model SpeakingPrompt {
 }
 
 model SpeakingSession {
-  id         String   @id @default(cuid())
-  promptId   String?
+  id        String   @id @default(cuid())
+  promptId  String?
   /**
    * PRACTICE | INTERACTION | RETEST
    */
-  mode       String   @default("PRACTICE")
+  mode      String   @default("PRACTICE")
   /**
    * ACTIVE | COMPLETED | CANCELLED
    */
-  status     String   @default("ACTIVE")
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  prompt    SpeakingPrompt? @relation(fields: [promptId], references: [id], onDelete: SetNull)
-  turns     SpeakingTurn[]
+  prompt     SpeakingPrompt?  @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  turns      SpeakingTurn[]
   recordings RecordingAsset[]
 
   @@index([promptId])
@@ -2632,27 +2642,31 @@ model SpeakingTurn {
 }
 
 model RecordingAsset {
-  id          String   @id @default(cuid())
-  sessionId   String?
+  id             String    @id @default(cuid())
+  sessionId      String?
   /**
    * 相对路径（storage/uploads 下）；录音二进制不写 DB。
    */
-  filePath    String
-  mimeType    String?
-  sizeBytes   Int?
-  sha256      String?
-  durationSec Int?
+  filePath       String
+  mimeType       String?
+  sizeBytes      Int?
+  sha256         String?
+  durationSec    Int?
   /**
    * 重录版本号（保留历史 take，从 1 递增）。
    */
-  takeNumber  Int      @default(1)
-  createdAt   DateTime @default(now())
+  takeNumber     Int       @default(1)
+  /// v2.7.1 tombstone：仅标记父资产；子行、证据索引与本地文件保留。
+  deletedAt      DateTime?
+  deletionReason String?
+  createdAt      DateTime  @default(now())
 
   session     SpeakingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   transcripts Transcript[]
   asrResults  ASRResult[]
 
   @@index([sessionId])
+  @@index([deletedAt])
 }
 
 model ASRResult {
@@ -2730,30 +2744,30 @@ model AudioTechnicalCheck {
 
 // ── M1 材料主表（原文实体；不含任何 AI 文本） ──
 model LearningMaterial {
-  id                 String   @id @default(cuid())
+  id           String  @id @default(cuid())
   /// 用户可见标题（默认取文件名去扩展名，可编辑）
-  title              String
+  title        String
   /// TXT|MARKDOWN|HTML|PDF|DOCX|PASTED_TEXT|AUDIO|VIDEO
-  format             String
+  format       String
   /// created|validating|extracting|normalizing|analyzing|generating|review_required|ready|partial|failed|cancelled
-  status             String   @default("created")
+  status       String  @default("created")
   /// 面向用户的降级/失败原因（人话，不含绝对路径）
-  statusReason       String?
+  statusReason String?
   /// user_upload|user_provided_url|public_domain|open_license|licensed_subscription|internal_library|unknown
-  sourceType         String
-  language           String   @default("en")
+  sourceType   String
+  language     String  @default("en")
 
   /// 原始文件名（仅展示；落盘文件名已重命名）
-  originFileName     String?
+  originFileName String?
   /// 原始文件字节 sha256（PASTED_TEXT 为 null）
-  fileHash           String?
+  fileHash       String?
   /// 去重键：文件=字节 sha256；粘贴=清洗后文本 sha256
-  contentHash        String
+  contentHash    String
 
-  charCount          Int      @default(0)
-  wordCount          Int      @default(0)
+  charCount          Int     @default(0)
+  wordCount          Int     @default(0)
   pageCount          Int?
-  chunkCount         Int      @default(0)
+  chunkCount         Int     @default(0)
   /// 预计学习时长（按 wordCount/180wpm + 练习时长估算，四舍五入到 5 分钟）
   estimatedMinutes   Int?
   /// JSON string[]，官方四项技能子集：READING|WRITING|LISTENING|SPEAKING
@@ -2764,20 +2778,20 @@ model LearningMaterial {
   learnerLevelAtGen  String?
 
   /// 命中同 hash 且用户选「另存副本」时指向原材料
-  duplicateOfId      String?
+  duplicateOfId String?
   /// 可选关联现有 SOP 资源（不污染 Resource 语义）
-  resourceId         String?
+  resourceId    String?
 
   /// 单材料 AI 用量（防费用爆炸，Q5）
-  aiCallCount        Int      @default(0)
-  inputTokens        Int      @default(0)
-  outputTokens       Int      @default(0)
-  estimatedCostUsd   Float    @default(0)
+  aiCallCount      Int   @default(0)
+  inputTokens      Int   @default(0)
+  outputTokens     Int   @default(0)
+  estimatedCostUsd Float @default(0)
 
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  resource           Resource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  resource Resource? @relation(fields: [resourceId], references: [id], onDelete: SetNull)
 
   source             MaterialSource?
   permissionRecords  MaterialPermissionRecord[]
@@ -2805,25 +2819,25 @@ model LearningMaterial {
 
 // ── M2 来源与权限登记（1:1 材料；PRD §3.1 七类来源） ──
 model MaterialSource {
-  id              String   @id @default(cuid())
-  materialId      String   @unique
-  sourceType      String
+  id                String    @id @default(cuid())
+  materialId        String    @unique
+  sourceType        String
   /// P1 网页导入时保存；P0 仅保存用户贴的链接
-  url             String?
-  author          String?
-  publisher       String?
-  publishedYear   Int?
+  url               String?
+  author            String?
+  publisher         String?
+  publishedYear     Int?
   /// 许可名称（open_license 必填，见 zod 层）
-  licenseName     String?
-  licenseUrl      String?
+  licenseName       String?
+  licenseUrl        String?
   /// 用户备注
-  userNote        String?
+  userNote          String?
   /// 用户勾选「我确认有权使用」（禁止预设勾选，A-01）
-  rightsConfirmed   Boolean  @default(false)
+  rightsConfirmed   Boolean   @default(false)
   rightsConfirmedAt DateTime?
 
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
 }
@@ -2864,34 +2878,34 @@ model MaterialAsset {
 
   material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
 
-  @@index([materialId, kind])
   @@unique([materialId, relativePath])
+  @@index([materialId, kind])
 }
 
 // ── M5 处理任务（ADR-05：表 + 串行 tick，无队列中间件） ──
 model ProcessingJob {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   materialId       String
   /// validating|extracting|normalizing|analyzing|generating|cancelled|done
-  stage            String   @default("validating")
+  stage            String    @default("validating")
   /// running|succeeded|failed|cancelled
-  status           String   @default("running")
+  status           String    @default("running")
   /// 1 起；重试 +1（A-08）
-  attempt          Int      @default(1)
+  attempt          Int       @default(1)
   /// 机器码：INVALID_MAGIC|FILE_TOO_LARGE|PDF_TOO_MANY_PAGES|PARSE_TIMEOUT|NO_TEXT|SCHEMA_VALIDATION|BUDGET_EXCEEDED|AI_CALL_LIMIT|CANCELLED
   errorCode        String?
   /// 人话原因（不含绝对路径 / 不含全文）
   errorMessage     String?
-  cancelRequested  Boolean  @default(false)
+  cancelRequested  Boolean   @default(false)
   /// 乐观锁版本（ADR-05 并发控制）
-  lockVersion      Int      @default(0)
+  lockVersion      Int       @default(0)
   /// { stage, done, total, unitLabel }
   progressJson     String?
-  aiCallCount      Int      @default(0)
-  inputTokens      Int      @default(0)
-  outputTokens     Int      @default(0)
-  estimatedCostUsd Float    @default(0)
-  startedAt        DateTime @default(now())
+  aiCallCount      Int       @default(0)
+  inputTokens      Int       @default(0)
+  outputTokens     Int       @default(0)
+  estimatedCostUsd Float     @default(0)
+  startedAt        DateTime  @default(now())
   lastTickAt       DateTime?
   finishedAt       DateTime?
 
@@ -2973,36 +2987,36 @@ model ContentChunk {
 
 // ── M8 AI 提取结果（材料级或 chunk 级；全部 isDerived=true 语义） ──
 model ExtractionResult {
-  id             String   @id @default(cuid())
-  materialId     String
+  id                 String    @id @default(cuid())
+  materialId         String
   /// chunk 级提取必填；SUMMARY/TOPIC 为 null（用 sourceChunkIdsJson）
-  chunkId        String?
+  chunkId            String?
   /// SUMMARY|TOPIC|KEYWORD|COLLOCATION|KEY_SENTENCE|PARAGRAPH_GIST|GRAMMAR_POINT
-  kind           String
+  kind               String
   /// 结构化负载（snake_case，来自 zod 校验后的对象）
-  payloadJson    String
+  payloadJson        String
   /// 原文引用片段（SourceVerifier 已回验通过；**为空的行不允许存在**）
-  sourceQuote    String
+  sourceQuote        String
   /// 多源结果（SUMMARY 依赖哪些 chunk）
   sourceChunkIdsJson String?
-  page           Int?
-  paragraphIndex Int?
-  charStart      Int?
-  charEnd        Int?
+  page               Int?
+  paragraphIndex     Int?
+  charStart          Int?
+  charEnd            Int?
   /// SourceVerifier 通过=true；仅 true 可入库（G1）
-  sourceVerified Boolean  @default(false)
+  sourceVerified     Boolean   @default(false)
   /// 恒 true（AI 衍生）
-  isDerived      Boolean  @default(true)
+  isDerived          Boolean   @default(true)
   /// 生成该行的 AICallLog.id（溯源 + 费用归属）
-  aiCallLogId    String?
-  promptVersionId String?
+  aiCallLogId        String?
+  promptVersionId    String?
   /// draft|accepted|edited|rejected
-  reviewStatus   String   @default("draft")
+  reviewStatus       String    @default("draft")
   /// 用户编辑后的 payload（原 payloadJson 保留，不覆盖 AI 原始输出）
-  editedPayloadJson String?
-  reviewedAt     DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  editedPayloadJson  String?
+  reviewedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
   chunk    ContentChunk?    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
@@ -3014,7 +3028,7 @@ model ExtractionResult {
 
 // ── M9 词汇候选（与主库 VocabularyItem 物理分离，E-01） ──
 model VocabularyCandidate {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   materialId       String
   chunkId          String
   /// AI 给出的词形（保留原文大小写/连字符）
@@ -3024,8 +3038,8 @@ model VocabularyCandidate {
   /// lemmaNormalize() 派生（ADR-07）
   normalizedLemma  String
   /// 空串 = 未知（沿用主库约定，不用 NULL 以保唯一约束生效）
-  pos              String   @default("")
-  senseKey         String   @default("default")
+  pos              String    @default("")
+  senseKey         String    @default("default")
   /// 释义候选（AI，需用户确认；不是权威释义）
   definitionZh     String?
   definitionEn     String?
@@ -3038,21 +3052,21 @@ model VocabularyCandidate {
   paragraphIndex   Int?
   charStart        Int?
   charEnd          Int?
-  occurrenceCount  Int      @default(1)
+  occurrenceCount  Int       @default(1)
   /// 主库是否已存在同键词条（导入时快照，UI 显示「已在词库，将只加来源」）
-  existsInLibrary  Boolean  @default(false)
+  existsInLibrary  Boolean   @default(false)
   existingItemId   String?
-  isDerived        Boolean  @default(true)
+  isDerived        Boolean   @default(true)
   aiCallLogId      String?
   /// draft|accepted|edited|rejected
-  reviewStatus     String   @default("draft")
+  reviewStatus     String    @default("draft")
   /// pending|synced|skipped|failed
-  syncStatus       String   @default("pending")
+  syncStatus       String    @default("pending")
   syncError        String?
   syncedItemId     String?
   lastSyncedAt     DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
   chunk    ContentChunk     @relation(fields: [chunkId], references: [id], onDelete: Cascade)
@@ -3064,29 +3078,29 @@ model VocabularyCandidate {
 
 // ── M10 重点句 / 句法候选（C-04 句子主干标注为 AI 推断） ──
 model SentenceCandidate {
-  id                  String   @id @default(cuid())
-  materialId          String
-  chunkId             String
+  id                String   @id @default(cuid())
+  materialId        String
+  chunkId           String
   /// 原文句子（逐字，SourceVerifier 回验）
-  sentenceText        String
+  sentenceText      String
   /// AI 推断的主干（主谓宾骨架）
-  skeletonText        String?
+  skeletonText      String?
   /// 复杂度：SIMPLE|COMPOUND|COMPLEX|COMPOUND_COMPLEX
-  complexity          String?
+  complexity        String?
   /// JSON string[]：语法现象标签（辅助维度，不产生官方技能等级）
-  grammarPointsJson   String?
+  grammarPointsJson String?
   /// 为什么成为重点句（AI 理由，短）
-  note                String?
-  page                Int?
-  paragraphIndex      Int?
-  charStart           Int?
-  charEnd             Int?
-  isDerived           Boolean  @default(true)
-  aiCallLogId         String?
+  note              String?
+  page              Int?
+  paragraphIndex    Int?
+  charStart         Int?
+  charEnd           Int?
+  isDerived         Boolean  @default(true)
+  aiCallLogId       String?
   /// draft|accepted|edited|rejected
-  reviewStatus        String   @default("draft")
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  reviewStatus      String   @default("draft")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   material LearningMaterial @relation(fields: [materialId], references: [id], onDelete: Cascade)
   chunk    ContentChunk     @relation(fields: [chunkId], references: [id], onDelete: Cascade)
@@ -3122,53 +3136,53 @@ model MaterialExerciseSet {
 
 // ── M12 生成题（D-04 必备字段全在此；与 Diagnostic*/AssessmentResult 零外键 → ADR-08） ──
 model GeneratedExercise {
-  id                 String   @id @default(cuid())
-  materialId         String
-  setId              String
-  chunkId            String
+  id                      String    @id @default(cuid())
+  materialId              String
+  setId                   String
+  chunkId                 String
   /// reading_gist|reading_detail|vocab_in_context|vocab_collocation|grammar_error
-  type               String
+  type                    String
   /// READING|VOCABULARY|GRAMMAR
-  targetSkill        String
+  targetSkill             String
   /// 子技能，如 gist_understanding / detail_scanning / word_in_context
-  subskill           String?
+  subskill                String?
   /// JSON string[]：辅助维度（Grammar/Vocab/SentenceStructure），**不产生官方等级**
   auxiliaryDimensionsJson String?
   /// A0..C1（AI 辅助估计，UI 必须标注）
-  difficultyEstimate String?
+  difficultyEstimate      String?
   /// 题干
-  prompt             String
+  prompt                  String
   /// JSON: { options: [{key,text}], correctKey, isSingleAnswer } —— 客观题唯一答案（D-01~D-03）
-  answerJson         String
+  answerJson              String
   /// 解析（为什么这是答案）
-  explanation        String
+  explanation             String
   /// 答案依据片段（原文逐字，SourceVerifier 回验）
-  evidenceQuote      String
+  evidenceQuote           String
   /// 来源定位快照（chunk 被删也能显示位置）
-  page               Int?
-  paragraphIndex     Int?
-  charStart          Int?
-  charEnd            Int?
-  isAiGenerated      Boolean  @default(true)
+  page                    Int?
+  paragraphIndex          Int?
+  charStart               Int?
+  charEnd                 Int?
+  isAiGenerated           Boolean   @default(true)
   /// draft|needs_review|approved|rejected|retired
-  reviewStatus       String   @default("draft")
+  reviewStatus            String    @default("draft")
   /// 「答案可由来源推出」一致性自检结果：pass|fail|unchecked
-  consistencyCheck   String   @default("unchecked")
-  consistencyNote    String?
+  consistencyCheck        String    @default("unchecked")
+  consistencyNote         String?
   /// 去重键：sha256(type|prompt|answerJson|chunkId) 前 16 位（D-10）
-  dedupeKey          String
+  dedupeKey               String
   /// 生成来源（模型 + prompt 版本），满足 D-04 溯源
-  model              String?
-  promptVersionId    String?
-  aiCallLogId        String?
-  retiredAt          DateTime?
-  retireReason       String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  model                   String?
+  promptVersionId         String?
+  aiCallLogId             String?
+  retiredAt               DateTime?
+  retireReason            String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
-  material LearningMaterial     @relation(fields: [materialId], references: [id], onDelete: Cascade)
-  set      MaterialExerciseSet  @relation(fields: [setId], references: [id], onDelete: Cascade)
-  chunk    ContentChunk         @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  material LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  set      MaterialExerciseSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+  chunk    ContentChunk        @relation(fields: [chunkId], references: [id], onDelete: Cascade)
   attempts ExerciseAttempt[]
 
   @@index([materialId, type, reviewStatus])
@@ -3178,21 +3192,21 @@ model GeneratedExercise {
 
 // ── M13 作答记录（用户资产：材料删除后是否保留？→ 随材料级联删，但 EvidenceRecord 独立保留） ──
 model ExerciseAttempt {
-  id             String   @id @default(cuid())
-  materialId     String
-  setId          String
-  exerciseId     String
+  id                    String   @id @default(cuid())
+  materialId            String
+  setId                 String
+  exerciseId            String
   /// JSON: { selectedKey, isCorrect, elapsedSec }
-  responseJson   String
-  isCorrect      Boolean?
+  responseJson          String
+  isCorrect             Boolean?
   /// 作答时的审核状态快照（防止「事后改审核状态」篡改历史语义）
   reviewStatusAtAttempt String
   /// 关联证据（普通 String?，不建 Prisma 关系，避免触碰 v2.2 Evidence 表）
-  evidenceId     String?
+  evidenceId            String?
   /// ASSISTED|IMMEDIATE_RETEST|PRACTICE_ONLY（BASELINE 永不出现，ADR-08）
-  evidenceType   String   @default("PRACTICE_ONLY")
+  evidenceType          String   @default("PRACTICE_ONLY")
   /// 材料被删后 attempt 随材料级联删除；EvidenceRecord 独立存在（G-01）
-  createdAt      DateTime @default(now())
+  createdAt             DateTime @default(now())
 
   material LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
   set      MaterialExerciseSet @relation(fields: [setId], references: [id], onDelete: Cascade)
@@ -3205,23 +3219,23 @@ model ExerciseAttempt {
 
 // ── M14 材料包（F-01：只聚合引用，不复制内容） ──
 model MaterialPack {
-  id               String   @id @default(cuid())
-  materialId       String   @unique
+  id                 String   @id @default(cuid())
+  materialId         String   @unique
   /// AI 生成的学习目标（isDerived；UI 标 AI 徽章）
-  learningGoalsJson String?
+  learningGoalsJson  String?
   /// JSON string[]：官方四项技能子集
-  targetSkillsJson String?
+  targetSkillsJson   String?
   /// A0..C1（AI 辅助估计）
   difficultyEstimate String?
-  estimatedMinutes Int      @default(30)
+  estimatedMinutes   Int      @default(30)
   /// 建议训练顺序：MaterialPackItem.id[]
-  orderingJson     String?
+  orderingJson       String?
   /// 摘要引用（ExtractionResult.kind=SUMMARY 的 id；不复制正文）
-  summaryId        String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  summaryId          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  material LearningMaterial    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  material LearningMaterial   @relation(fields: [materialId], references: [id], onDelete: Cascade)
   items    MaterialPackItem[]
 
   @@index([materialId])
@@ -3249,21 +3263,21 @@ model MaterialPackItem {
 
 // ── M16 任务草案（F-02：受 v2.1 时间预算约束） ──
 model TaskProposal {
-  id               String   @id @default(cuid())
-  materialId       String
-  packId           String?
+  id            String   @id @default(cuid())
+  materialId    String
+  packId        String?
   /// 草案基准日（业务日期）
-  baseDate         String
+  baseDate      String
   /// 当日可用预算快照（getEffectiveBudget 结果，便于事后解释为何这样拆）
-  budgetMinutes    Int
-  totalMinutes     Int
-  overflowDays     Int      @default(0)
+  budgetMinutes Int
+  totalMinutes  Int
+  overflowDays  Int      @default(0)
   /// draft|confirmed|discarded
-  status           String   @default("draft")
+  status        String   @default("draft")
   /// AI 或规则给出的拆分理由（人话）
-  rationale        String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  rationale     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   material LearningMaterial   @relation(fields: [materialId], references: [id], onDelete: Cascade)
   items    TaskProposalItem[]
@@ -3318,32 +3332,32 @@ model TaskProposalItem {
 
 // ── V27-1 计划输入快照（每次生成/重排各一行；保证可复现"为什么这样排"）──
 model PlanningSnapshot {
-  id                   String   @id @default(cuid())
+  id             String   @id @default(cuid())
   /// GENERATE | REPLAN | WEEKLY | CYCLE_CALIBRATION
-  purpose              String
+  purpose        String
   /// 业务日期（快照针对哪一天/哪一周）
-  asOfDate             String
+  asOfDate       String
   /// 幂等/缓存键：同输入同规则 → 同 hash，可用于断言确定性
-  inputHash            String
+  inputHash      String
   /// 规则版本（scheduler 语义版本，规则改动必须递增，否则历史不可复算）
-  ruleVersion          String   @default("v2.7.0")
+  ruleVersion    String   @default("v2.7.0")
   /// JSON：预算快照 { budgetMinutes, tierCode, isRestDay, source, isInitialSuggestion }
-  budgetJson           String
+  budgetJson     String
   /// JSON：画像/证据摘要 { skills:[{skill,direction,confidence,evidenceCount,independentCount,lastAssessedAt,freshDays}], gaps:[...] }
-  profileJson          String?
+  profileJson    String?
   /// JSON：到期负荷 { dueReviewMinutes, dueReviewCount, maxOverdueDays, dueRetestItems:[...] }
-  workloadJson         String?
+  workloadJson   String?
   /// JSON：候选池摘要 [{candidateId, module, skill, estMinutes, minMinutes, priorityHint}]
-  candidatesJson       String?
+  candidatesJson String?
   /// JSON：配置快照 { minTaskMinutes, p0CapRatio, coreMinRatio, bufferRatio, allocation, weights }
-  configJson           String
+  configJson     String
   /// JSON：输入校验结果 { ok, stale:[], missingBaseline:[], lowConfidence:[] }
-  validationJson       String?
-  createdAt            DateTime @default(now())
+  validationJson String?
+  createdAt      DateTime @default(now())
 
-  gaps        SkillGap[]
-  candidates  TaskCandidate[]
-  reviews     StageReadinessReview[]
+  gaps       SkillGap[]
+  candidates TaskCandidate[]
+  reviews    StageReadinessReview[]
 
   @@unique([purpose, asOfDate, inputHash])
   @@index([asOfDate])
@@ -3351,54 +3365,52 @@ model PlanningSnapshot {
 
 // ── V27-2 技能缺口（子维度粒度；官方四项与辅助维度共用一张表，靠 dimensionKind 分层）──
 model SkillGap {
-  id                String   @id @default(cuid())
-  snapshotId        String
+  id                  String   @id @default(cuid())
+  snapshotId          String
   /**
    * 语义分层：OFFICIAL = 四项官方能力；AUXILIARY = 语法/词汇/句子结构。
-   *
    * **所有「四技能占比 / 配比分母 / 弱项排序」查询必须显式带 `dimensionKind: 'OFFICIAL'`。**
    * 辅助维度只允许出现在：候选任务、缺口清单、补测建议；**绝不**进入任何
    * `allocatedMinutes` 类字段的分母（否则 Grammar 缺口会让四项占比合计 ≠ 100%）。
    */
-  dimensionKind     String   @default("OFFICIAL")
+  dimensionKind       String   @default("OFFICIAL")
   /**
    * dimensionKind=OFFICIAL 时取 LISTENING|READING|SPEAKING|WRITING；
    * =AUXILIARY 时取 GRAMMAR|VOCABULARY|SENTENCE_STRUCTURE。
    */
-  skill             String
+  skill               String
   /// 子维度，如 gist_understanding / detail_scanning / coherence；空串 = 技能级缺口
-  subskill          String   @default("")
+  subskill            String   @default("")
   /// GAP（已证实）| UNCERTAINTY（证据不足，需补测）| UNKNOWN（无基线）
-  kind              String
+  kind                String
   /// LOW | MEDIUM | HIGH —— 与 SkillProfile.confidence 同源
-  confidence        String   @default("LOW")
+  confidence          String   @default("LOW")
   /// 证据样本数（实时聚合，非快照冗余）
-  evidenceCount     Int      @default(0)
+  evidenceCount       Int      @default(0)
   /// A0 无辅助样本数 —— 独立性门槛
-  independentCount  Int      @default(0)
+  independentCount    Int      @default(0)
   /// 证据新鲜度（最近证据距 asOfDate 的天数；null = 无证据）
-  freshnessDays     Int?
+  freshnessDays       Int?
   /// 覆盖比例 0..1（coverage 分母由 blueprint 决定；null = 未知）
-  coverageRatio     Float?
+  coverageRatio       Float?
   /// 0..1，缺口严重度（证据支持下的偏离幅度；UNCERTAINTY 恒 0）
-  severity          Float    @default(0)
+  severity            Float    @default(0)
   /// 一句话依据（人话，直接进解释面板）
-  reason            String
+  reason              String
   /// JSON string[]：支撑本缺口的 EvidenceRecord.id（可追溯，AC-8）
-  evidenceIdsJson   String?
+  evidenceIdsJson     String?
   /// JSON string[]：suggestProfileConfidence().gaps 原文
   missingEvidenceJson String?
   /// PENDING | ADDRESSED | SUPERSEDED
-  status            String   @default("PENDING")
-  createdAt         DateTime @default(now())
+  status              String   @default("PENDING")
+  createdAt           DateTime @default(now())
 
-  snapshot    PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  candidates  TaskCandidate[]
-  decisions   TaskPriorityDecision[]
+  snapshot   PlanningSnapshot       @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  candidates TaskCandidate[]
+  decisions  TaskPriorityDecision[]
 
   /**
    * 一个维度在一次快照里**只有一个裁决**。
-   *
    * 唯一键刻意**不含** `kind`：把 kind 放进来意味着同一维度可以同时是 GAP 与
    * UNCERTAINTY，双池立刻变成双份计数，"低置信度必须进 Uncertainty 且不进 ranked"
    * 就形同虚设。裁决互斥由 DB 保证，不靠应用层自觉。
@@ -3410,8 +3422,8 @@ model SkillGap {
 
 // ── V27-3 候选任务（跨来源的统一视图；**不参与任何时长统计**）──
 model TaskCandidate {
-  id                 String   @id @default(cuid())
-  snapshotId         String
+  id         String  @id @default(cuid())
+  snapshotId String
   /// 候选来源（8 值）：REVIEW | RETEST | PROBE | VOCAB | MATERIAL | QUESTION | LAB | EGIU
   ///
   /// - `LAB` 合并了听力与口语两类实验性任务，用 `sourceRef = 'listening:<id>' | 'speaking:<id>'`
@@ -3421,44 +3433,44 @@ model TaskCandidate {
   /// - **`EXTENSIVE` 不是候选来源**：泛听泛读由 `generateAdaptivePlan` 第 ⑧ 步直接产出
   ///   （预算 ≥120 且剩余 ≥2 个粒度时给 P3）。若它同时是一个候选来源，同一块时间会被
   ///   生成两次 —— 这是本表最容易误加的一个值。
-  sourceKind         String
+  sourceKind String
   /// 源表弱引用（普通 String?，不建跨域外键，避免触碰既有 110 表）
-  sourceRef          String?
+  sourceRef  String?
   /// 稳定去重键：`sourceKind:sourceRef|none:module`（幂等复用同一候选）。
   ///
   /// **刻意不含 `dateKey`**：本表已挂 `snapshotId`，一个快照对应一个 `asOfDate`，
   /// dateKey 在快照内是常量；放进键里会让"上周同一条"与"这周同一条"永远对不上，
   /// 跨快照比对与幂等复用全部失效。**也不含 `estMinutes`** —— 那是载荷不是身份。
-  
-  candidateKey       String
-  /// PlanTask.module 取值（14 值）
-  module             String
-  /// 四技能子集 + FOUNDATION
-  targetSkill        String
-  skillGapId         String?
-  title              String
-  /// 预计分钟
-  estMinutes         Int
-  /// 最小可执行单元（不生成低于它的碎片）
-  minMinutes         Int      @default(5)
-  /// 建议粒度上限（材料包用 15/30/60）
-  maxBlockMinutes    Int?
-  /// JSON string[]：前置条件（如 ['stage:S2_A2_B1','retest:D7_done']）
-  prerequisitesJson  String?
-  /// VERIFIED | RUBRIC | AI_PRACTICE | UNVERIFIED —— 未验证不得进正式估分
-  validationStatus   String   @default("UNVERIFIED")
-  /// 0..1 难度归一（A0..C1 → 0..1），用于难度匹配
-  difficultyScore    Float?
-  /// true = AI 建议生成（必须在 UI 标注）
-  isAiSuggested      Boolean  @default(false)
-  /// 关联 AI 调用日志（复用 v2.4 账本；普通 String?）
-  aiCallLogId        String?
-  /// PROPOSED | SELECTED | REJECTED | EXPIRED
-  status             String   @default("PROPOSED")
-  createdAt          DateTime @default(now())
 
-  snapshot PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  gap      SkillGap?        @relation(fields: [skillGapId], references: [id], onDelete: SetNull)
+  candidateKey      String
+  /// PlanTask.module 取值（14 值）
+  module            String
+  /// 四技能子集 + FOUNDATION
+  targetSkill       String
+  skillGapId        String?
+  title             String
+  /// 预计分钟
+  estMinutes        Int
+  /// 最小可执行单元（不生成低于它的碎片）
+  minMinutes        Int      @default(5)
+  /// 建议粒度上限（材料包用 15/30/60）
+  maxBlockMinutes   Int?
+  /// JSON string[]：前置条件（如 ['stage:S2_A2_B1','retest:D7_done']）
+  prerequisitesJson String?
+  /// VERIFIED | RUBRIC | AI_PRACTICE | UNVERIFIED —— 未验证不得进正式估分
+  validationStatus  String   @default("UNVERIFIED")
+  /// 0..1 难度归一（A0..C1 → 0..1），用于难度匹配
+  difficultyScore   Float?
+  /// true = AI 建议生成（必须在 UI 标注）
+  isAiSuggested     Boolean  @default(false)
+  /// 关联 AI 调用日志（复用 v2.4 账本；普通 String?）
+  aiCallLogId       String?
+  /// PROPOSED | SELECTED | REJECTED | EXPIRED
+  status            String   @default("PROPOSED")
+  createdAt         DateTime @default(now())
+
+  snapshot PlanningSnapshot      @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  gap      SkillGap?             @relation(fields: [skillGapId], references: [id], onDelete: SetNull)
   decision TaskPriorityDecision?
 
   @@unique([snapshotId, candidateKey])
@@ -3504,25 +3516,25 @@ model TaskPriorityDecision {
 
 // ── V27-5 阶段 readiness 评审（append-only；stageGate 纯函数结果的持久化）──
 model StageReadinessReview {
-  id                String   @id @default(cuid())
-  snapshotId        String
-  stageId           String
+  id               String    @id @default(cuid())
+  snapshotId       String
+  stageId          String
   /// ruleVersion 记录当时用的门禁规则版本（H1–H5 口径变更必须递增）
-  ruleVersion       String   @default("v2.7.0")
+  ruleVersion      String    @default("v2.7.0")
   /// READY_FOR_REVIEW | CONTINUE_CURRENT | NEED_TARGETED_PRACTICE | NEED_MORE_EVIDENCE | USER_APPROVED_TRANSITION
-  outcome           String
+  outcome          String
   /// JSON：H1–H5 逐条 { code, label, current, target, passed }
-  criteriaJson      String
+  criteriaJson     String
   /// JSON string[]：依据的 evidenceIds / retestScheduleIds
-  evidenceRefsJson  String?
+  evidenceRefsJson String?
   /// JSON string[]：未满足项的人话说明
-  unmetJson         String?
+  unmetJson        String?
   /// 用户确认信息（系统只建议，不自动切换）
-  userConfirmed     Boolean  @default(false)
-  confirmedAt       DateTime?
-  confirmedBy       String?
-  note              String?
-  createdAt         DateTime @default(now())
+  userConfirmed    Boolean   @default(false)
+  confirmedAt      DateTime?
+  confirmedBy      String?
+  note             String?
+  createdAt        DateTime  @default(now())
 
   snapshot PlanningSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 

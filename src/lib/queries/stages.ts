@@ -12,7 +12,8 @@ import {
   GATE_H4_WINDOW_DAYS,
   STAGE_STATUSES,
 } from '@/lib/constants';
-import { addDays, diffDays, lastNDays, today } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { addDays, diffDays, lastNDays } from '@/lib/date';
 import { evaluateStageGate } from '@/lib/domain/stageGate';
 import { prisma } from '@/lib/prisma';
 import { getBudgetRange } from './budget';
@@ -46,7 +47,8 @@ export async function listStagesRaw(): Promise<Stage[]> {
 }
 
 /** 阶段时间线 DTO（含已进行天数与验收通过数）。 */
-export async function listStageTimeline(now: string = today()): Promise<StageTimelineItemDto[]> {
+export async function listStageTimeline(nowParam?: string): Promise<StageTimelineItemDto[]> {
+  const now = await resolveBusinessDate(nowParam);
   const stages = await prisma.stage.findMany({
     orderBy: { sortOrder: 'asc' },
     include: { acceptanceItems: { select: { verdict: true, isRequired: true } } },
@@ -110,8 +112,9 @@ export async function listTransitionLogs(limit = 20) {
  */
 export async function getStageGate(
   stageId: string,
-  now: string = today(),
+  nowParam?: string,
 ): Promise<GateResult | null> {
+  const now = await resolveBusinessDate(nowParam);
   const stage = await prisma.stage.findUnique({ where: { id: stageId } });
   if (!stage) return null;
 

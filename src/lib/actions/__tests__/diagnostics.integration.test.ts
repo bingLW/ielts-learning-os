@@ -1,28 +1,23 @@
 /**
- * v2.4.1 诊断闭环集成测试（真实数据库副本）。
+ * v2.4.1 诊断闭环集成测试（独立临时数据库）。
  *
  * 覆盖：分时段暂停/恢复、自适应路由、技术无效不计分、客观题判分、
  * 开放任务待评估、报告暂定、计划草案激活不建 PlanTask、补测与隐私删除。
  */
 
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-diagnostic-integration-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}`;
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
+import * as storage from '@/lib/storage';
 
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
+const { prisma, cleanup } = await createTestDb();
 const actions = await import('@/lib/actions/diagnostics');
 const { getDiagnosticSessionDetail, getDiagnosticReport } = await import('@/lib/queries/diagnostics');
 
@@ -49,10 +44,69 @@ const ANSWERS: Record<string, string> = {
 const OPEN_ANSWER =
   'I usually get up at seven in the morning and have a simple breakfast with my family. In the afternoon I study English for about one hour, and in the evening I take a short walk before going to bed.';
 
+function webm(seconds: number): Buffer {
+  const duration = Buffer.alloc(8);
+  duration.writeDoubleBE(seconds);
+  return Buffer.concat([
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x87, 0x42, 0x82, 0x84, ...Buffer.from('webm')]),
+    Buffer.from([0x18, 0x53, 0x80, 0x67, 0x90, 0x15, 0x49, 0xa9, 0x66, 0x8b, 0x44, 0x89, 0x88, ...duration]),
+  ]);
+}
+
+function audioDataUrl(bytes: Buffer): string {
+  return `data:audio/webm;base64,${bytes.toString('base64')}`;
+}
+
+async function openAudioSession() {
+  await prisma.learnerProfile.upsert({
+    where: { id: 'default' },
+    create: { id: 'default' },
+    update: { externalAiConsent: false },
+  });
+  const blueprint = await prisma.diagnosticBlueprint.create({
+    data: { code: `audio-bp-${randomUUID()}`, version: 'v1', title: 'audio test' },
+  });
+  const item = await prisma.diagnosticItem.create({
+    data: {
+      blueprintId: blueprint.id,
+      itemCode: `audio-item-${randomUUID()}`,
+      skill: 'SPEAKING',
+      subskill: 'spoken_production',
+      targetLevelMin: 'A1',
+      targetLevelMax: 'B1',
+      taskType: 'OPEN_TASK',
+      sourceType: 'RUBRIC',
+      prompt: 'Describe your day.',
+      rubricJson: JSON.stringify({ dimensions: [{ labelZh: '流利度', descriptor: '连续表达' }] }),
+    },
+  });
+  const session = await prisma.diagnosticSession.create({
+    data: {
+      blueprintId: blueprint.id,
+      status: 'IN_PROGRESS',
+      planJson: JSON.stringify({ includeEmlr: false, queue: [item.id], routing: [] }),
+      currentItemId: item.id,
+    },
+  });
+  return { sessionId: session.id, itemId: item.id };
+}
+
+async function diagnosticWriteCounts(sessionId: string) {
+  return {
+    attempts: await prisma.diagnosticAttempt.count({ where: { sessionId } }),
+    assets: await prisma.diagnosticAsset.count({ where: { attempt: { sessionId } } }),
+  };
+}
+
+async function removeAudioSession(sessionId: string) {
+  if (await prisma.diagnosticSession.findUnique({ where: { id: sessionId }, select: { id: true } })) {
+    await actions.deleteDiagnosticSessionAction({ sessionId });
+  }
+}
+
 afterAll(async () => {
   await prisma.$disconnect();
-  rmSync(workDb, { force: true });
-  rmSync(`${workDb}-journal`, { force: true });
+  cleanup();
 });
 
 describe('v2.4.1 初始诊断闭环', () => {
@@ -203,14 +257,17 @@ describe('v2.4.1 初始诊断闭环', () => {
     expect(speaking?.evidenceCount).toBe(0);
     expect(speaking?.needsFollowUp).toBe(true);
 
-    // 计划草案默认 DRAFT，确认后 ACTIVE，且不自动创建 PlanTask
+    // 计划草案保存后仍为 DRAFT，只有 Planner Preview/Confirm 才能写正式计划
     expect(report?.proposal?.status).toBe('DRAFT');
     expect(report?.proposal?.budget?.weeklyMinutes).toBeGreaterThan(0);
-    const activate = await actions.activatePlanAction({ proposalId: report!.proposal!.id });
-    expect(activate.ok).toBe(true);
+    const confirmDraft = await actions.confirmDiagnosticPlanAction({ proposalId: report!.proposal!.id });
+    expect(confirmDraft.ok).toBe(true);
+    if (confirmDraft.ok) expect(confirmDraft.data.status).toBe('DRAFT');
     const proposal = await prisma.planProposal.findUnique({ where: { id: report!.proposal!.id } });
-    expect(proposal?.status).toBe('ACTIVE');
+    expect(proposal?.status).toBe('DRAFT');
+    expect(proposal?.activatedAt).toBeNull();
     expect(await prisma.planTask.count()).toBe(taskBefore);
+    expect(await prisma.planVersion.count()).toBe(0);
 
     // 证据确实增加（仅有效尝试），且与 attempt 一对一
     expect(await prisma.evidenceRecord.count()).toBeGreaterThan(evidenceBefore);
@@ -221,6 +278,34 @@ describe('v2.4.1 初始诊断闭环', () => {
     const retest = await actions.retestAction({ reportId });
     expect(retest.ok).toBe(true);
     expect(await prisma.placementReport.findUnique({ where: { id: reportId } })).not.toBeNull();
+    if (retest.ok) {
+      const retestDetail = await getDiagnosticSessionDetail(retest.data.sessionId);
+      const item = retestDetail?.currentItem;
+      expect(item).not.toBeNull();
+      if (item) {
+        const answer = await prisma.diagnosticItem.findUniqueOrThrow({ where: { id: item.id } });
+        const submitted = await actions.submitAttemptAction({
+          sessionId: retest.data.sessionId,
+          itemId: item.id,
+          responseText: answer.correctAnswer ?? OPEN_ANSWER,
+          timeSpentSec: 20,
+          clientRequestId: 'retest-finalize',
+        });
+        expect(submitted.ok).toBe(true);
+        const finalized = await actions.finalizeDiagnosticAction({ sessionId: retest.data.sessionId });
+        expect(finalized.ok).toBe(true);
+        if (finalized.ok) {
+          expect(finalized.data.reportId).not.toBe(reportId);
+          expect(await prisma.placementReport.findUniqueOrThrow({ where: { id: reportId } })).toMatchObject({
+            status: 'SUPERSEDED',
+            supersededById: finalized.data.reportId,
+          });
+          expect(await prisma.placementReport.findUniqueOrThrow({ where: { id: finalized.data.reportId } })).toMatchObject({
+            status: 'PROVISIONAL',
+          });
+        }
+      }
+    }
 
     // 隐私删除：删除会话同时移除其证据与原始作答
     const evidenceIds = (
@@ -239,6 +324,166 @@ describe('v2.4.1 初始诊断闭环', () => {
       expect(
         await prisma.evidenceRecord.count({ where: { id: { in: evidenceIds } } }),
       ).toBe(0);
+    }
+  });
+});
+
+describe('P0-6 诊断录音统一音频安全入口', () => {
+  it('伪造容器、非 WebM 前缀和非法 base64 均返回 VALIDATION，且不留下 attempt/asset/evidence', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    const evidenceBefore = await prisma.evidenceRecord.count();
+    const bytes = webm(1.6);
+    const invalidUrls = [
+      audioDataUrl(Buffer.from('this is not a WebM container')),
+      `data:audio/wav;base64,${bytes.toString('base64')}`,
+      'data:audio/webm;base64,%%%not-base64%%%',
+      'data:audio/webm;base64,YQ',
+      'data:audio/webm;base64,YR==',
+      '',
+    ];
+    try {
+      for (const [index, url] of invalidUrls.entries()) {
+        const result = await actions.submitAttemptAction({
+          sessionId,
+          itemId,
+          responseText: OPEN_ANSWER,
+          audioDataUrl: url,
+          audioMime: 'audio/webm',
+          audioDurationSec: 2,
+          clientRequestId: `invalid-audio-${index}`,
+        });
+        expect(result).toMatchObject({ ok: false, code: 'VALIDATION' });
+        expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 0, assets: 0 });
+        expect(await prisma.evidenceRecord.count()).toBe(evidenceBefore);
+      }
+    } finally {
+      await removeAudioSession(sessionId);
+    }
+  });
+
+  it('声明时长与真实容器不符时在写入前拒绝，不留下 Pending 记录', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    const evidenceBefore = await prisma.evidenceRecord.count();
+    try {
+      const result = await actions.submitAttemptAction({
+        sessionId,
+        itemId,
+        responseText: '',
+        audioDataUrl: audioDataUrl(webm(1.6)),
+        audioMime: 'audio/webm',
+        audioDurationSec: 5,
+      });
+      expect(result).toMatchObject({ ok: false, code: 'VALIDATION' });
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 0, assets: 0 });
+      expect(await prisma.evidenceRecord.count()).toBe(evidenceBefore);
+    } finally {
+      await removeAudioSession(sessionId);
+    }
+  });
+
+  it('真实 WebM 落盘并保存相对路径、真实大小、sha256 和四舍五入时长；隐私删除同步清理文件', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    const bytes = webm(1.6);
+    const evidenceBefore = await prisma.evidenceRecord.count();
+    let relativePath: string | undefined;
+    try {
+      const result = await actions.submitAttemptAction({
+        sessionId,
+        itemId,
+        responseText: '',
+        audioDataUrl: audioDataUrl(bytes),
+        audioMime: 'audio/webm;codecs=opus',
+        audioDurationSec: 2,
+      });
+      expect(result).toMatchObject({ ok: true, data: { status: 'NEEDS_REVIEW' } });
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 1, assets: 1 });
+      expect(await prisma.evidenceRecord.count()).toBe(evidenceBefore);
+
+      const asset = await prisma.diagnosticAsset.findFirstOrThrow({ where: { attempt: { sessionId } } });
+      relativePath = asset.storagePath ?? undefined;
+      expect(relativePath).toMatch(/^[^/\\]+\.webm$/);
+      expect(relativePath).not.toContain('data:');
+      expect(asset).toMatchObject({
+        kind: 'AUDIO',
+        mimeType: 'audio/webm',
+        sizeBytes: bytes.byteLength,
+        sha256: storage.sha256Hex(bytes),
+        durationSec: 2,
+      });
+      const absolutePath = storage.resolveUploadPath(relativePath!);
+      expect(readFileSync(absolutePath)).toEqual(bytes);
+
+      const deleted = await actions.deleteDiagnosticSessionAction({ sessionId });
+      expect(deleted.ok).toBe(true);
+      expect(existsSync(absolutePath)).toBe(false);
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 0, assets: 0 });
+    } finally {
+      await removeAudioSession(sessionId);
+      if (relativePath) rmSync(join(storage.uploadsDir(), relativePath), { force: true });
+    }
+  });
+
+  it('无音频的开放任务仍按原逻辑保存待评估作答，不产生资产', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    try {
+      const result = await actions.submitAttemptAction({ sessionId, itemId, responseText: OPEN_ANSWER });
+      expect(result).toMatchObject({ ok: true, data: { status: 'NEEDS_REVIEW' } });
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 1, assets: 0 });
+    } finally {
+      await removeAudioSession(sessionId);
+    }
+  });
+
+  it('存储写入失败返回 INTERNAL，且不产生半截 attempt/asset', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    const write = vi.spyOn(storage, 'writeUploadedFile').mockImplementationOnce(() => {
+      throw new Error('simulated disk failure');
+    });
+    try {
+      const result = await actions.submitAttemptAction({
+        sessionId,
+        itemId,
+        responseText: '',
+        audioDataUrl: audioDataUrl(webm(1)),
+        audioDurationSec: 1,
+      });
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL' });
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 0, assets: 0 });
+    } finally {
+      write.mockRestore();
+      await removeAudioSession(sessionId);
+    }
+  });
+
+  it('Attempt/Asset 事务失败时回滚数据库并清理本次物理文件', async () => {
+    const { sessionId, itemId } = await openAudioSession();
+    const originalWrite = storage.writeUploadedFile;
+    let writtenPath: string | undefined;
+    const write = vi.spyOn(storage, 'writeUploadedFile').mockImplementationOnce((buffer, extension) => {
+      const stored = originalWrite(buffer, extension);
+      writtenPath = stored.absolutePath;
+      return stored;
+    });
+    await prisma.$executeRawUnsafe(
+      'CREATE TRIGGER diagnostic_audio_insert_failure BEFORE INSERT ON "DiagnosticAsset" BEGIN SELECT RAISE(ABORT, \'simulated asset failure\'); END',
+    );
+    try {
+      const result = await actions.submitAttemptAction({
+        sessionId,
+        itemId,
+        responseText: '',
+        audioDataUrl: audioDataUrl(webm(1)),
+        audioDurationSec: 1,
+      });
+      expect(result).toMatchObject({ ok: false, code: 'INTERNAL' });
+      expect(await diagnosticWriteCounts(sessionId)).toEqual({ attempts: 0, assets: 0 });
+      expect(writtenPath).toBeDefined();
+      expect(existsSync(writtenPath!)).toBe(false);
+    } finally {
+      write.mockRestore();
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS diagnostic_audio_insert_failure');
+      await removeAudioSession(sessionId);
+      if (writtenPath) rmSync(writtenPath, { force: true });
     }
   });
 });

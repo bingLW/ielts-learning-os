@@ -8,6 +8,7 @@
 import Link from 'next/link';
 import { NAV_GROUP_LABEL_ZH, NAV_ITEMS, type NavItem } from '@/lib/constants';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { useBusinessTimeZone } from './BusinessTimeProvider';
 
 const ICON_BY_HREF: Record<string, IconName> = {
   '/': 'home',
@@ -47,13 +48,14 @@ export function isActivePath(href: string, pathname: string): boolean {
 }
 
 export function Sidebar({ pathname }: { pathname: string }) {
+  const timeZone = useBusinessTimeZone();
   const groups: NavItem['group'][] = ['CORE', 'PLANNER', 'MATERIALS', 'DIAGNOSE', 'TRACKS', 'ANALYZE'];
 
   return (
     <nav aria-label="主导航" className="flex h-full flex-col gap-4 overflow-y-auto px-3 py-4">
       <div className="px-1">
         <p className="text-[13px] font-semibold tracking-tight text-ink">IELTS Learning OS</p>
-        <p className="text-[11px] text-inkMuted">学习闭环工作台 · 时区 Asia/Singapore</p>
+        <p className="text-[11px] text-inkMuted">学习闭环工作台 · 时区 {timeZone}</p>
       </div>
 
       {groups.map((group) => (

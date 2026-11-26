@@ -16,61 +16,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 process.env.AI_PROVIDER_API_KEY ??= 'test-plan-ai-key-123456';
 process.env.AI_PROVIDER_BASE_URL ??= 'https://plan.test.invalid/v1';
 
-const { prisma, path } = await createTestDb([
-  'aICallLog',
-  'promptVersion',
-  'promptTemplate',
-  'aIEngineSetting',
-  'aIProviderCredential',
-  'aIModelConfig',
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'studySessionDaySplit',
-  'evidenceRecord',
-  'studySession',
-  'skillProfile',
-  'goalMilestone',
-  'learningGoal',
-  'weeklyFocus',
-  'learningCycle',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'planningSnapshot',
-  'planTask',
-  'planVersion',
-  'dailyBudget',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'plannerSettings',
-  'skillAllocationProfile',
-  'stageAcceptanceItem',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma, cleanup } = await createTestDb();
 
 const { buildPlan } = await import('@/lib/services/planBuild');
 const { ensurePromptRegistry } = await import('@/lib/ai/registry');
@@ -156,6 +102,9 @@ beforeAll(async () => {
       explainLanguage: 'ZH_MIXED',
     },
   });
+  await prisma.learnerProfile.create({
+    data: { id: 'default', externalAiConsent: true },
+  });
   await prisma.reviewTask.createMany({
     data: [
       {
@@ -186,8 +135,7 @@ beforeAll(async () => {
 afterAll(async () => {
   completeSpy.mockRestore();
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('AC-17 ⑨ failed → 全 byAi=false（结果 + 库）', () => {

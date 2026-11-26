@@ -13,7 +13,7 @@ import { useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { submitVocabQuizAction } from '@/lib/actions/vocab';
 import { MASTERY_LABEL_ZH, MASTERY_LEVELS, QUIZ_PASS, QUIZ_SIZE } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import { formatPercent } from '@/lib/format';
 import type { MasteryLevel, VocabWordRowDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
@@ -29,6 +29,7 @@ export interface QuizPanelProps {
 }
 
 export function QuizPanel({ candidates, weights, quizDoneToday, onToast, onDone }: QuizPanelProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [ratings, setRatings] = useState<Record<string, MasteryLevel>>({});
@@ -52,7 +53,7 @@ export function QuizPanel({ candidates, weights, quizDoneToday, onToast, onDone 
       return;
     }
     startTransition(async () => {
-      const response = await submitVocabQuizAction({ quizDate: today(), answers });
+      const response = await submitVocabQuizAction({ quizDate: businessDate, answers });
       if (!response.ok) {
         onToast(response.error, 'error');
         return;

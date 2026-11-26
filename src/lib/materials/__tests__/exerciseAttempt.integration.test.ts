@@ -12,18 +12,11 @@
  *   的 `correctKey` / `explanation` 必须为 null。
  */
 
-import { copyFileSync, existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
-const sourceDb = join(process.cwd(), 'prisma', 'dev.db');
-const workDb = join(tmpdir(), `ielts-attempt-${process.pid}-${Date.now()}.db`);
-
-if (!existsSync(sourceDb)) throw new Error(`找不到数据库：${sourceDb}`);
-copyFileSync(sourceDb, workDb);
-process.env.DATABASE_URL = `file:${workDb}?connection_limit=1`;
 process.env.AI_CREDENTIALS_SECRET ??= 'ielts-integration-test-secret';
 
 vi.mock('next/cache', () => ({
@@ -31,8 +24,7 @@ vi.mock('next/cache', () => ({
   revalidateTag: vi.fn(),
 }));
 
-const { prisma } = await import('@/lib/prisma');
-await prisma.$queryRawUnsafe('PRAGMA journal_mode = MEMORY');
+const { prisma, cleanup } = await createTestDb();
 
 const { finalizeMaterialUpload } = await import('@/lib/materials/upload');
 const { runPipelineTick } = await import('@/lib/materials/pipeline');
@@ -154,6 +146,7 @@ async function correctKeyOf(exerciseId: string): Promise<string> {
 
 beforeAll(async () => {
   await ensurePromptRegistry(prisma);
+  await prisma.aIEngineSetting.create({ data: { id: 'default', externalAiEnabled: false } });
   await prisma.aIEngineSetting.updateMany({ data: { externalAiEnabled: false } });
 });
 
@@ -167,16 +160,10 @@ afterAll(async () => {
           // 清理失败不影响结论
         }
       }),
-      (async () => {
-        try {
-          await rm(workDb, { force: true });
-        } catch {
-          // 忽略
-        }
-      })(),
     ]);
   }
   await prisma.$disconnect();
+  cleanup();
 }, 60_000);
 
 describe('作答：判分、留痕、不产生证据（ADR-08）', () => {

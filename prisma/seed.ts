@@ -13,6 +13,8 @@
  */
 
 import { PrismaClient } from '@prisma/client';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   GOAL_TYPES,
   GOAL_TYPE_LABEL_ZH,
@@ -28,8 +30,6 @@ import type { ModuleId, StageProfileCode } from '../src/lib/types';
 if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = 'file:./dev.db';
 }
-
-const prisma = new PrismaClient();
 
 type Dimension = 'LISTENING' | 'READING' | 'SPEAKING' | 'WRITING' | 'GRAMMAR' | 'VOCAB' | 'SENTENCE';
 
@@ -338,7 +338,7 @@ const RESOURCE_SEEDS: ResourceSeed[] = [
   },
 ];
 
-async function seedProfile(): Promise<void> {
+async function seedProfile(prisma: PrismaClient): Promise<void> {
   await prisma.userProfile.upsert({
     where: { id: 1 },
     create: {
@@ -370,7 +370,7 @@ async function seedProfile(): Promise<void> {
   console.log('✓ UserProfile（单用户配置 + v2 三目标默认）已就绪');
 }
 
-async function seedStages(): Promise<void> {
+async function seedStages(prisma: PrismaClient): Promise<void> {
   const todayStr = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   let acceptanceCount = 0;
 
@@ -412,7 +412,7 @@ async function seedStages(): Promise<void> {
   console.log(`✓ Stage 4 个阶段 + ${acceptanceCount} 条验收项已就绪`);
 }
 
-async function seedResources(): Promise<void> {
+async function seedResources(prisma: PrismaClient): Promise<void> {
   let created = 0;
   let updated = 0;
 
@@ -454,7 +454,7 @@ async function seedResources(): Promise<void> {
  * - B1_B2: 25/25/25/25
  * - IELTS_INTENSIVE: 无内置，需用户自行配置（故 seed 不创建）
  */
-async function seedSkillAllocations(): Promise<void> {
+async function seedSkillAllocations(prisma: PrismaClient): Promise<void> {
   let created = 0;
 
   // IELTS_INTENSIVE 无内置配比（必须由用户按目标分数自行配置），因此不预置
@@ -495,7 +495,7 @@ async function seedSkillAllocations(): Promise<void> {
  *
  * 三条目标分别对应三个轨道，各自独立；里程碑框架可供后续执行时逐项回填。
  */
-async function seedLearningGoals(): Promise<void> {
+async function seedLearningGoals(prisma: PrismaClient): Promise<void> {
   let created = 0;
 
   for (const goalType of GOAL_TYPES) {
@@ -526,7 +526,7 @@ async function seedLearningGoals(): Promise<void> {
  * 现有 4 个 Stage 补充映射到 StageProfileCode（PREPARATION / A0_A2 / A2_B1 / B1_B2）。
  * 幂等：已有 profileCode 时跳过，仅在空值时更新。
  */
-async function seedStageProfileCodes(): Promise<void> {
+async function seedStageProfileCodes(prisma: PrismaClient): Promise<void> {
   let updated = 0;
 
   for (const [stageCode, profileCode] of Object.entries(STAGE_CODE_TO_PROFILE)) {
@@ -552,7 +552,7 @@ async function seedStageProfileCodes(): Promise<void> {
  * 现有 PlanTask 的 module 字段推导出 track 与 primarySkill 属性（如已有值则跳过）。
  * 通过 MODULE_TRACK 与 MODULE_TO_PRIMARY 常量进行映射。
  */
-async function seedPlanTaskAttributes(): Promise<void> {
+async function seedPlanTaskAttributes(prisma: PrismaClient): Promise<void> {
   const tasks = await prisma.planTask.findMany({
     where: {
       OR: [
@@ -590,7 +590,7 @@ async function seedPlanTaskAttributes(): Promise<void> {
  * 为三条 LearningGoal 各创建若干里程碑占位符（里程碑代码 + 标题已预设，待执行时填 status）。
  * 这里仅创建骨架，真实的 achieved / failed 状态由实际学习过程决定。
  */
-async function seedGoalMilestones(): Promise<void> {
+async function seedGoalMilestones(prisma: PrismaClient): Promise<void> {
   let created = 0;
 
   // 通用英语轨道里程碑
@@ -692,7 +692,7 @@ async function seedGoalMilestones(): Promise<void> {
  * 但提前 seed 可以让「来源归属」在第一次同步前就存在，避免多写一条分支。
  * 用固定 id + upsert，因此反复执行不会产生第二行。
  */
-async function seedMaterialVocabularySource(): Promise<void> {
+async function seedMaterialVocabularySource(prisma: PrismaClient): Promise<void> {
   const existing = await prisma.vocabularySource.findUnique({ where: { id: 'vsource-material' } });
   if (existing) return;
   await prisma.vocabularySource.create({
@@ -706,27 +706,30 @@ async function seedMaterialVocabularySource(): Promise<void> {
   console.log('✓ VocabularySource(MATERIAL) 已创建');
 }
 
-async function main(): Promise<void> {
+export async function seedDatabase(prisma: PrismaClient): Promise<void> {
   console.log('开始写入种子数据…');
-  await seedProfile();
-  await seedStages();
-  await seedResources();
+  await seedProfile(prisma);
+  await seedStages(prisma);
+  await seedResources(prisma);
   // ── v2.0 增量回填（全部幂等，可反复执行）──
-  await seedSkillAllocations();
-  await seedLearningGoals();
-  await seedStageProfileCodes();
-  await seedPlanTaskAttributes();
-  await seedGoalMilestones();
+  await seedSkillAllocations(prisma);
+  await seedLearningGoals(prisma);
+  await seedStageProfileCodes(prisma);
+  await seedPlanTaskAttributes(prisma);
+  await seedGoalMilestones(prisma);
   // ── v2.6 增量（幂等）──
-  await seedMaterialVocabularySource();
+  await seedMaterialVocabularySource(prisma);
   console.log('完成。注意：本 seed 不写入任何学习记录/错题/词汇假数据。');
 }
 
-main()
-  .catch((error: unknown) => {
-    console.error('种子数据写入失败：', error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const cliPrisma = new PrismaClient();
+  seedDatabase(cliPrisma)
+    .catch((error: unknown) => {
+      console.error('种子数据写入失败：', error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await cliPrisma.$disconnect();
+    });
+}

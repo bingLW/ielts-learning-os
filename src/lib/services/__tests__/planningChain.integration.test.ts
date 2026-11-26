@@ -30,57 +30,14 @@ import { addDays } from '@/lib/date';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-/**
- * **读集必须写全**：`buildPlanningSnapshot` 会跑 `collectCandidates()`（8 个来源）
- * 再对每条候选评分。任何一张没清的源表都会让种子数据混进 `decisions`，
- * 于是"READING / SPEAKING 两个维度必须表现不同"这类断言就变成在赌本机库的现状。
- *
- * 清空之后候选池里只剩本文件造的两条 `RETEST`（READING / SPEAKING），
- * 所以下面可以断言 `decisions` **恰好 2 条**。
- */
-const { prisma } = await createTestDb([
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'evidenceRecord',
-  'skillProfile',
-  'learningGoal',
-  'learningCycle',
-  'skillGap',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'planningSnapshot',
-  'planTask',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma } = await createTestDb();
 
 const { buildPlanningSnapshot } = await import('@/lib/services/planningSnapshot');
 const { WEAKNESS_MIN_QUESTIONS } = await import('@/lib/constants');
 
 /** 近 28 天窗口内的某一天（相对 `AS_OF`）。 */
 const AS_OF = '2026-03-10';
+const TIME_ZONE = 'UTC';
 
 let snapshot: Awaited<ReturnType<typeof buildPlanningSnapshot>>;
 let stageId = '';
@@ -261,7 +218,7 @@ beforeAll(async () => {
     },
   });
 
-  snapshot = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, horizonDays: 7 });
+  snapshot = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, timeZone: TIME_ZONE, horizonDays: 7 });
   expect(snapshot.ok).toBe(true);
 });
 
@@ -390,7 +347,7 @@ describe('C-J：多条 ACTIVE 目标时，取哪一条必须是确定的', () =>
       },
     });
 
-    const rebuilt = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: '2026-03-11', horizonDays: 7 });
+    const rebuilt = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: '2026-03-11', timeZone: TIME_ZONE, horizonDays: 7 });
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
     // 旧的那条 `targetDate` 是 2026-06-01；新的那条是 2026-09-01
@@ -402,7 +359,7 @@ describe('C-J：多条 ACTIVE 目标时，取哪一条必须是确定的', () =>
 
 describe('⑳㉑ 调用链：真实 LearningGoal 行 → goalRelevance（不是单测手搓的 ctx）', () => {
   const rebuild = async () => {
-    const result = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, horizonDays: 7 });
+    const result = await buildPlanningSnapshot({ purpose: 'GENERATE', asOfDate: AS_OF, timeZone: TIME_ZONE, horizonDays: 7 });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('快照构建失败');
     const reading = result.data.context.decisions.find(

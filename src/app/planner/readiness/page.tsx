@@ -5,7 +5,7 @@
  * `actions/planner.ts`，页面不重算五维。
  */
 
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { getReadinessView } from '@/lib/queries/planner';
 import { listStagesRaw } from '@/lib/queries/stages';
 import { ReadinessBody } from '@/components/planner/readiness/ReadinessBody';
@@ -14,7 +14,7 @@ import { PlannerEmptyState } from '@/components/planner/shared/EmptyState';
 export const dynamic = 'force-dynamic';
 
 export default async function PlannerReadinessPage() {
-  const asOfDate = today();
+  const asOfDate = await businessToday();
   const stages = await listStagesRaw();
   const active = stages.find((row) => row.status === 'ACTIVE') ?? stages[0] ?? null;
 

@@ -11,12 +11,13 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import type { EvidenceSkill } from '@/lib/types';
-import { parseWeekdayProfiles } from '@/lib/domain/budget';
+import { addDays, listDateRange } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { getBudgetRange } from '@/lib/queries/budget';
 import {
   DIAGNOSTIC_AUX_SKILLS,
   DIAGNOSTIC_CORE_SKILLS,
   DIAGNOSTIC_SKILLS,
-  DIAG_AUDIO_MAX_BYTES,
   DIAG_DISCLAIMER_ZH,
   DIAG_MIN_WORDS_OPEN,
   type DiagnosticSkill,
@@ -32,6 +33,9 @@ import {
 } from './routing';
 import { buildPlanDraft, type PlanProfileInput } from './plan';
 import { evaluateOpenResponse } from './ai';
+import { decodeDiagnosticAudioDataUrl } from '@/lib/schema/diagnostics';
+import { AudioValidationError, validateAudioUpload, type ValidatedAudio } from '@/lib/services/audioStorage';
+import { deleteUploadedFile, writeUploadedFile, type StoredFile } from '@/lib/storage';
 
 export interface DiagnosticDb {
   prisma: PrismaClient;
@@ -263,8 +267,32 @@ export async function submitDiagnosticAttempt(
     return { ok: false, code: 'VALIDATION', message: '请先作答' };
   }
 
-  if (input.audioDataUrl && input.audioDataUrl.length > DIAG_AUDIO_MAX_BYTES) {
-    return { ok: false, code: 'VALIDATION', message: '音频过大（上限约 1.5MB / 90 秒），请缩短或标记技术无效' };
+  let validatedAudio: { bytes: Buffer; validated: ValidatedAudio } | undefined;
+  if (input.audioDataUrl !== undefined) {
+    let bytes: Buffer;
+    try {
+      bytes = decodeDiagnosticAudioDataUrl(input.audioDataUrl);
+    } catch (error) {
+      return { ok: false, code: 'VALIDATION', message: error instanceof Error ? error.message : '录音格式无效' };
+    }
+    try {
+      validatedAudio = {
+        bytes,
+        validated: validateAudioUpload({
+          bytes,
+          fileName: 'diagnostic-recording.webm',
+          declaredMimeType: input.audioMime ?? 'audio/webm',
+          declaredDurationSec: input.audioDurationSec,
+          recording: true,
+        }),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'VALIDATION',
+        message: error instanceof AudioValidationError ? error.message : '录音校验失败',
+      };
+    }
   }
 
   // ── 客观题：确定性判分 ─────────────────────────────────────
@@ -391,32 +419,52 @@ export async function submitDiagnosticAttempt(
   }
 
   // ── 开放任务：先落原始作答，再尝试 AI 评估 ────────────────────
-  const attempt = await prisma.diagnosticAttempt.create({
-    data: {
-      sessionId: session.id,
-      itemId: item.id,
-      sequence,
-      status: 'PENDING_EVAL',
-      responseText,
-      timeSpentSec: input.timeSpentSec ?? null,
-      technicalStatusJson,
-      evaluatorType: 'AI',
-      confidence: 'LOW',
-      rubricVersion: item.rubricVersion,
-    },
-  });
+  let storedAudio: StoredFile | undefined;
+  if (validatedAudio) {
+    try {
+      storedAudio = writeUploadedFile(validatedAudio.bytes, validatedAudio.validated.extension);
+    } catch {
+      return { ok: false, code: 'INTERNAL', message: '录音落盘失败' };
+    }
+  }
 
-  if (input.audioDataUrl) {
-    await prisma.diagnosticAsset.create({
-      data: {
-        attemptId: attempt.id,
-        kind: 'AUDIO',
-        storagePath: input.audioDataUrl,
-        mimeType: input.audioMime ?? 'audio/webm',
-        sizeBytes: Buffer.byteLength(input.audioDataUrl, 'utf8'),
-        durationSec: input.audioDurationSec ?? null,
-      },
+  let attempt;
+  try {
+    attempt = await prisma.$transaction(async (tx) => {
+      const created = await tx.diagnosticAttempt.create({
+        data: {
+          sessionId: session.id,
+          itemId: item.id,
+          sequence,
+          status: 'PENDING_EVAL',
+          responseText,
+          timeSpentSec: input.timeSpentSec ?? null,
+          technicalStatusJson,
+          evaluatorType: 'AI',
+          confidence: 'LOW',
+          rubricVersion: item.rubricVersion,
+        },
+      });
+      if (storedAudio && validatedAudio) {
+        await tx.diagnosticAsset.create({
+          data: {
+            attemptId: created.id,
+            kind: 'AUDIO',
+            storagePath: storedAudio.relativePath,
+            mimeType: validatedAudio.validated.inspection.mimeType,
+            sizeBytes: storedAudio.sizeBytes,
+            sha256: storedAudio.sha256,
+            // 与统一音频入口一致：真实容器时长四舍五入到 Int，最短按 1 秒保存。
+            durationSec: validatedAudio.validated.durationSec,
+          },
+        });
+      }
+      return created;
     });
+  } catch {
+    // Attempt 与 Asset 必须同事务；DB 任一步失败都清理本次刚写入的文件。
+    if (storedAudio) deleteUploadedFile(storedAudio.relativePath);
+    return { ok: false, code: 'INTERNAL', message: '原始作答保存失败' };
   }
 
   const rubric = item.rubricJson ? JSON.parse(item.rubricJson) as { dimensions: Array<{ labelZh: string; descriptor: string }> } : { dimensions: [] };
@@ -476,6 +524,9 @@ export async function submitDiagnosticAttempt(
         limitationsJson: JSON.stringify([data.limitations]),
         needsFollowUp: data.needs_follow_up,
         assessorType: 'AI',
+        aiCallLogId: evaluation.callLogId,
+        aiModelId: evaluation.modelId,
+        aiPromptVersionId: evaluation.promptVersionId,
       },
     });
 
@@ -572,11 +623,6 @@ export async function finalizeDiagnosticSession(
     return { ok: false, code: 'PRECONDITION', message: '还没有任何作答，无法生成报告' };
   }
 
-  await prisma.diagnosticSession.update({
-    where: { id: session.id },
-    data: { status: 'FINALIZING' },
-  });
-
   const scored = session.attempts.filter((attempt) => attempt.status === 'SCORED');
   const pending = session.attempts.filter(
     (attempt) => attempt.status === 'NEEDS_REVIEW' || attempt.status === 'PENDING_EVAL',
@@ -641,52 +687,12 @@ export async function finalizeDiagnosticSession(
     estimateSkillProfile(skill, samplesBySkill.get(skill) ?? [], expectedBySkill.get(skill) ?? []),
   );
 
-  for (const profile of profiles) {
-    await prisma.skillProfileSnapshot.upsert({
-      where: { sessionId_skill: { sessionId: session.id, skill: profile.skill } },
-      create: {
-        sessionId: session.id,
-        skill: profile.skill,
-        estimatedLevel: profile.estimatedLevel,
-        levelRangeJson: JSON.stringify(profile.levelRange),
-        confidence: profile.confidence,
-        coverageJson: JSON.stringify({
-          ratio: profile.coverageRatio,
-          subskills: profile.subskills,
-          expectedSubskills: expectedBySkill.get(profile.skill) ?? [],
-        }),
-        evidenceCount: profile.evidenceCount,
-        limitationsJson: JSON.stringify(profile.limitations),
-        needsFollowUp: profile.needsFollowUp,
-      },
-      update: {
-        estimatedLevel: profile.estimatedLevel,
-        levelRangeJson: JSON.stringify(profile.levelRange),
-        confidence: profile.confidence,
-        coverageJson: JSON.stringify({
-          ratio: profile.coverageRatio,
-          subskills: profile.subskills,
-          expectedSubskills: expectedBySkill.get(profile.skill) ?? [],
-        }),
-        evidenceCount: profile.evidenceCount,
-        limitationsJson: JSON.stringify(profile.limitations),
-        needsFollowUp: profile.needsFollowUp,
-      },
-    });
-  }
-
   const draft = buildReportDraft(profiles, skillLabel, pending.length);
 
-  const planner = await prisma.plannerSettings.findUnique({ where: { id: 1 } });
-  /**
-   * 星期模板的解析**统一走 `parseWeekdayProfiles`**（v2.7 收口）。
-   *
-   * 这里原先自己 `JSON.parse` + 自己的兜底与类型过滤，是项目里第三处解析预算配置的地方。
-   * 三处各写一份的必然结果就是某天只改了两处 —— 缺 `PlannerSettings` 时
-   * `getBudgetRange` 与 `getEffectiveBudget` 已经这么分叉过一次（周日 0 vs 60）。
-   */
-  const weekdayProfiles = parseWeekdayProfiles(planner?.weekdayProfiles);
-
+  const asOfDate = await businessToday();
+  const budgetDays = await getBudgetRange(
+    listDateRange(asOfDate, addDays(asOfDate, 89)),
+  );
   const planProfiles: PlanProfileInput[] = profiles.map((profile) => ({
     skill: profile.skill,
     estimatedLevel: profile.estimatedLevel,
@@ -695,14 +701,52 @@ export async function finalizeDiagnosticSession(
     needsFollowUp: profile.needsFollowUp,
     evidenceCount: profile.evidenceCount,
   }));
-  const plan = buildPlanDraft(planProfiles, {
-    weeklyTargetMinutes: planner?.weeklyTargetMinutes ?? null,
-    weekdayProfiles,
-    defaultDailyMinutes: planner?.defaultDailyMinutes ?? 60,
-    isUserConfirmed: planner?.isUserConfirmed ?? false,
-  });
+  const plan = buildPlanDraft(
+    planProfiles,
+    [...budgetDays.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    asOfDate,
+  );
 
   const reportId = await prisma.$transaction(async (tx) => {
+    await tx.diagnosticSession.update({
+      where: { id: session.id },
+      data: { status: 'FINALIZING', lastActivityAt: new Date() },
+    });
+
+    for (const profile of profiles) {
+      await tx.skillProfileSnapshot.upsert({
+        where: { sessionId_skill: { sessionId: session.id, skill: profile.skill } },
+        create: {
+          sessionId: session.id,
+          skill: profile.skill,
+          estimatedLevel: profile.estimatedLevel,
+          levelRangeJson: JSON.stringify(profile.levelRange),
+          confidence: profile.confidence,
+          coverageJson: JSON.stringify({
+            ratio: profile.coverageRatio,
+            subskills: profile.subskills,
+            expectedSubskills: expectedBySkill.get(profile.skill) ?? [],
+          }),
+          evidenceCount: profile.evidenceCount,
+          limitationsJson: JSON.stringify(profile.limitations),
+          needsFollowUp: profile.needsFollowUp,
+        },
+        update: {
+          estimatedLevel: profile.estimatedLevel,
+          levelRangeJson: JSON.stringify(profile.levelRange),
+          confidence: profile.confidence,
+          coverageJson: JSON.stringify({
+            ratio: profile.coverageRatio,
+            subskills: profile.subskills,
+            expectedSubskills: expectedBySkill.get(profile.skill) ?? [],
+          }),
+          evidenceCount: profile.evidenceCount,
+          limitationsJson: JSON.stringify(profile.limitations),
+          needsFollowUp: profile.needsFollowUp,
+        },
+      });
+    }
+
     const report = await tx.placementReport.create({
       data: {
         sessionId: session.id,
@@ -730,6 +774,25 @@ export async function finalizeDiagnosticSession(
       },
     });
 
+    const sameBaselineSessions = await tx.diagnosticSession.findMany({
+      where: {
+        id: { not: session.id },
+        blueprintId: session.blueprintId,
+        goalSnapshotJson: session.goalSnapshotJson,
+        report: { status: { in: ['FINAL', 'PROVISIONAL'] } },
+      },
+      select: { report: { select: { id: true } } },
+    });
+    const supersededIds = sameBaselineSessions
+      .map((row) => row.report?.id)
+      .filter((id): id is string => Boolean(id));
+    if (supersededIds.length > 0) {
+      await tx.placementReport.updateMany({
+        where: { id: { in: supersededIds } },
+        data: { status: 'SUPERSEDED', supersededById: report.id },
+      });
+    }
+
     await tx.planProposal.create({
       data: {
         reportId: report.id,
@@ -752,21 +815,23 @@ export async function finalizeDiagnosticSession(
   return { ok: true, reportId, provisional: draft.provisional };
 }
 
-export async function activatePlanProposal(
+export async function savePlanProposalDraft(
   prisma: PrismaClient,
   proposalId: string,
   editedPhases?: unknown,
 ): Promise<{ ok: true } | { ok: false; code: string; message: string }> {
   const proposal = await prisma.planProposal.findUnique({ where: { id: proposalId } });
   if (!proposal) return { ok: false, code: 'NOT_FOUND', message: '计划草案不存在' };
-  if (proposal.status === 'ACTIVE') return { ok: true };
+  if (proposal.status !== 'DRAFT') {
+    return { ok: false, code: 'PRECONDITION', message: '这份计划草案已经处理，不能再次确认' };
+  }
 
   await prisma.planProposal.update({
     where: { id: proposalId },
     data: {
-      status: 'ACTIVE',
-      activatedAt: new Date(),
-      ...(editedPhases ? { tasksJson: JSON.stringify(editedPhases) } : {}),
+      status: 'DRAFT',
+      activatedAt: null,
+      ...(editedPhases !== undefined ? { tasksJson: JSON.stringify(editedPhases) } : {}),
     },
   });
   return { ok: true };
@@ -817,6 +882,10 @@ export async function deleteDiagnosticSession(
     select: { evidenceId: true },
   });
   const evidenceIds = attempts.map((attempt) => attempt.evidenceId).filter((id): id is string => Boolean(id));
+  const audioPaths = [...new Set((await prisma.diagnosticAsset.findMany({
+    where: { attempt: { sessionId }, kind: 'AUDIO' },
+    select: { storagePath: true },
+  })).flatMap((asset) => asset.storagePath ? [asset.storagePath] : []))];
 
   await prisma.$transaction(async (tx) => {
     if (evidenceIds.length > 0) {
@@ -824,6 +893,8 @@ export async function deleteDiagnosticSession(
     }
     await tx.diagnosticSession.delete({ where: { id: sessionId } });
   });
+  // 仅在数据库删除提交后清理物理文件；旧 data URL 或非法路径会被安全删除函数忽略。
+  for (const storagePath of audioPaths) deleteUploadedFile(storagePath);
   return { ok: true };
 }
 

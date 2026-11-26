@@ -6,17 +6,18 @@
 
 import Link from 'next/link';
 import { ANALYTICS_WINDOW_DAYS } from '@/lib/constants';
-import { addDays, today } from '@/lib/date';
+import { addDays } from '@/lib/date';
 import type { GlobalFilterDto, GlobalFilterOptionsDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 
 export interface FilterBarProps {
   filter: GlobalFilterDto;
   options: GlobalFilterOptionsDto;
+  businessDate: string;
 }
 
-export function FilterBar({ filter, options }: FilterBarProps) {
-  const nowDate = today();
+export function FilterBar({ filter, options, businessDate }: FilterBarProps) {
+  const nowDate = businessDate;
   const last30 = addDays(nowDate, -(ANALYTICS_WINDOW_DAYS - 1));
 
   return (

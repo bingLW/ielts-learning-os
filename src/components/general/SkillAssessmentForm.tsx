@@ -19,7 +19,7 @@ import {
   CEFR_LEVELS,
   PRIMARY_SKILL_LABEL_ZH,
 } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { AllocationSkill, AssessmentType, AssessorKind, CefrLevel } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -31,6 +31,7 @@ export interface SkillAssessmentFormProps {
 }
 
 export function SkillAssessmentForm({ onToast, onSaved }: SkillAssessmentFormProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -39,7 +40,7 @@ export function SkillAssessmentForm({ onToast, onSaved }: SkillAssessmentFormPro
   const [cefrLevel, setCefrLevel] = useState<CefrLevel>('B1');
   const [assessmentType, setAssessmentType] = useState<AssessmentType>('SELF');
   const [score, setScore] = useState('');
-  const [assessDate, setAssessDate] = useState(today());
+  const [assessDate, setAssessDate] = useState(businessDate);
   const [assessor, setAssessor] = useState<AssessorKind>('SELF');
   const [confidence, setConfidence] = useState(3);
   const [note, setNote] = useState('');

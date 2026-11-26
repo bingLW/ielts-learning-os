@@ -291,7 +291,7 @@ const CORE_TABLES = [
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const opts = { db: DEFAULT_DB, dryRun: false, allowNoBackup: false, quiet: false };
+  const opts = { db: DEFAULT_DB, dryRun: false, checksumOnly: false, allowNoBackup: false, quiet: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--db') {
@@ -299,6 +299,8 @@ function parseArgs(argv) {
       if (!opts.db) throw new Error('--db 需要一个路径');
     } else if (arg === '--dry-run') {
       opts.dryRun = true;
+    } else if (arg === '--checksum-only') {
+      opts.checksumOnly = true;
     } else if (arg === '--allow-no-backup') {
       opts.allowNoBackup = true;
     } else if (arg === '--quiet') {
@@ -357,16 +359,28 @@ function attachmentColumnNames(db) {
     .map((line) => line.split('|')[1]);
 }
 
+// 权威 checksum 只由规范 SQL 决定；checksum-only 模式在任何 DB 检查之前返回。
+const canonicalAlters = ATTACHMENT_COLUMNS.map(
+  ([name, type]) => `ALTER TABLE "EvidenceAttachment" ADD COLUMN "${name}" ${type};`,
+);
+const canonicalSql = [...CREATE_TABLES, ...canonicalAlters, ...CREATE_INDEXES].join('\n');
+const checksum = createHash('sha256').update(canonicalSql).digest('hex').slice(0, 16);
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log(`用法：node scripts/migrations/v2.2.mjs [--db <路径>] [--dry-run] [--allow-no-backup]
+    console.log(`用法：node scripts/migrations/v2.2.mjs [--db <路径>] [--dry-run] [--checksum-only] [--allow-no-backup]
 
   --db <路径>        目标数据库（默认 prisma/dev.db）
   --dry-run          只打印将执行的语句，不写库
+  --checksum-only    只输出权威 checksum，不读/写数据库
   --allow-no-backup  跳过「必须已有 backups/dev-*.db」检查（仅用于一次性副本演练）
 `);
+    return;
+  }
+  if (opts.checksumOnly) {
+    console.log(checksum);
     return;
   }
 
@@ -387,14 +401,6 @@ function main() {
   const alters = missingColumns.map(
     ([name, type]) => `ALTER TABLE "EvidenceAttachment" ADD COLUMN "${name}" ${type};`,
   );
-
-  // 校验和必须与「本次补了哪些列」无关：用完整目标状态的 DDL 计算，
-  // 否则幂等重跑会因 alters 为空而得到不同校验和，被自己的防篡改检查拒绝。
-  const canonicalAlters = ATTACHMENT_COLUMNS.map(
-    ([name, type]) => `ALTER TABLE "EvidenceAttachment" ADD COLUMN "${name}" ${type};`,
-  );
-  const canonicalSql = [...CREATE_TABLES, ...canonicalAlters, ...CREATE_INDEXES].join('\n');
-  const checksum = createHash('sha256').update(canonicalSql).digest('hex').slice(0, 16);
 
   // 同版本校验和必须一致；不同则拒绝执行，避免「脚本改过但仍标已迁移」。
   let alreadyApplied = false;

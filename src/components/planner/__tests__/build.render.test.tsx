@@ -2,8 +2,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { DISCLAIMER_CEFR } from '@/lib/constants';
 import { PlanBuilderBody } from '../build/PlanBuilderBody';
+import { CarryoverPanel } from '../build/CarryoverPanel';
 import { builderContext, draftDto } from './fixtures';
 import type { DraftDto } from '@/lib/queries/planner';
+import type { CarryoverDecisionView, CarryoverPreview } from '@/lib/domain/carryover';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: () => {}, push: () => {} }),
@@ -15,9 +17,15 @@ vi.mock('@/lib/actions/planner', () => ({
   saveDraftAction: vi.fn(),
 }));
 
-function render(context = builderContext(), horizonDays = 7, draft: DraftDto | null = null) {
+function render(context = builderContext(), horizonDays = 7, draft: DraftDto | null = null, budgetOverrideMinutes?: number) {
   return renderToStaticMarkup(
-    <PlanBuilderBody context={context} horizonDays={horizonDays} draft={draft} />,
+    <PlanBuilderBody
+      context={context}
+      horizonDays={horizonDays}
+      draft={draft}
+      asOfDate="2026-11-26"
+      budgetOverrideMinutes={budgetOverrideMinutes}
+    />,
   );
 }
 
@@ -85,5 +93,52 @@ describe('T12 渲染：/planner/build', () => {
     expect(html).toContain('90 天周期是规划展望');
     expect(html).toContain('不承诺分数提升');
     expect(html).toContain(DISCLAIMER_CEFR);
+  });
+
+  it('⑥ 统一入口带入基准日与预算 override', () => {
+    const html = render(builderContext({ horizonDays: 1, layer: 'DAY' }), 1, null, 90);
+    expect(html).toContain('基准日 2026-11-26');
+    expect(html).toContain('value="90"');
+  });
+
+  it('⑦ carryover 四类分组展示原因、原日期、滚存次数、分钟与最终去向', () => {
+    const base: CarryoverDecisionView = {
+      taskId: 'carry-task-1',
+      module: 'READING',
+      originalDate: '2026-11-20',
+      previousPlanDate: '2026-11-22',
+      previousPlanVersion: 3,
+      previousPriority: 'P0',
+      finalPriority: 'P0',
+      plannedMinutes: 30,
+      actualMinutes: 10,
+      remainingMinutes: 20,
+      movedCount: 1,
+      splittable: true,
+      minChunkMinutes: 5,
+      overdueDays: 3,
+      action: 'PROMOTE',
+      reason: '优先补做',
+      destination: '2026-11-25 / P0 / TODO',
+    };
+    const decisions: CarryoverDecisionView[] = [
+      base,
+      { ...base, taskId: 'carry-task-2', action: 'DEMOTE', finalPriority: 'P1', reason: '降低优先级', destination: '2026-11-25 / P1 / TODO' },
+      { ...base, taskId: 'carry-task-3', action: 'BACKLOG', finalPriority: null, reason: '进入待办池', destination: 'BACKLOG / DEFERRED' },
+      { ...base, taskId: 'carry-task-4', action: 'ABANDON', finalPriority: null, reason: '超过顺延上限', destination: 'CANCELLED / 保留历史' },
+    ];
+    const carryover: CarryoverPreview = {
+      asOfDate: '2026-11-25', budgetMinutes: 60, fingerprint: 'a'.repeat(64), decisions,
+      promotedCount: 1, demotedCount: 1, backlogCount: 1, abandonedCount: 1, overflowCount: 0, warnings: [],
+    };
+    const html = renderToStaticMarkup(<CarryoverPanel carryover={carryover} />);
+
+    for (const title of ['今日纳入', '降低优先级后纳入', '进入 Backlog', '本次放弃（保留历史）']) {
+      expect(html).toContain(title);
+    }
+    for (const text of ['优先补做', '原安排 2026-11-20', '上次计划 2026-11-22 / v3', '已滚存 1 次', '计划 30 分钟', '已完成 10 分钟', '本次剩余 20 分钟', '最终去向：BACKLOG / DEFERRED']) {
+      expect(html).toContain(text);
+    }
+    expect(renderToStaticMarkup(<CarryoverPanel carryover={null} />)).toBe('');
   });
 });

@@ -6,7 +6,8 @@
 
 import { VOCAB_DIMENSIONS } from '@/lib/constants';
 import type { VocabDimension, VocabDimensionStatus, VocabPracticeMode, VocabSessionGranularity } from '@/lib/constants';
-import { addDays, diffDays, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { addDays, diffDays, endOfBusinessDay, toBusinessDate, toUtcInstant } from '@/lib/date';
 import { parseJson, parseStringArray } from '@/lib/json';
 import { prisma } from '@/lib/prisma';
 import type {
@@ -22,7 +23,8 @@ import type {
 import type { VocabIntegrationMode } from '@/lib/constants';
 
 export async function getVocabLibraryStats(): Promise<VocabLibraryStatsDto> {
-  const now = today();
+  const timeZone = await getBusinessTimezone();
+  const now = await businessToday();
   const yesterday = addDays(now, -1);
 
   const [items, decks, dueStates, introducedToday, lastSource, lastSession, verifiedGroups] =
@@ -35,7 +37,7 @@ export async function getVocabLibraryStats(): Promise<VocabLibraryStatsDto> {
           OR: [{ lastVerifiedAt: null }, { lastVerifiedAt: { lte: yesterday } }],
         },
       }),
-      prisma.vocabularyItem.count({ where: { archivedAt: null, createdAt: { gte: new Date(`${now}T00:00:00Z`) } } }),
+      prisma.vocabularyItem.count({ where: { archivedAt: null, createdAt: { gte: toUtcInstant(now, '00:00', timeZone) } } }),
       prisma.vocabularySource.findFirst({ orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
       prisma.vocabularyPracticeSession.findFirst({ orderBy: { startedAt: 'desc' }, select: { startedAt: true } }),
       prisma.vocabularyKnowledgeState.groupBy({
@@ -77,7 +79,8 @@ export interface VocabDashboardSummary {
 
 /** Dashboard 词汇卡片：只取五个数，不把七维压成「已掌握」。 */
 export async function getVocabDashboardSummary(): Promise<VocabDashboardSummary> {
-  const date = today();
+  const timeZone = await getBusinessTimezone();
+  const date = await businessToday();
   const [items, dueReview, introducedToday, retestPending, retestDue, assignment, lastSession] =
     await Promise.all([
       prisma.vocabularyItem.count({ where: { archivedAt: null } }),
@@ -88,7 +91,7 @@ export async function getVocabDashboardSummary(): Promise<VocabDashboardSummary>
         },
       }),
       prisma.vocabularyItem.count({
-        where: { archivedAt: null, createdAt: { gte: new Date(`${date}T00:00:00Z`) } },
+        where: { archivedAt: null, createdAt: { gte: toUtcInstant(date, '00:00', timeZone) } },
       }),
       prisma.retestSchedule.count({
         where: { note: { startsWith: 'VOCAB|' }, status: 'PENDING' },
@@ -126,7 +129,8 @@ export interface VocabRetestSummary {
 
 /** 词汇延迟复测统计：待办 / 到期 / 区间内完成 + 最近 10 条排期。 */
 export async function getVocabRetestSummary(from: string, to: string): Promise<VocabRetestSummary> {
-  const date = today();
+  const timeZone = await getBusinessTimezone();
+  const date = await businessToday();
   const vocabOnly = { note: { startsWith: 'VOCAB|' } };
   const [pending, due, completedInRange, upcoming] = await Promise.all([
     prisma.retestSchedule.count({ where: { ...vocabOnly, status: 'PENDING' } }),
@@ -138,8 +142,8 @@ export async function getVocabRetestSummary(from: string, to: string): Promise<V
         ...vocabOnly,
         status: 'DONE',
         completedAt: {
-          gte: new Date(`${from}T00:00:00Z`),
-          lte: new Date(`${to}T23:59:59Z`),
+          gte: toUtcInstant(from, '00:00', timeZone),
+          lt: endOfBusinessDay(to, timeZone),
         },
       },
     }),
@@ -367,6 +371,7 @@ export async function getVocabWordDetail(itemId: string): Promise<VocabWordDetai
     },
   });
   if (!item) return null;
+  const timeZone = await getBusinessTimezone();
 
   const dimensionMap = new Map(item.knowledge.map((state) => [state.dimension, state]));
   const dimensions = VOCAB_DIMENSIONS.map((dimension) => {
@@ -408,7 +413,7 @@ export async function getVocabWordDetail(itemId: string): Promise<VocabWordDetai
       evidenceType: link.evidence.evidenceType,
       level: link.evidence.level,
       score: link.evidence.score,
-      businessDate: link.evidence.createdAt.toISOString().slice(0, 10),
+      businessDate: toBusinessDate(link.evidence.createdAt, timeZone),
     })),
   };
 }
@@ -493,15 +498,21 @@ export async function loadVocabCandidateContext(assignmentDate: string): Promise
 }
 
 export async function getVocabAnalytics(from: string, to: string): Promise<VocabAnalyticsDto> {
+  const timeZone = await getBusinessTimezone();
   const sessions = await prisma.vocabularyPracticeSession.findMany({
-    where: { startedAt: { gte: new Date(`${from}T00:00:00Z`), lte: new Date(`${to}T23:59:59Z`) } },
+    where: {
+      startedAt: {
+        gte: toUtcInstant(from, '00:00', timeZone),
+        lt: endOfBusinessDay(to, timeZone),
+      },
+    },
     orderBy: { startedAt: 'asc' },
   });
 
   const daily = new Map<string, { minutes: number; sessions: number; correct: number; incorrect: number }>();
   const modes = new Map<string, number>();
   for (const session of sessions) {
-    const date = session.startedAt.toISOString().slice(0, 10);
+    const date = toBusinessDate(session.startedAt, timeZone);
     const entry = daily.get(date) ?? { minutes: 0, sessions: 0, correct: 0, incorrect: 0 };
     entry.minutes += Math.round((session.effectiveSeconds ?? session.durationSeconds) / 60);
     entry.sessions += 1;
@@ -513,12 +524,17 @@ export async function getVocabAnalytics(from: string, to: string): Promise<Vocab
   }
 
   const newWords = await prisma.vocabularyItem.findMany({
-    where: { createdAt: { gte: new Date(`${from}T00:00:00Z`), lte: new Date(`${to}T23:59:59Z`) } },
+    where: {
+      createdAt: {
+        gte: toUtcInstant(from, '00:00', timeZone),
+        lt: endOfBusinessDay(to, timeZone),
+      },
+    },
     select: { createdAt: true },
   });
   const newPerDay = new Map<string, number>();
   for (const item of newWords) {
-    const date = item.createdAt.toISOString().slice(0, 10);
+    const date = toBusinessDate(item.createdAt, timeZone);
     newPerDay.set(date, (newPerDay.get(date) ?? 0) + 1);
   }
 

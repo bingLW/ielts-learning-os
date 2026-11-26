@@ -4,6 +4,7 @@
  * 与复习中心（ReviewTask）严格分离：这里只读 RetestSchedule，不合并知识型复习。
  */
 
+import { businessToday } from '@/lib/businessTime';
 import { today } from '@/lib/date';
 import { previewOutput } from '@/lib/domain/evidence';
 import {
@@ -41,7 +42,7 @@ export async function listRetestQueue(): Promise<RetestQueueItemDto[]> {
     take: 500,
   });
 
-  const todayStr = today();
+  const todayStr = await businessToday();
   const mapped: RetestQueueItemDto[] = rows.map((row) => ({
     id: row.id,
     parentEvidenceId: row.parentEvidenceId,
@@ -61,8 +62,8 @@ export async function listRetestQueue(): Promise<RetestQueueItemDto[]> {
   return sortRetestQueue(mapped);
 }
 
-export function getRetestStats(rows: RetestQueueItemDto[]): RetestStats {
-  return summarizeRetests(rows, today());
+export function getRetestStats(rows: RetestQueueItemDto[], todayStr: string = today()): RetestStats {
+  return summarizeRetests(rows, todayStr);
 }
 
 /** 从 /retest 进入证据录入时的上下文；非待完成排期返回 null。 */

@@ -8,7 +8,8 @@
 import { AI_ENGINE_DEFAULTS, AI_HINT_MAX_LEVEL } from '@/lib/constants';
 import { loadEngineConfig } from '@/lib/ai/config';
 import { budgetConfigFrom, budgetWindows, evaluateBudget } from '@/lib/ai/meter';
-import { lastNDays, toBusinessDate, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { lastNDays, toBusinessDate } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
 
 function safeJson<T>(raw: string | null | undefined): T | null {
@@ -127,7 +128,7 @@ export async function getAiCoachHomeData() {
 }
 
 export async function getAiAdminData() {
-  const [engine, setting, models, templates, promptVersions, credentialRow] = await Promise.all([
+  const [engine, setting, models, templates, promptVersions, credentialRow, learnerProfile] = await Promise.all([
     loadEngineConfig(prisma),
     prisma.aIEngineSetting.findUnique({ where: { id: 'default' } }),
     prisma.aIModelConfig.findMany({ orderBy: { createdAt: 'asc' } }),
@@ -137,12 +138,17 @@ export async function getAiAdminData() {
     }),
     prisma.promptVersion.count(),
     prisma.aIProviderCredential.findUnique({ where: { id: 'default' } }),
+    prisma.learnerProfile.findUnique({
+      where: { id: 'default' },
+      select: { externalAiConsent: true },
+    }),
   ]);
   const externalModelRow = models.find(
     (model) => model.isDefault && model.active && model.provider !== 'mock',
   );
   return {
     engine,
+    externalAiConsent: learnerProfile?.externalAiConsent === true,
     setting:
       setting ??
       ({
@@ -174,7 +180,7 @@ export async function getAiAdminData() {
 }
 
 export async function getAiUsageData(days = 14) {
-  const [engine, logs, sessionCount] = await Promise.all([
+  const [engine, logs, sessionCount, setting] = await Promise.all([
     loadEngineConfig(prisma),
     prisma.aICallLog.findMany({
       where: { createdAt: { gte: new Date(Date.now() - days * 86_400_000) } },
@@ -182,9 +188,14 @@ export async function getAiUsageData(days = 14) {
       take: 500,
     }),
     prisma.aILearningSession.count(),
+    prisma.aIEngineSetting.findUnique({
+      where: { id: 'default' },
+      select: { budgetReservedUsd: true },
+    }),
   ]);
+  const timeZone = engine.timeZone;
 
-  const { dayStart, monthStart } = budgetWindows(new Date());
+  const { dayStart, monthStart } = budgetWindows(new Date(), timeZone);
   const [daily, monthly] = await Promise.all([
     prisma.aICallLog.aggregate({
       where: { createdAt: { gte: dayStart }, status: { in: ['OK', 'MOCK'] } },
@@ -197,13 +208,13 @@ export async function getAiUsageData(days = 14) {
   ]);
   const budget = evaluateBudget(
     {
-      dailyUsd: daily._sum.estimatedCostUsd ?? 0,
-      monthlyUsd: monthly._sum.estimatedCostUsd ?? 0,
+      dailyUsd: (daily._sum.estimatedCostUsd ?? 0) + (setting?.budgetReservedUsd ?? 0),
+      monthlyUsd: (monthly._sum.estimatedCostUsd ?? 0) + (setting?.budgetReservedUsd ?? 0),
     },
     budgetConfigFrom(engine.setting),
   );
 
-  const dates = lastNDays(days, today());
+  const dates = lastNDays(days, await businessToday());
   const byDate = new Map(
     dates.map((date) => [
       date,
@@ -216,7 +227,7 @@ export async function getAiUsageData(days = 14) {
   let totalLatency = 0;
 
   for (const log of logs) {
-    const key = toBusinessDate(log.createdAt);
+    const key = toBusinessDate(log.createdAt, timeZone);
     const bucket = byDate.get(key);
     if (bucket) {
       bucket.calls += 1;

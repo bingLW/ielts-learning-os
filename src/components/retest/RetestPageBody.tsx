@@ -39,7 +39,7 @@ import { Toast, useToastState } from '@/components/ui/Toast';
 export interface RetestPageBodyProps {
   rows: RetestQueueItemDto[];
   stats: RetestStats;
-  /** 服务器业务日期（Asia/Singapore），避免客户端时区漂移。 */
+  /** 服务器按用户配置时区计算的业务日期，避免客户端时区漂移。 */
   todayStr: string;
 }
 

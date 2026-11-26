@@ -19,6 +19,7 @@ import {
   LEARNING_EVIDENCE_TYPE_LABEL_ZH,
 } from '@/lib/constants';
 import { nextChainType } from '@/lib/domain/evidence';
+import { useBusinessDateTimeFormatter } from '@/components/layout/BusinessTimeProvider';
 import type { EvidenceDetailDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
@@ -27,20 +28,6 @@ export interface EvidenceListProps {
   rows: EvidenceDetailDto[];
   onDerive: (row: EvidenceDetailDto) => void;
   onArchive: (row: EvidenceDetailDto) => void;
-}
-
-function formatDateTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Singapore',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
 }
 
 function typeBadgeClass(row: EvidenceDetailDto): string {
@@ -52,6 +39,7 @@ function typeBadgeClass(row: EvidenceDetailDto): string {
 
 export function EvidenceList({ rows, onDerive, onArchive }: EvidenceListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const formatDateTime = useBusinessDateTimeFormatter();
 
   return (
     <ul className="divide-y divide-line">

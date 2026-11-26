@@ -16,7 +16,8 @@ import {
   REVIEW_INTERVAL_DAYS,
   VOCAB_NEW_DEFAULT,
 } from '@/lib/constants';
-import { addDays, diffDays, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { addDays, diffDays } from '@/lib/date';
 import { quizAccuracy, suggestNewWordCount } from '@/lib/domain/vocab';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
@@ -60,7 +61,7 @@ export async function createVocabWordAction(
     });
   }
 
-  const todayStr = today();
+  const todayStr = await businessToday();
   const natural = addDays(input.learnedDate, REVIEW_INTERVAL_DAYS.D1);
   // 新点不落在过去（架构 §10-5）；已存在的历史点才允许保留逾期
   const firstReviewDate = diffDays(todayStr, natural) < 0 ? todayStr : natural;
@@ -292,6 +293,6 @@ export async function submitVocabQuizAction(raw: unknown): Promise<
 
 /** 今日抽测计数（页面提示「今天已抽测 N 次」）。 */
 export async function countQuizTodayAction(): Promise<ActionResult<{ count: number }>> {
-  const count = await prisma.vocabQuiz.count({ where: { quizDate: today() } });
+  const count = await prisma.vocabQuiz.count({ where: { quizDate: await businessToday() } });
   return ok({ count });
 }

@@ -129,6 +129,9 @@ export function MistakeList({
                   <p className="text-[10px] text-inkMuted">
                     我的答案 {row.myAnswer ?? '—'} / 正确 {row.correctAnswer}
                   </p>
+                  <p className="text-[10px] text-inkMuted">
+                    {row.studyRecordId ? `学习记录 ${row.studyRecordId.slice(0, 10)}` : '未归属学习记录'}
+                  </p>
                 </td>
                 <td className="py-1.5 pr-2">
                   <TagBadge tone="warn">{row.errorCategoryLabel}</TagBadge>
@@ -198,6 +201,9 @@ export function MistakeList({
               <TagBadge tone="warn">{row.errorCategoryLabel}</TagBadge>
               {row.isMastered ? <TagBadge tone="info">已掌握</TagBadge> : null}
               <TagBadge>{row.sourceLabel}</TagBadge>
+              <span className="text-[10px] text-inkMuted">
+                {row.studyRecordId ? `学习记录 ${row.studyRecordId.slice(0, 10)}` : '未归属学习记录'}
+              </span>
             </div>
             <div className="mt-2 flex flex-wrap gap-1">
               <Button variant="ghost" size="sm" onClick={() => onEdit(row)}>

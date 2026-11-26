@@ -12,55 +12,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma, path } = await createTestDb([
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'mistake',
-  'studyRecord',
-  'studySessionDaySplit',
-  'evidenceRecord',
-  'studySession',
-  'skillProfile',
-  'goalMilestone',
-  'learningGoal',
-  'weeklyFocus',
-  'learningCycle',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'planningSnapshot',
-  'planTask',
-  'planVersion',
-  'dailyBudget',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'plannerSettings',
-  'skillAllocationProfile',
-  'stageAcceptanceItem',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma, cleanup } = await createTestDb();
 
 const { generatePlanPreviewAction, confirmPlanVersionAction } = await import('@/lib/actions/planner');
 
@@ -70,6 +22,7 @@ const INPUT = { purpose: 'GENERATE' as const, asOfDate: AS_OF, horizonDays: 1, s
 
 /** ⑧ 用独立基准日，避免与 ⑦ 的同输入快照复用成同一个 previewToken（会撞幂等键）。 */
 const INPUT_ALT = { purpose: 'GENERATE' as const, asOfDate: '2026-11-26', horizonDays: 1, stageId: STAGE_ID };
+const INPUT_OVERRIDE = { purpose: 'GENERATE' as const, asOfDate: '2026-11-27', horizonDays: 1, stageId: STAGE_ID };
 
 beforeAll(async () => {
   await prisma.stage.create({
@@ -91,6 +44,9 @@ beforeAll(async () => {
   await prisma.dailyBudget.create({
     data: { date: '2026-11-26', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
   });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-27', plannedAvailableMinutes: 90, isRestDay: false, source: 'USER' },
+  });
   await prisma.learningGoal.create({
     data: { goalType: 'GENERAL_ENGLISH', name: '通用英语', status: 'ACTIVE', targetValue: 'B2' },
   });
@@ -98,8 +54,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('T07 确认/版本 action（AC-9）', () => {
@@ -130,6 +85,26 @@ describe('T07 确认/版本 action（AC-9）', () => {
     for (const version of versions) {
       expect(['GENERATE', 'MANUAL_ADJUST']).toContain(version.changeSource);
     }
+  });
+
+  it('⑨ 预览预算 60、确认预算 90 返回 CONFLICT 且零写入', async () => {
+    const preview = await generatePlanPreviewAction({ ...INPUT_OVERRIDE, budgetOverrideMinutes: 60 });
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const tasksBefore = await prisma.planTask.count();
+    const versionsBefore = await prisma.planVersion.count();
+
+    const confirm = await confirmPlanVersionAction({
+      ...INPUT_OVERRIDE,
+      budgetOverrideMinutes: 90,
+      snapshotId: preview.data.snapshotId,
+      previewToken: preview.data.previewToken,
+    });
+    expect(confirm.ok).toBe(false);
+    if (confirm.ok) return;
+    expect(confirm.code).toBe('CONFLICT');
+    expect(await prisma.planTask.count()).toBe(tasksBefore);
+    expect(await prisma.planVersion.count()).toBe(versionsBefore);
   });
 
   it('⑧ PlanVersion.beforeSnapshot / afterSnapshot 均可 JSON 解析', async () => {

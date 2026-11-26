@@ -16,12 +16,12 @@ import {
   submitAttemptSchema,
 } from '@/lib/schema/diagnostics';
 import {
-  activatePlanProposal,
   createDiagnosticSession,
   createRetestSession,
   deleteDiagnosticSession,
   finalizeDiagnosticSession,
   requestDiagnosticReview,
+  savePlanProposalDraft,
   setSessionPaused,
   submitDiagnosticAttempt,
 } from '@/lib/diagnostic/service';
@@ -67,7 +67,8 @@ export async function submitAttemptAction(
 
   const result = await submitDiagnosticAttempt(prisma, parsed.data);
   if (!result.ok) {
-    return fail(result.code === 'NOT_FOUND' ? 'NOT_FOUND' : 'VALIDATION', result.message);
+    const code = result.code === 'NOT_FOUND' ? 'NOT_FOUND' : result.code === 'INTERNAL' ? 'INTERNAL' : 'VALIDATION';
+    return fail(code, result.message);
   }
   revalidatePath(`/diagnostics/${parsed.data.sessionId}`);
   return ok({
@@ -103,14 +104,14 @@ export async function finalizeDiagnosticAction(
   return ok({ reportId: result.reportId, provisional: result.provisional });
 }
 
-export async function activatePlanAction(raw: unknown): Promise<ActionResult<{ activated: true }>> {
+export async function confirmDiagnosticPlanAction(raw: unknown): Promise<ActionResult<{ proposalId: string; status: 'DRAFT' }>> {
   const parsed = activatePlanSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
-  const result = await activatePlanProposal(prisma, parsed.data.proposalId, parsed.data.tasks);
-  if (!result.ok) return fail('NOT_FOUND', result.message);
+  const result = await savePlanProposalDraft(prisma, parsed.data.proposalId, parsed.data.tasks);
+  if (!result.ok) return fail(result.code as 'NOT_FOUND' | 'PRECONDITION', result.message);
   revalidatePath('/diagnostics');
-  revalidatePath('/plan');
-  return ok({ activated: true });
+  revalidatePath('/planner/build');
+  return ok({ proposalId: parsed.data.proposalId, status: 'DRAFT' });
 }
 
 export async function requestReviewAction(raw: unknown): Promise<ActionResult<{ requested: true }>> {

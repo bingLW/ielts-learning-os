@@ -21,7 +21,7 @@ import {
   REVIEW_STAGE_LABEL_ZH,
 } from '@/lib/constants';
 import { judgeEgiuColor } from '@/lib/domain/color';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { ReviewStageCode } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { ColorBadge } from '@/components/ui/ColorBadge';
@@ -47,11 +47,12 @@ export function ReviewEntryForm({
   disabled = false,
   onToast,
 }: ReviewEntryFormProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const [reviewDate, setReviewDate] = useState(today());
+  const [reviewDate, setReviewDate] = useState(businessDate);
   const [reviewStage, setReviewStage] = useState<ReviewStageCode>(defaultStage);
   const [total, setTotal] = useState('5');
   const [correct, setCorrect] = useState('4');

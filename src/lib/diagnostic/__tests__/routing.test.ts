@@ -10,6 +10,8 @@ import {
 } from '@/lib/diagnostic/routing';
 import { validateBankSeeds, DIAGNOSTIC_ITEM_SEEDS, pickInitialItemCodes } from '@/lib/diagnostic/bank';
 import { buildPlanDraft } from '@/lib/diagnostic/plan';
+import { resolveEffectiveBudget } from '@/lib/domain/budget';
+import { addDays } from '@/lib/date';
 
 const mcq = { taskType: 'MCQ', correctAnswer: 'B', optionsJson: JSON.stringify([
   { key: 'A', text: '5 点' },
@@ -224,12 +226,31 @@ describe('题库种子与计划预算', () => {
   });
 
   it('计划使用每周预算而不是每天 240 分钟', () => {
+    const asOfDate = '2026-11-27';
+    const dailyBudgets = Array.from({ length: 90 }, (_, offset) => {
+      const date = addDays(asOfDate, offset);
+      const isRestDay = offset === 2;
+      return resolveEffectiveBudget({
+        date,
+        daily: {
+          id: `explicit-${offset}`,
+          plannedAvailableMinutes: isRestDay ? 0 : 50,
+          isRestDay,
+          tierCode: isRestDay ? 'REST' : 'CUSTOM',
+          budgetType: isRestDay ? 'REST_DAY' : 'CUSTOM',
+          source: 'USER',
+          isInitialSuggestion: false,
+        },
+        settings: null,
+      });
+    });
     const plan = buildPlanDraft(
       [
         { skill: 'LISTENING', estimatedLevel: 'A2', levelRange: ['A1', 'A2'], confidence: 'MEDIUM', needsFollowUp: true, evidenceCount: 2 },
         { skill: 'READING', estimatedLevel: 'B1', levelRange: ['A2', 'B1'], confidence: 'MEDIUM', needsFollowUp: false, evidenceCount: 2 },
       ],
-      { weeklyTargetMinutes: 300, weekdayProfiles: [60, 60, 60, 60, 60, 60, 0], defaultDailyMinutes: 60, isUserConfirmed: true },
+      dailyBudgets,
+      asOfDate,
     );
     expect(plan.budget.weeklyMinutes).toBe(300);
     expect(plan.budget.dailyAverage).toBe(43);

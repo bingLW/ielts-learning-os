@@ -32,7 +32,7 @@ import {
   suggestCandidateOrder,
   type TaskExplanationSeed,
 } from '@/lib/ai/planner';
-import { CANDIDATE_DEFAULT_MINUTES, PRIORITY_FACTOR_KEYS, tierCodeOf } from '@/lib/constants';
+import { CANDIDATE_DEFAULT_MINUTES, MODULE_META, PRIORITY_FACTOR_KEYS, TZ_NAME, tierCodeOf } from '@/lib/constants';
 import { checkAllocation } from '@/lib/domain/allocation';
 import {
   generateAdaptivePlan,
@@ -43,8 +43,12 @@ import {
 import { mapCandidateSourceToPlanTask, type GapKindForMapping } from '@/lib/domain/planWriteMap';
 import type { Prerequisite, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
 import { resolveAiPicks } from '@/lib/domain/taskCandidate';
+import { defaultTaskEstimate } from '@/lib/domain/taskEstimate';
 import { assertReasonOnlyChanged, FACTOR_LABEL_ZH } from '@/lib/domain/taskPriority';
 import { prisma } from '@/lib/prisma';
+import { previewCarryover } from '@/lib/services/carryoverApply';
+import { loadPlanInventory } from '@/lib/services/planInventory';
+import type { CarryoverPreview } from '@/lib/domain/carryover';
 import {
   buildPlanningSnapshot,
   type PlanEngineContextV27,
@@ -58,6 +62,7 @@ import type {
   PrimarySkill,
   SkillAllocation,
   SkillId,
+  TaskEstimate,
   TaskPriority,
   TaskSourceKind,
 } from '@/lib/types';
@@ -85,6 +90,8 @@ export const HORIZON_DAYS = [1, 7, 30, 90] as const;
 export interface BuildPlanInput {
   purpose: 'GENERATE' | 'REPLAN';
   asOfDate: string;
+  /** 业务入口显式传入用户 IANA 时区；缺省仅兼容既有内部调用。 */
+  timeZone?: string;
   /** 1（日）| 7 | 30 | 90 */
   horizonDays: number;
   stageId?: string;
@@ -96,6 +103,9 @@ export interface BuildPlanInput {
   allowAi?: boolean;
   /** 草稿 ID：T07 复用 `PlanningSnapshot.id`；预览仍零写 PlanTask/PlanVersion。 */
   draftId?: string | null;
+  /** 诊断计划草案；进入同一候选/快照/装箱链路，不直接写正式任务。 */
+  proposalId?: string;
+  persistSnapshot?: boolean;
 }
 
 /** 三态徽章（`41 §4.3`）：T07 恒为 `RULE`。 */
@@ -115,6 +125,10 @@ export interface TaskExplanation {
   /** 直接取 candidate.estMinutes / minMinutes（不是被截断后的 item.minutes）。 */
   estMinutes: number;
   minMinutes: number;
+  /** 生成时的估时快照（区间、校准来源、模型/规则版本）。 */
+  estimate: TaskEstimate | null;
+  /** 候选归属/阶段元数据，确认时原样写入 decisionJson。 */
+  candidateMeta: TaskCandidateDraft['meta'] | null;
   /** 直接取 decision.priority。 */
   priority: TaskPriority;
   /** 直接取 candidate.prerequisites + 同一次评分的结果（met 由 decision.eligibility 决定）。 */
@@ -130,6 +144,7 @@ export interface TaskExplanation {
 /** 一条计划草稿（预览态，未写库）。 */
 export interface PlannedTaskDraft {
   candidateKey: string | null;
+  title: string;
   module: ModuleId;
   skill: SkillId;
   primarySkill: PrimarySkill;
@@ -211,6 +226,19 @@ export interface BuildPlanResult {
   layerStructure: PlanLayerStructure | null;
   /** 派生层级（`horizonDays` 唯一决定）。 */
   layer: PlanLayer;
+  /** GENERATE 日/周层的上期任务裁决；其他层级与 REPLAN 为 null。 */
+  carryover: CarryoverPreview | null;
+  inventoryFingerprint: string;
+  draftFingerprint: string;
+  proposal: {
+    id: string;
+    fingerprint: string;
+    window: '7D' | '30D' | '90D';
+    taskCount: number;
+    scheduledTaskCount: number;
+    totalMinutes: number;
+    scheduledMinutes: number;
+  } | null;
 }
 
 /**
@@ -221,9 +249,17 @@ export interface BuildPlanResult {
  * 没有这个入参），但会改变落库计划分钟 —— 不签它，preview 传 override=60、confirm 传 90
  * 会命中同一 token 却写出不同计划（「预览 == 实际」被打破）。
  */
-export function previewTokenOf(snapshotId: string, inputHash: string, budgetOverrideMinutes?: number): string {
+export function previewTokenOf(
+  snapshotId: string,
+  inputHash: string,
+  budgetOverrideMinutes?: number,
+  carryoverFingerprint?: string,
+  inventoryFingerprint?: string,
+  draftFingerprint?: string,
+  proposalFingerprint?: string,
+): string {
   return createHash('sha256')
-    .update(['plan', snapshotId, inputHash, budgetOverrideMinutes ?? ''].join('|'), 'utf8')
+    .update(['plan', snapshotId, inputHash, budgetOverrideMinutes ?? '', carryoverFingerprint ?? '', inventoryFingerprint ?? '', draftFingerprint ?? '', proposalFingerprint ?? ''].join('|'), 'utf8')
     .digest('hex')
     .slice(0, 24);
 }
@@ -324,6 +360,7 @@ function assembleDraft(
 
   return {
     candidateKey: key,
+    title: candidate?.title ?? MODULE_META[item.module].labelZh,
     module: item.module,
     skill: item.skill,
     primarySkill: item.primarySkill,
@@ -342,14 +379,16 @@ function assembleDraft(
         : null,
       estMinutes: candidate?.estMinutes ?? item.minutes,
       minMinutes: candidate?.minMinutes ?? item.minChunkMinutes,
+      estimate: candidate?.meta.estimate ?? defaultTaskEstimate(item.minutes),
+      candidateMeta: candidate?.meta ?? null,
       priority: item.priority,
       prerequisites: (candidate?.prerequisites ?? []).map((p) => ({
         text: prerequisiteText(p),
         met,
       })),
-      expectedOutput: candidate?.expectedOutput ?? null,
+      expectedOutput: candidate?.expectedOutput ?? '完成任务并记录可检查产出（答案、录音、文字或练习结果）',
       consequenceIfSkipped: decision?.consequenceIfSkipped ?? null,
-      origin: 'RULE',
+      origin: candidate?.meta.diagnosticProposal ? 'USER_EDIT' : 'RULE',
       wordingSource: polishedReason ? 'AI_POLISHED' : 'TEMPLATE',
     },
     // `byAi` 的唯一赋值点（`41 §6.5`）：四个条件必须同时成立。
@@ -681,12 +720,18 @@ async function applyAiLayer(args: {
  * @param input 用途 / 基准日 / 视野 / 阶段
  */
 export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<BuildPlanResult>> {
+  if (input.persistSnapshot === false && input.allowAi === true) {
+    return fail('VALIDATION', '零写预览不调用 AI；请将 allowAi 设为 false 后重试');
+  }
   const snapshot = await buildPlanningSnapshot({
+    persist: input.persistSnapshot,
     purpose: input.purpose,
     asOfDate: input.asOfDate,
+    timeZone: input.timeZone ?? TZ_NAME,
     horizonDays: input.horizonDays,
     stageId: input.stageId,
     planDate: input.planDate,
+    proposalId: input.proposalId,
   });
   if (!snapshot.ok) return fail(snapshot.code, snapshot.error);
 
@@ -779,24 +824,89 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
       : day,
   );
 
+  const todayBudget = budgetDays.find((day) => day.date === input.asOfDate);
+  const inventory = await loadPlanInventory(input.asOfDate, budgetDays.at(-1)?.date ?? input.asOfDate);
+  const carryover = input.purpose === 'GENERATE' && (layer === 'DAY' || layer === 'WEEK') && todayBudget
+    ? await previewCarryover(input.asOfDate, todayBudget.minutes)
+    : null;
+  const carryoverMinutes = carryover?.decisions
+    .filter((decision) => decision.action === 'PROMOTE' || decision.action === 'DEMOTE')
+    .reduce((sum, decision) => sum + decision.remainingMinutes, 0) ?? 0;
+  if (carryover) warnings.push(...carryover.warnings);
+
   let layerStructure: PlanLayerStructure | null = null;
   const ruleDays: RuleDayPlan[] = [];
+  const proposalRemaining = new Map(
+    context.candidates
+      .filter((candidate) => candidate.meta.diagnosticProposal)
+      .map((candidate) => [candidate.candidateKey, candidate.estMinutes] as const),
+  );
+  const candidateRemaining = new Map(
+    context.candidates.map((candidate) => [candidate.candidateKey, candidate.estMinutes] as const),
+  );
+  const scheduledProposalKeys = new Set<string>();
+  const proposalCandidates = context.candidates.filter((candidate) => candidate.meta.diagnosticProposal);
+  let proposalTotalMinutes = 0;
+  for (const candidate of proposalCandidates) proposalTotalMinutes += candidate.estMinutes;
 
-  if (layer === 'MONTH' || layer === 'CYCLE') {
+  if ((layer === 'MONTH' || layer === 'CYCLE') && !context.proposal) {
     // MONTH/CYCLE 只产结构、不排明细任务（PRD P2-05）
     layerStructure = buildLayerStructure(layer, context, input.asOfDate);
   } else {
     for (const day of budgetDays) {
+      const reservedMinutes = (inventory.reservedMinutesByDate.get(day.date) ?? 0)
+        + (day.date === input.asOfDate ? carryoverMinutes : 0);
+      const candidateBudgetMinutes = Math.max(0, day.minutes - reservedMinutes);
+      if (reservedMinutes > day.minutes) {
+        return fail('PRECONDITION', `${day.date} 已有任务占用 ${reservedMinutes} 分钟，超过预算 ${day.minutes} 分钟；请先重排或调整预算`);
+      }
+      const dayCandidates = context.proposal
+        ? candidates.map((candidate) => {
+            const remainingMinutes = candidateRemaining.get(candidate.candidateKey) ?? 0;
+            const isProposal = proposalRemaining.has(candidate.candidateKey);
+            if (remainingMinutes <= 0) return { ...candidate, estMinutes: 0 };
+            if (!isProposal) return remainingMinutes === candidate.estMinutes
+              ? candidate
+              : { ...candidate, estMinutes: remainingMinutes };
+            return {
+              ...candidate,
+              estMinutes: remainingMinutes < 5 ? 0 : remainingMinutes,
+              minMinutes: Math.min(candidate.minMinutes, context.legacy.minTaskMinutes ?? 5),
+              maxBlockMinutes: Math.max(0, remainingMinutes),
+              splittable: true,
+            };
+          })
+        : candidates;
       const result = generateAdaptivePlan({
         ...context.legacy,
-        budgetMinutes: day.minutes,
+        budgetMinutes: candidateBudgetMinutes,
         isRestDay: day.isRestDay,
-        tierCode: tierCodeOf(day.minutes),
+        tierCode: tierCodeOf(candidateBudgetMinutes),
         bufferRatio,
-        candidates,
-        uncertainties,
-        skillGaps,
+        dueReviews: context.proposal ? undefined : context.legacy.dueReviews,
+        dueRetests: context.proposal ? undefined : context.legacy.dueRetests,
+        candidates: dayCandidates,
+        candidateOnly: Boolean(context.proposal),
+        candidateBudgetMinutes: context.proposal ? candidateBudgetMinutes : undefined,
+        uncertainties: context.proposal ? [] : uncertainties,
+        skillGaps: context.proposal ? [] : skillGaps,
       });
+      if (context.proposal && result.ok) {
+        for (const item of result.items) {
+          if (!item.candidateKey || !candidateRemaining.has(item.candidateKey)) continue;
+          candidateRemaining.set(
+            item.candidateKey,
+            Math.max(0, (candidateRemaining.get(item.candidateKey) ?? 0) - item.minutes),
+          );
+          if (proposalRemaining.has(item.candidateKey) && item.minutes > 0) {
+            proposalRemaining.set(
+              item.candidateKey,
+              Math.max(0, (proposalRemaining.get(item.candidateKey) ?? 0) - item.minutes),
+            );
+            scheduledProposalKeys.add(item.candidateKey);
+          }
+        }
+      }
       ruleDays.push({ date: day.date, budgetMinutes: day.minutes, isRestDay: day.isRestDay, result });
       if (result.ok) warnings.push(...result.warnings);
     }
@@ -804,7 +914,7 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
 
   // ── aiMode 三态：规则结果先算完，AI 只能润色措辞/挑候选，不能改调度字段 ──
   const ai = await applyAiLayer({
-    allowAi: input.allowAi,
+    allowAi: context.proposal ? false : input.allowAi,
     snapshotId,
     asOfDate: input.asOfDate,
     pool: context.candidates,
@@ -831,6 +941,9 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
   }));
 
   const tradeoffs = aggregateTradeoffs(ruleDays.map((day) => ({ result: day.result })));
+  const draftFingerprint = createHash('sha256')
+    .update(JSON.stringify({ days, layerStructure, aiMode: ai.mode, rejectedAiSuggestions: ai.rejected }), 'utf8')
+    .digest('hex');
 
   return ok({
     snapshotId,
@@ -847,5 +960,16 @@ export async function buildPlan(input: BuildPlanInput): Promise<ActionResult<Bui
     preview: true,
     layerStructure,
     layer,
+    carryover,
+    inventoryFingerprint: inventory.fingerprint,
+    draftFingerprint,
+    proposal: context.proposal
+      ? {
+          ...context.proposal,
+          scheduledTaskCount: scheduledProposalKeys.size,
+          totalMinutes: proposalTotalMinutes,
+          scheduledMinutes: proposalTotalMinutes - [...proposalRemaining.values()].reduce((sum, minutes) => sum + minutes, 0),
+        }
+      : null,
   });
 }

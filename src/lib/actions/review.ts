@@ -12,7 +12,8 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { BATCH_REVIEW_MAX, BATCH_REVIEW_OPS, REVIEW_INTERVAL_DAYS, REVIEW_RESULTS } from '@/lib/constants';
-import { addDays, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { addDays } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
 import { enumFrom } from '@/lib/schema/common';
@@ -106,7 +107,7 @@ async function postponeOne(taskId: string): Promise<
   if (!task) return { ok: false, error: '复习任务不存在' };
   if (task.status !== 'PENDING') return { ok: false, error: '该复习任务已完成或已跳过' };
 
-  const dueDate = addDays(today(), REVIEW_INTERVAL_DAYS.MANUAL);
+  const dueDate = addDays(await businessToday(), REVIEW_INTERVAL_DAYS.MANUAL);
 
   await prisma.$transaction(async (tx) => {
     await tx.reviewTask.update({

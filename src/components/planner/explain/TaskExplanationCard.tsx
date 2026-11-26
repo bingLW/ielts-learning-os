@@ -39,6 +39,11 @@ export function TaskExplanationCard({
   goalRef: string | null;
 }) {
   const explanation = task.explanation;
+  const mistakeText = explanation.mistake?.status === 'ATTRIBUTED'
+    ? `错题归属：学习记录 ${explanation.mistake.studyRecordId?.slice(0, 10)} / ${explanation.mistake.skill ?? '未知技能'}`
+    : explanation.mistake?.status === 'UNKNOWN_SKILL'
+      ? '错题归属：学习记录已关联，但技能未知（技能归 META）'
+      : '错题归属：未归属学习记录（技能归 META）';
   return (
     <Card
       dense
@@ -59,7 +64,7 @@ export function TaskExplanationCard({
           {explanation.reason}
         </Field>
         <Field index={2} label="目标">
-          {goalRef ?? '尚未设置学习目标'}
+          {explanation.goalRef ?? goalRef ?? '尚未设置学习目标'}
         </Field>
         <Field index={3} label="缺口引用">
           {explanation.gapRef ? (
@@ -82,9 +87,23 @@ export function TaskExplanationCard({
           )}
         </Field>
         <Field index={4} label="预计分钟">
-          {explanation.estMinutes === null ? '预计分钟未记录' : `${explanation.estMinutes} 分钟`}
+          {explanation.estimate
+            ? `${explanation.estimate.minMinutes}–${explanation.estimate.maxMinutes} 分钟 · ${
+                explanation.estimate.basis === 'CALIBRATED'
+                  ? `历史校准（${explanation.estimate.sampleCount} 样本）`
+                  : '估计（样本不足）'
+              } · 模型 ${explanation.estimate.modelVersion} / 规则 ${explanation.estimate.ruleVersion}`
+            : explanation.estMinutes === null ? '预计分钟未记录' : `${explanation.estMinutes} 分钟`}
           {' · '}
           {explanation.minMinutes === null ? '最小单元未记录' : `最小 ${explanation.minMinutes} 分钟`}
+          {explanation.question && (
+            <p className="mt-0.5 text-[11px] text-inkMuted">
+              阶段元数据：{explanation.question.targetLevelMin ?? '—'}–{explanation.question.targetLevelMax ?? explanation.question.difficultyEstimate ?? '—'}；无权威阶段门槛，未虚构前置条件
+            </p>
+          )}
+          {explanation.mistake && (
+            <p className="mt-0.5 text-[11px] text-inkMuted">{mistakeText}</p>
+          )}
         </Field>
         <Field index={5} label="优先级">
           {task.priorityLabel}

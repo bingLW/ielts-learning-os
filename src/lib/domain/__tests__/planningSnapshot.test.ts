@@ -145,7 +145,7 @@ describe('H-5：规则/权重/配置必须进 hash', () => {
   });
 
   it('RULE_VERSION 进 hash（结构上写死，无法漏传）', () => {
-    expect(RULE_VERSION).toBe('v2.7.0');
+    expect(RULE_VERSION).toBe('v2.7.1');
     const canonical = canonicalizePlanningValue({ v: RULE_VERSION, a: 1 });
     expect(canonical).toEqual({ a: 1, v: RULE_VERSION });
   });

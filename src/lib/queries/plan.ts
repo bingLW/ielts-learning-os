@@ -11,10 +11,13 @@ import {
   TASK_STATUSES_EXCLUDED_FROM_RATE,
   TZ_NAME,
 } from '@/lib/constants';
-import { listDateRange, today, weekRange } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
+import { listDateRange, weekRange } from '@/lib/date';
 import { completionRate } from '@/lib/domain/completion';
 import { grammarCapMinutes, grammarMinutesOf } from '@/lib/domain/plan';
+import { estimateOfTaskDecision, expectedOutputOfTaskDecision, parseTaskDecisionJson } from '@/lib/domain/taskDecision';
 import { prisma } from '@/lib/prisma';
+import { loadPlanInventory } from '@/lib/services/planInventory';
 import type {
   CompletionItem,
   DailySummaryDto,
@@ -42,7 +45,8 @@ const STALE_STATUSES = ['TODO', 'IN_PROGRESS'];
  *
  * 幂等：`updateMany` 只命中目标集合，重复调用不会再改任何行。
  */
-export async function sweepStaleTasks(now: string = today()): Promise<number> {
+export async function sweepStaleTasks(nowParam?: string): Promise<number> {
+  const now = await resolveBusinessDate(nowParam);
   const result = await prisma.planTask.updateMany({
     where: { planDate: { lt: now }, status: { in: STALE_STATUSES } },
     data: { status: 'MISSED', statusChangedAt: new Date() },
@@ -111,6 +115,9 @@ export async function getPlanPage(planDate: string): Promise<PlanPageDto> {
     timerVersion: task.timerVersion,
     priority: (task.priority ?? 'P1') as TaskPriority,
     splittable: task.splittable,
+    minChunkMinutes: task.minChunkMinutes,
+    estimate: estimateOfTaskDecision(parseTaskDecisionJson(task.decisionJson)),
+    expectedOutput: expectedOutputOfTaskDecision(parseTaskDecisionJson(task.decisionJson)),
     planVersion: task.planVersion,
     originalScheduledDate: task.originalScheduledDate,
     sourceKind: (task.sourceKind ?? 'LEGACY') as TaskSourceKind,
@@ -199,16 +206,17 @@ export async function getWeekStrip(date: string): Promise<WeekStripDay[]> {
   const { weekStart, weekEnd } = weekRange(date);
   const dates = listDateRange(weekStart, weekEnd);
 
-  const [tasks, splits] = await Promise.all([
+  const [tasks, splits, planInventory] = await Promise.all([
     prisma.planTask.findMany({
       where: { planDate: { gte: weekStart, lte: weekEnd } },
-      select: { planDate: true, plannedMinutes: true, status: true },
+      select: { planDate: true, status: true },
     }),
     prisma.studySessionDaySplit.groupBy({
       by: ['date'],
       where: { date: { gte: weekStart, lte: weekEnd } },
       _sum: { minutes: true },
     }),
+    loadPlanInventory(weekStart, weekEnd),
   ]);
 
   const netByDate = new Map<string, number>();
@@ -223,7 +231,7 @@ export async function getWeekStrip(date: string): Promise<WeekStripDay[]> {
     );
     return {
       date: day,
-      plannedMinutes: dayTasks.reduce((sum, task) => sum + task.plannedMinutes, 0),
+      plannedMinutes: planInventory.reservedMinutesByDate.get(day) ?? 0,
       netMinutes: netByDate.get(day) ?? 0,
       taskCount: dayTasks.length,
       doneCount: dayTasks.filter((task) => task.status === 'DONE').length,

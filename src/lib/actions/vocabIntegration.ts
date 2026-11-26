@@ -23,7 +23,8 @@ import {
   type VocabPracticeMode,
 } from '@/lib/constants';
 import { parseStringArray, stringify } from '@/lib/json';
-import { splitAcrossMidnight, toBusinessDate, today } from '@/lib/date';
+import { businessToday, getBusinessTimezone } from '@/lib/businessTime';
+import { splitAcrossMidnight, toBusinessDate } from '@/lib/date';
 import {
   buildTypeWordsBackup,
   effectiveSeconds,
@@ -133,7 +134,7 @@ export async function exportVocabDeckAction(
   const backup = buildTypeWordsBackup({ deckId: deck.id, title: deck.title, words });
   const text = JSON.stringify(backup, null, 2);
   const now = new Date();
-  const date = today();
+  const date = await businessToday();
   const fileName = `${deck.title.replace(/[\\/:*?"<>|]/g, '-')}-typewords-${date}.json`;
   const connectionId = await fileConnectionId();
 
@@ -220,6 +221,7 @@ export async function importTypeWordsBackupAction(
 
   try {
     const backup = parseTypeWordsBackup(input.text);
+    const timeZone = await getBusinessTimezone();
     const result = await prisma.$transaction(
       (tx) =>
         importTypeWordsBackupInTx(tx, {
@@ -228,7 +230,7 @@ export async function importTypeWordsBackupAction(
           connectionId,
           countTime: input.countTime,
           payloadHash,
-        }),
+        }, timeZone),
       TX_OPTIONS,
     );
 
@@ -289,6 +291,7 @@ export async function importAttemptPackageAction(
   });
 
   try {
+    const timeZone = await getBusinessTimezone();
     const result = await prisma.$transaction(async (tx) => {
       let sessionsImported = 0;
       let sessionsSkipped = 0;
@@ -354,10 +357,10 @@ export async function importAttemptPackageAction(
 
         const activeMinutes = counted > 0 ? Math.max(1, Math.round(counted / 60)) : 0;
         if (activeMinutes > 0) {
-          const splits = splitAcrossMidnight(session.startedAt, activeMinutes);
+          const splits = splitAcrossMidnight(session.startedAt, activeMinutes, timeZone);
           const dominant = splits.reduce(
             (best, part) => (part.minutes > best.minutes ? part : best),
-            { date: toBusinessDate(startedAt), minutes: 0 },
+            { date: toBusinessDate(startedAt, timeZone), minutes: 0 },
           );
           const study = await tx.studySession.create({
             data: {
@@ -407,7 +410,7 @@ export async function importAttemptPackageAction(
 
           const mode = (attempt.mode ?? session.mode) as VocabPracticeMode | undefined;
           if (itemId && mode && VOCAB_MODE_DIMENSIONS[mode]) {
-            const businessDate = toBusinessDate(startedAt);
+            const businessDate = toBusinessDate(startedAt, timeZone);
             for (const dimension of VOCAB_MODE_DIMENSIONS[mode]) {
               await advanceKnowledgeState(tx, {
                 itemId,
@@ -584,6 +587,7 @@ export async function createVocabEvidenceAction(
   }
 
   const now = new Date();
+  const timeZone = await getBusinessTimezone();
   const result = await prisma.$transaction(async (tx) => {
     const evidence = await tx.evidenceRecord.create({
       data: {
@@ -619,7 +623,7 @@ export async function createVocabEvidenceAction(
     const current = (row?.status ?? 'UNKNOWN') as DimensionState['status'];
     const nextStatus = mergeStatus(current, target);
     const evidenceCount = (row?.evidenceCount ?? 0) + 1;
-    const lastVerifiedAt = toBusinessDate(now);
+    const lastVerifiedAt = toBusinessDate(now, timeZone);
     await tx.vocabularyKnowledgeState.upsert({
       where: { itemId_dimension: { itemId: item.id, dimension: input.dimension } },
       update: {
@@ -645,7 +649,7 @@ export async function createVocabEvidenceAction(
       evidenceType,
       chainRootId: evidence.chainRootId,
       createdAt: evidence.createdAt,
-    });
+    }, timeZone);
 
     // 词汇维度复测走独立阶梯：到期的旧排期由这条证据结清，新的 1/7/30 天排期再补上。
     await ensureVocabularyRetest(tx, {
@@ -655,7 +659,7 @@ export async function createVocabEvidenceAction(
       dimension: input.dimension,
       status: nextStatus,
       createdAt: now,
-    });
+    }, timeZone);
 
     return { evidenceId: evidence.id, status: nextStatus };
   }, TX_OPTIONS);

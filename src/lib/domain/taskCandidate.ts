@@ -14,7 +14,7 @@
  * 合并会让用户少看到任务还以为系统就是这样安排的。
  */
 
-import type { LearningTrack, ModuleId, PrimarySkill, SkillId, StageCode } from '../types';
+import type { LearningTrack, ModuleId, PrimarySkill, SkillId, StageCode, TaskEstimate } from '../types';
 
 /** 8 个候选来源（顺序即去重保留优先级：越靠前越优先保留）。 */
 export const CANDIDATE_SOURCE_KINDS = [
@@ -96,7 +96,45 @@ export interface TaskCandidateDraft {
   aiCallLogId: string | null;
   expectedOutput: string | null;
   /** 载荷来源标注：真实字段 vs 派生默认表（审计用，不参与身份） */
-  meta: { estMinutesSource: 'SOURCE' | 'DERIVED'; derivedFrom?: string };
+  meta: {
+    estMinutesSource: 'SOURCE' | 'DERIVED';
+    derivedFrom?: string;
+    /** 生成时的估时快照；不参与 candidateKey。 */
+    estimate?: TaskEstimate;
+    /** QUESTION 的阶段元数据；CEFR 等级不等于学习阶段，不据此伪造前置条件。 */
+    question?: QuestionStageMetadata;
+    /** MISTAKE 的明确归属；无学习记录时仍保留候选并归入 META。 */
+    mistake?: MistakeAttribution;
+    /** 诊断草案任务；用户编辑的标题、时长、理由与证据引用必须原样进入快照。 */
+    diagnosticProposal?: DiagnosticProposalMetadata;
+  };
+}
+
+export interface DiagnosticProposalMetadata {
+  proposalId: string;
+  reportId: string;
+  window: '7D' | '30D' | '90D';
+  order: number;
+  evidenceRef: string;
+  userReason: string;
+}
+
+/** QUESTION 保留的阶段相关元数据；CEFR 与 StageCode 不可互换。 */
+export interface QuestionStageMetadata {
+  chain: QuestionChain;
+  taskType: string;
+  subskill: string | null;
+  targetLevelMin: string | null;
+  targetLevelMax: string | null;
+  difficultyEstimate: string | null;
+  stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY';
+}
+
+/** MISTAKE 归属只采用学习记录上的技能快照；未知技能归 META。 */
+export interface MistakeAttribution {
+  studyRecordId: string | null;
+  skill: string | null;
+  status: 'ATTRIBUTED' | 'UNATTRIBUTED' | 'UNKNOWN_SKILL';
 }
 
 /**

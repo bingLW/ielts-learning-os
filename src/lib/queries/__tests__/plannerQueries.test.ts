@@ -18,30 +18,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 import { today, weekRange } from '@/lib/date';
 
-const { prisma, cleanup } = await createTestDb([
-  'goalMilestone',
-  'learningGoal',
-  'stageReadinessReview',
-  'stageTransitionLog',
-  'taskPriorityDecision',
-  'taskCandidate',
-  'skillGap',
-  'evidenceRecord',
-  'studySessionDaySplit',
-  'studySession',
-  'planTask',
-  'planVersion',
-  'planningSnapshot',
-  'reviewTask',
-  'egiuLesson',
-  'stageAcceptanceItem',
-  'weeklyDayAllocation',
-  'weeklyTarget',
-  'dailyBudget',
-  'plannerSettings',
-  'skillProfile',
-  'stage',
-]);
+const { prisma, cleanup } = await createTestDb();
 
 const {
   getPlannerDashboard,
@@ -59,6 +36,8 @@ const {
   getVersionDiff,
   getEvidenceDrawer,
 } = await import('@/lib/queries/planner');
+const { getPlanPage } = await import('@/lib/queries/plan');
+const { getDashboard } = await import('@/lib/queries/dashboard');
 
 const AS_OF = '2026-11-25';
 const PREV_WEEK = '2026-11-16';
@@ -68,6 +47,14 @@ const SNAP_PENDING = 'snap-pending';
 const DAY_VERSION = 'ver-day-1';
 const WEEK_VERSION_V1 = 'ver-week-1';
 const WEEK_VERSION_V2 = 'ver-week-2';
+const FUTURE_DATE = '2099-01-01';
+const FUTURE_VERSION = 'ver-future-output';
+const EXPECTED_OUTPUT = '提交一段主旨判断及原文依据';
+const EXPECTED_ESTIMATE = {
+  pointMinutes: 40, minMinutes: 30, maxMinutes: 55, basis: 'CALIBRATED',
+  modelVersion: 'estimate-range-v2.7.1', ruleVersion: 'v2.7.1', sampleCount: 4,
+  calibrationKey: 'skill:READING',
+};
 
 const { weekStart, weekEnd } = weekRange(AS_OF);
 
@@ -543,12 +530,12 @@ async function seed() {
 await seed();
 
 describe('查询 1：getPlannerDashboard', () => {
-  it('状态带只统计计划分钟（CANCELLED 不计），实际净分钟只来自 DaySplit', async () => {
+  it('状态带按原计划分钟统计，实际净分钟只来自 DaySplit', async () => {
     const dto = await getPlannerDashboard(AS_OF);
     expect(dto.diagnosed).toBe(true);
     expect(dto.latestSnapshotId).toBe(SNAP);
     expect(dto.statusBand.budgetMinutes).toBe(120);
-    expect(dto.statusBand.plannedMinutes).toBe(90); // 60 + 30，CANCELLED 45 不计
+    expect(dto.statusBand.plannedMinutes).toBe(90); // TODO 60 + DONE 原计划 30，CANCELLED 45 不计
     expect(dto.statusBand.actualNetMinutes).toBe(25);
     expect(dto.statusBand.taskCount).toBe(3);
     expect(dto.statusBand.doneCount).toBe(1);
@@ -757,6 +744,38 @@ describe('查询 8：getBudgetWeek / getWeeklyTargetSummary', () => {
     expect(dto.isFirstInstallSuggestion).toBe(false);
   });
 
+  it('部分完成任务的超额计时不改写已排分钟', async () => {
+    await prisma.planTask.create({
+      data: {
+        id: 't-partial-overrun',
+        stageId: STAGE_ID,
+        planDate: AS_OF,
+        module: 'LISTENING',
+        skill: 'LISTENING',
+        primarySkill: 'LISTENING',
+        plannedMinutes: 10,
+        actualMinutes: 15,
+        status: 'PARTIAL',
+        priority: 'P1',
+        sortOrder: 3,
+        planVersion: 1,
+      },
+    });
+    try {
+      const budget = await getBudgetWeek(weekStart);
+      expect(budget.days.find((day) => day.date === AS_OF)).toMatchObject({
+        plannedMinutes: 100,
+        netMinutes: 25,
+      });
+      const planner = await getPlannerDashboard(AS_OF);
+      expect(planner.statusBand.plannedMinutes).toBe(100);
+      const dashboard = await getDashboard(AS_OF);
+      expect(dashboard.zones.today.plannedMinutes).toBe(100);
+    } finally {
+      await prisma.planTask.delete({ where: { id: 't-partial-overrun' } });
+    }
+  });
+
   it('周目标摘要含最近四周与实际净分钟', async () => {
     const dto = await getWeeklyTargetSummary(weekStart);
     expect(dto.targetMinutes).toBe(600);
@@ -849,6 +868,79 @@ describe('查询 12：getVersionDiff', () => {
 
   it('证据抽屉查询已从规划器入口导出（页面只 import 一处）', () => {
     expect(typeof getEvidenceDrawer).toBe('function');
+  });
+});
+
+describe('P1-5 Expected Output 与估时历史快照回读', () => {
+  it('解释、计划页、Dashboard 读取同一个 decisionJson，不随当前候选重算', async () => {
+    await prisma.planVersion.create({
+      data: {
+        id: FUTURE_VERSION, planDate: FUTURE_DATE, version: 1, snapshotId: SNAP,
+        changeSource: 'GENERATE', reason: 'Expected Output 回读测试',
+        afterSnapshot: JSON.stringify({ taskIds: ['future-output-task'] }),
+      },
+    });
+    await prisma.planTask.create({
+      data: {
+        id: 'future-output-task', stageId: STAGE_ID, planDate: FUTURE_DATE,
+        module: 'READING', skill: 'READING', primarySkill: 'READING', plannedMinutes: 40,
+        priority: 'P1', planVersion: 1, candidateId: 'c2',
+        decisionJson: JSON.stringify({
+          ...JSON.parse(decisionJson({ priority: 'P1', score: 0.6, rationale: '历史解释' })),
+          estimate: EXPECTED_ESTIMATE, expectedOutput: EXPECTED_OUTPUT,
+        }),
+      },
+    });
+    const explanation = await getPlanExplanation(FUTURE_VERSION);
+    const plan = await getPlanPage(FUTURE_DATE);
+    const dashboard = await getDashboard(FUTURE_DATE);
+    expect(explanation?.tasks[0].explanation).toMatchObject({
+      expectedOutput: EXPECTED_OUTPUT, estimate: EXPECTED_ESTIMATE, estMinutes: 40,
+    });
+    expect(plan.tasks[0]).toMatchObject({ expectedOutput: EXPECTED_OUTPUT, estimate: EXPECTED_ESTIMATE });
+    expect(dashboard.today.nextTask).toMatchObject({
+      id: 'future-output-task', expectedOutput: EXPECTED_OUTPUT, estimate: EXPECTED_ESTIMATE,
+    });
+
+    await prisma.taskCandidate.update({ where: { id: 'c2' }, data: { estMinutes: 99, title: '当前候选已变化' } });
+    const reread = await getPlanExplanation(FUTURE_VERSION);
+    expect(reread?.tasks[0].explanation.expectedOutput).toBe(EXPECTED_OUTPUT);
+    expect(reread?.tasks[0].explanation.estimate).toEqual(EXPECTED_ESTIMATE);
+  });
+});
+
+describe('P1-5 MISTAKE 三态历史快照回读', () => {
+  it('解释页逐条保留 ATTRIBUTED、UNKNOWN_SKILL 与 UNATTRIBUTED，不合并后两类', async () => {
+    const versionId = 'ver-future-mistakes';
+    const attributions = [
+      { studyRecordId: 'record-attributed', skill: 'READING', status: 'ATTRIBUTED' },
+      { studyRecordId: 'record-unknown-skill', skill: 'UNMAPPED_SKILL', status: 'UNKNOWN_SKILL' },
+      { studyRecordId: null, skill: null, status: 'UNATTRIBUTED' },
+    ] as const;
+    const taskIds = attributions.map((_, index) => `future-mistake-task-${index}`);
+    await prisma.planVersion.create({
+      data: {
+        id: versionId, planDate: FUTURE_DATE, version: 2, snapshotId: SNAP,
+        changeSource: 'GENERATE', reason: 'MISTAKE 三态回读测试',
+        afterSnapshot: JSON.stringify({ taskIds }),
+      },
+    });
+    for (const [index, mistake] of attributions.entries()) {
+      await prisma.planTask.create({
+        data: {
+          id: taskIds[index], stageId: STAGE_ID, planDate: FUTURE_DATE,
+          module: 'META', skill: 'META', primarySkill: 'META', plannedMinutes: 5,
+          priority: 'P0', planVersion: 2, candidateId: 'c1', sortOrder: index,
+          decisionJson: JSON.stringify({
+            ...JSON.parse(decisionJson({ priority: 'P0', score: 0.9, rationale: `错题 ${mistake.status}` })),
+            candidateMeta: { mistake },
+          }),
+        },
+      });
+    }
+
+    const explanation = await getPlanExplanation(versionId);
+    expect(explanation?.tasks.map((task) => task.explanation.mistake)).toEqual(attributions);
   });
 });
 

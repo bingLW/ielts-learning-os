@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from 'vitest';
-import { carryoverPolicy, type OverdueTask } from '../carryover';
+import { carryoverPolicy, carryoverTaskFingerprint, type OverdueTask } from '../carryover';
 import type { ModuleId, TaskPriority } from '../../types';
 
 function makeOverdue(overrides: Partial<OverdueTask> = {}): OverdueTask {
@@ -169,5 +169,51 @@ describe('carryoverPolicy 单日上限（⑨）', () => {
     expect(result.promotedCount).toBe(0);
     expect(result.overflowCount).toBe(2);
     expect(result.warnings[0]).toContain('2 项任务因过载上限进入 backlog');
+  });
+});
+
+describe('carryover 有效性与指纹', () => {
+  test('DONE/CANCELLED 与已完成分钟的任务不滚存', () => {
+    const result = carryoverPolicy({
+      asOfDate: '2026-11-25',
+      overdue: [
+        makeOverdue({ taskId: 'done', status: 'DONE', priority: 'P0' }),
+        makeOverdue({ taskId: 'cancelled', status: 'CANCELLED', priority: 'P0' }),
+        makeOverdue({ taskId: 'finished', plannedMinutes: 30, actualMinutes: 30, priority: 'P0' }),
+      ],
+      budgetMinutes: 100,
+    });
+    expect(result.decisions).toEqual([]);
+  });
+
+  test('滚存预算只占剩余分钟，不重复占已完成部分', () => {
+    const result = carryoverPolicy({
+      asOfDate: '2026-11-25',
+      overdue: [
+        makeOverdue({ taskId: 'remaining', priority: 'P0', planDate: '2026-11-23', plannedMinutes: 30, actualMinutes: 20 }),
+        makeOverdue({ taskId: 'overflow', priority: 'P0', planDate: '2026-11-24', plannedMinutes: 5 }),
+      ],
+      budgetMinutes: 40,
+    });
+    expect(result.decisions[0]).toMatchObject({ taskId: 'remaining', verdict: { action: 'PROMOTE' } });
+    expect(result.decisions[1]).toMatchObject({ taskId: 'overflow', verdict: { action: 'BACKLOG' } });
+    expect(result.overflowCount).toBe(1);
+  });
+
+  test('指纹与任务顺序无关，并覆盖全部裁决字段', () => {
+    const base = makeOverdue({ taskId: 'fingerprint', planVersion: 3, originalScheduledDate: '2026-11-18', deferReason: '预算不足' });
+    const other = makeOverdue({ taskId: 'fingerprint-2' });
+    expect(carryoverTaskFingerprint([base, other])).toBe(carryoverTaskFingerprint([other, base]));
+
+    const patches: Partial<OverdueTask>[] = [
+      { taskId: 'fingerprint-changed' }, { module: 'WRITING' }, { planDate: '2026-11-19' }, { originalScheduledDate: '2026-11-17' },
+      { planVersion: 4 }, { priority: 'P0' }, { movedCount: 1 }, { splittable: false },
+      { plannedMinutes: 11 }, { actualMinutes: 1 }, { minChunkMinutes: 6 },
+      { deferReason: '手动延期' }, { status: 'TODO' },
+      { timerStatus: 'RUNNING' }, { timerVersion: 2 }, { movedToDate: '2026-11-24' },
+    ];
+    for (const patch of patches) {
+      expect(carryoverTaskFingerprint([{ ...base, ...patch }, other])).not.toBe(carryoverTaskFingerprint([base, other]));
+    }
   });
 });

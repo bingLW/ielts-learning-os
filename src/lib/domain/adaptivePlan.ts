@@ -180,6 +180,10 @@ export interface AdaptivePlanInput {
   bufferRatio?: number;
   /** 已按 `rankDecisions()` 排好序的内容级候选；有值时代替模块级技能池装箱。 */
   candidates?: RankedCandidateInput[];
+  /** 诊断提案模式：只装箱调用方候选，不自动添加基础、复盘、探针或拓展任务。 */
+  candidateOnly?: boolean;
+  /** 候选可用分钟；诊断提案使用复测/复习后的全部余量，不使用技能池比例。 */
+  candidateBudgetMinutes?: number;
   /** UNCERTAINTY 驱动的补测探针：P0 之后、核心之前的独立池，不占 P0 份额。 */
   uncertainties?: UncertaintyProbeInput[];
   /** 缺口提示：只写入 rationale，不改变任何分钟分配。 */
@@ -415,6 +419,11 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
 
   const skip = new Set<ModuleId>(input.skipModules ?? []);
 
+  if (input.candidateOnly) {
+    packCandidates(input.candidates ?? [], input.candidateBudgetMinutes ?? remaining);
+    return finishPlan(budget, items, priorityMinutes, backlog, warnings, weeklyRotation, scheduledRetestIds);
+  }
+
   // S0 准备阶段：沿用 v2.0 语义，只排基线诊断任务。
   // 基线诊断不可拆分 —— 做半截的诊断填不了验收清单初值，预算不足就整项顺延。
   if (input.stageCode === 'S0_PREP') {
@@ -556,9 +565,9 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
 
   // v2.7 候选装箱：按调用方给出的顺序消费，**不重排**（㉓③）。
   // priority / rationale 直接取自评分决策，装箱层只解决"放不放得下"。
-  if (input.candidates && input.candidates.length > 0) {
-    let candidateBudget = skillPool;
-    for (const candidate of input.candidates) {
+  function packCandidates(ranked: RankedCandidateInput[], availableMinutes: number) {
+    let candidateBudget = Math.max(0, availableMinutes);
+    for (const candidate of ranked) {
       const cap = candidate.maxBlockMinutes == null
         ? Infinity
         : Math.max(0, Math.round(candidate.maxBlockMinutes));
@@ -576,7 +585,7 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
           });
           continue;
         }
-        minutes = floorTo(candidateBudget, minMinutes);
+        minutes = candidateBudget;
         if (minutes < minMinutes) {
           backlog.push({
             kind: 'CORE_DEFERRED',
@@ -602,6 +611,10 @@ export function generateAdaptivePlan(input: AdaptivePlanInput): AdaptivePlanResu
         candidateKey: candidate.candidateKey,
       });
     }
+  }
+
+  if (input.candidates && input.candidates.length > 0) {
+    packCandidates(input.candidates, skillPool);
   } else if (skillPool > 0) {
     const target: SkillAllocation =
       input.allocation ?? { LISTENING: 25, READING: 25, SPEAKING: 25, WRITING: 25 };

@@ -8,7 +8,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { createVocabWordAction, updateVocabWordAction } from '@/lib/actions/vocab';
 import { MASTERY_LABEL_ZH, MASTERY_LEVELS, VOCAB_SOURCES } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { MasteryLevel, VocabWordRowDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -23,6 +23,7 @@ export function VocabForm({
   onToast: (message: string, tone: 'success' | 'error') => void;
   onDone: () => void;
 }) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -35,7 +36,7 @@ export function VocabForm({
   const [collocation, setCollocation] = useState(editing?.collocation ?? '');
   const [exampleSentence, setExampleSentence] = useState(editing?.exampleSentence ?? '');
   const [source, setSource] = useState(editing?.source ?? VOCAB_SOURCES[1]);
-  const [learnedDate, setLearnedDate] = useState(editing?.learnedDate ?? today());
+  const [learnedDate, setLearnedDate] = useState(editing?.learnedDate ?? businessDate);
   const [mastery, setMastery] = useState<MasteryLevel>(editing?.mastery ?? 'RECOGNIZE_ONLY');
 
   const submit = () => {

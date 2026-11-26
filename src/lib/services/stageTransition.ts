@@ -11,7 +11,7 @@
  * 必须原子 —— 否则会出现「review 已确认、阶段没切」的半态。
  */
 
-import { today } from '@/lib/date';
+import { toBusinessDate } from '@/lib/date';
 import type { Prisma } from '@prisma/client';
 
 export interface ApplyStageTransitionInput {
@@ -37,8 +37,9 @@ export interface ApplyStageTransitionInput {
 export async function applyStageTransition(
   tx: Prisma.TransactionClient,
   input: ApplyStageTransitionInput,
+  timeZone: string,
 ): Promise<{ id: string }> {
-  const todayStr = today(new Date());
+  const todayStr = toBusinessDate(new Date(), timeZone);
 
   const current = await tx.stage.findFirst({ where: { status: 'ACTIVE' } });
   const target = await tx.stage.findUnique({ where: { code: input.toStageCode } });

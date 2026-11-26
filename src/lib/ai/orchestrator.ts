@@ -12,12 +12,13 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import {
   AI_ASSESSMENT_DISCLAIMER_ZH,
   AI_DEFAULT_TIMEOUT_MS,
   AI_MAX_OUTPUT_TOKENS,
   AI_MAX_RETRIES,
+  FLOAT_EPSILON,
 } from '@/lib/constants';
 import { createProvider, loadEngineConfig } from './config';
 import {
@@ -25,8 +26,9 @@ import {
   budgetWindows,
   estimateCostUsd,
   evaluateBudget,
+  estimateMaxCallCostUsd,
 } from './meter';
-import { redactMetadata } from './privacy';
+import { redactMetadata, redactText } from './privacy';
 import { renderPrompt } from './prompts';
 import { getPublishedPromptVersion } from './registry';
 import {
@@ -37,6 +39,7 @@ import {
   AI_PROMPT_KEY_BY_KIND,
   type AiCallStatus,
   type AiPromptKind,
+  type AiProvider,
   type AiPromptMeta,
   type AiTurnFailureCode,
   type AiTurnKindRef,
@@ -199,6 +202,166 @@ function failureStatus(code: string): AiCallStatus {
   return 'ERROR';
 }
 
+interface BudgetReservation {
+  amountUsd: number;
+}
+
+type BudgetPreflight =
+  | { ok: true; reservation: BudgetReservation | null }
+  | {
+      ok: false;
+      code: 'PRECONDITION' | 'BUDGET_EXCEEDED';
+      errorCode: 'EXTERNAL_AI_CONSENT_REQUIRED' | 'BUDGET_EXCEEDED';
+      message: string;
+      dailyPercent: number;
+    };
+
+class ReservationCasConflict extends Error {}
+
+async function aggregateSpend(
+  prisma: PrismaClient | Prisma.TransactionClient,
+  dayStart: Date,
+  monthStart: Date,
+): Promise<{ dailyUsd: number; monthlyUsd: number }> {
+  // 交互事务（尤其 SQLite connection_limit=1）内顺序查询，避免并发占满连接池。
+  const daily = await prisma.aICallLog.aggregate({
+    where: { createdAt: { gte: dayStart }, status: { in: ['OK', 'MOCK'] } },
+    _sum: { estimatedCostUsd: true },
+  });
+  const monthly = await prisma.aICallLog.aggregate({
+    where: { createdAt: { gte: monthStart }, status: { in: ['OK', 'MOCK'] } },
+    _sum: { estimatedCostUsd: true },
+  });
+  return {
+    dailyUsd: daily._sum.estimatedCostUsd ?? 0,
+    monthlyUsd: monthly._sum.estimatedCostUsd ?? 0,
+  };
+}
+
+/**
+ * 外部调用在数据库事务内重新读取同意/预算并 CAS 预占。
+ * 预占与设置行绑定，不依赖 Node 进程锁；并发调用只有一个能更新成功。
+ */
+async function preflightBudget(input: {
+  prisma: PrismaClient;
+  external: boolean;
+  timeZone: string;
+  fallbackConfig: ReturnType<typeof budgetConfigFrom>;
+  system: string;
+  user: string;
+  maxOutputTokens: number;
+  prices: { inputPricePerMtok: number; outputPricePerMtok: number };
+}): Promise<BudgetPreflight> {
+  const now = new Date();
+  const { dayStart, monthStart } = budgetWindows(now, input.timeZone);
+  const amountUsd = input.external
+    ? estimateMaxCallCostUsd(
+        input.system,
+        input.user,
+        input.maxOutputTokens,
+        input.prices,
+      )
+    : 0;
+
+  // mock 零费用、无同意门槛；旧的正预算治理仍保留，但 0 预算不得阻断 mock。
+  if (!input.external) {
+    if (input.fallbackConfig.dailyBudgetUsd <= 0 || input.fallbackConfig.monthlyBudgetUsd <= 0) {
+      return { ok: true, reservation: null };
+    }
+    const spend = await aggregateSpend(input.prisma, dayStart, monthStart);
+    const budget = evaluateBudget(spend, input.fallbackConfig);
+    return budget.state === 'EXCEEDED'
+      ? {
+          ok: false,
+          code: 'BUDGET_EXCEEDED',
+          errorCode: 'BUDGET_EXCEEDED',
+          message: `已超出 AI 预算（今日 ${budget.dailyPercent}%，本月 ${budget.monthlyPercent}%），本次调用被拦截。`,
+          dailyPercent: budget.dailyPercent,
+        }
+      : { ok: true, reservation: null };
+  }
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      return await input.prisma.$transaction(async (tx) => {
+        const profile = await tx.learnerProfile.findUnique({
+          where: { id: 'default' },
+          select: { externalAiConsent: true },
+        });
+        const setting = await tx.aIEngineSetting.findUnique({ where: { id: 'default' } });
+        if (profile?.externalAiConsent !== true) {
+          return {
+            ok: false as const,
+            code: 'PRECONDITION' as const,
+            errorCode: 'EXTERNAL_AI_CONSENT_REQUIRED' as const,
+            message: '尚未同意将必要作答片段发送给第三方 Provider；本次外部调用被拦截。',
+            dailyPercent: 0,
+          };
+        }
+        if (!setting) {
+          throw new Error('外部 AI 已启用，但 AIEngineSetting 不存在');
+        }
+
+        const spend = await aggregateSpend(tx, dayStart, monthStart);
+        const config = budgetConfigFrom(setting);
+        const budget = evaluateBudget(
+          {
+            dailyUsd: spend.dailyUsd + setting.budgetReservedUsd + amountUsd,
+            monthlyUsd: spend.monthlyUsd + setting.budgetReservedUsd + amountUsd,
+          },
+          config,
+        );
+        if (budget.state === 'EXCEEDED') {
+          return {
+            ok: false as const,
+            code: 'BUDGET_EXCEEDED' as const,
+            errorCode: 'BUDGET_EXCEEDED' as const,
+            message: `已超出 AI 预算（今日 ${budget.dailyPercent}%，本月 ${budget.monthlyPercent}%），本次调用被拦截。`,
+            dailyPercent: budget.dailyPercent,
+          };
+        }
+
+        if (amountUsd > 0) {
+          const updated = await tx.aIEngineSetting.updateMany({
+            where: { id: 'default', budgetReservedUsd: setting.budgetReservedUsd },
+            data: { budgetReservedUsd: { increment: amountUsd } },
+          });
+          if (updated.count !== 1) throw new ReservationCasConflict();
+        }
+        return { ok: true as const, reservation: { amountUsd } };
+      }, { maxWait: 10_000, timeout: 30_000 });
+    } catch (error) {
+      if (error instanceof ReservationCasConflict) continue;
+      throw error;
+    }
+  }
+  throw new Error('AI 预算预占 CAS 冲突次数过多，请稍后重试');
+}
+
+/** 结算与 append-only 日志同事务：释放预占和写入实际支出不会留下中间态。 */
+async function settleCall(
+  prisma: PrismaClient,
+  reservation: BudgetReservation | null,
+  data: Prisma.AICallLogUncheckedCreateInput,
+): Promise<string> {
+  return prisma.$transaction(async (tx) => {
+    if (reservation && reservation.amountUsd > 0) {
+      const released = await tx.$executeRaw`
+        UPDATE "AIEngineSetting"
+        SET "budgetReservedUsd" = CASE
+          WHEN "budgetReservedUsd" < ${reservation.amountUsd} THEN 0
+          ELSE "budgetReservedUsd" - ${reservation.amountUsd}
+        END
+        WHERE "id" = 'default'
+          AND "budgetReservedUsd" >= ${reservation.amountUsd - FLOAT_EPSILON}
+      `;
+      if (released !== 1) throw new Error('AI 预算预占释放失败：预占记录已被并发修改');
+    }
+    const logged = await tx.aICallLog.create({ data, select: { id: true } });
+    return logged.id;
+  }, { maxWait: 10_000, timeout: 30_000 });
+}
+
 /**
  * 会话无关的 AI 核心调用（ADR-06）。
  *
@@ -231,79 +394,81 @@ export async function runAiCompletion(
     };
   }
 
-  const budgetConfig = budgetConfigFrom(config.setting);
-  const { dayStart, monthStart } = budgetWindows(new Date());
-  const [daily, monthly] = await Promise.all([
-    prisma.aICallLog.aggregate({
-      where: { createdAt: { gte: dayStart }, status: { in: ['OK', 'MOCK'] } },
-      _sum: { estimatedCostUsd: true },
-    }),
-    prisma.aICallLog.aggregate({
-      where: { createdAt: { gte: monthStart }, status: { in: ['OK', 'MOCK'] } },
-      _sum: { estimatedCostUsd: true },
-    }),
-  ]);
-  const budget = evaluateBudget(
-    {
-      dailyUsd: daily._sum.estimatedCostUsd ?? 0,
-      monthlyUsd: monthly._sum.estimatedCostUsd ?? 0,
-    },
-    budgetConfig,
+  const rendered = renderPrompt(promptKind, meta);
+  const external = config.providerMode === 'external';
+  // 外发边界统一脱敏；mock 保留原片段以维持既有确定性行为。
+  const system = external ? redactText(rendered.system) : rendered.system;
+  const user = external ? redactText(rendered.user) : rendered.user;
+  const maxOutputTokens = Math.max(
+    0,
+    Math.floor(input.maxOutputTokens ?? AI_MAX_OUTPUT_TOKENS),
   );
-
   const requestId = randomUUID();
-  if (budget.state === 'EXCEEDED') {
-    const blocked = await prisma.aICallLog.create({
-      data: {
-        ...ownership,
-        provider: config.modelConfig.provider,
-        model: config.modelConfig.model,
-        promptVersionId: promptVersion.versionId,
-        requestId,
-        latencyMs: 0,
-        status: 'BLOCKED',
-        errorCode: 'BUDGET_EXCEEDED',
-        redactedMetadataJson: JSON.stringify(
-          redactMetadata({ ...input.logMetadata, kind: promptKind, dailyPercent: budget.dailyPercent }),
-        ),
-      },
-      select: { id: true },
+  const preflight = await preflightBudget({
+    prisma,
+    external,
+    timeZone: config.timeZone,
+    fallbackConfig: budgetConfigFrom(config.setting),
+    system,
+    user,
+    maxOutputTokens,
+    prices: config.modelConfig,
+  });
+
+  if (!preflight.ok) {
+    const logId = await settleCall(prisma, null, {
+      ...ownership,
+      provider: config.modelConfig.provider,
+      model: config.modelConfig.model,
+      promptVersionId: promptVersion.versionId,
+      requestId,
+      latencyMs: 0,
+      status: 'BLOCKED',
+      errorCode: preflight.errorCode,
+      redactedMetadataJson: JSON.stringify(
+        redactMetadata({
+          ...input.logMetadata,
+          kind: promptKind,
+          dailyPercent: preflight.dailyPercent,
+        }),
+      ),
     });
     return {
       ok: false,
-      code: 'BUDGET_EXCEEDED',
-      message: `已超出 AI 预算（今日 ${budget.dailyPercent}%，本月 ${budget.monthlyPercent}%），本次调用被拦截。`,
-      logId: blocked.id,
+      code: preflight.code,
+      message: preflight.message,
+      logId,
     };
   }
 
-  const provider = createProvider(config);
-  const rendered = renderPrompt(promptKind, meta);
-  const request = {
-    kind: promptKind,
-    system: rendered.system,
-    user: rendered.user,
-    temperature:
-      input.temperature ?? (promptKind === 'assessment' ? 0.1 : 0.4),
-    maxOutputTokens: input.maxOutputTokens ?? AI_MAX_OUTPUT_TOKENS,
-    timeoutMs: input.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS,
-    meta,
-  };
+  const reservation = preflight.reservation;
+  let provider: AiProvider | undefined;
+  try {
+    provider = createProvider(config);
+    const request = {
+      kind: promptKind,
+      system,
+      user,
+      temperature:
+        input.temperature ?? (promptKind === 'assessment' ? 0.1 : 0.4),
+      maxOutputTokens,
+      timeoutMs: input.timeoutMs ?? AI_DEFAULT_TIMEOUT_MS,
+      meta,
+    };
 
-  let completion = await provider.complete(request);
-  let attempts = 1;
-  while (
-    !completion.ok &&
-    (completion.code === 'TIMEOUT' || completion.code === 'NETWORK') &&
-    attempts <= AI_MAX_RETRIES
-  ) {
-    attempts += 1;
-    completion = await provider.complete(request);
-  }
+    let completion = await provider.complete(request);
+    let attempts = 1;
+    while (
+      !completion.ok &&
+      (completion.code === 'TIMEOUT' || completion.code === 'NETWORK') &&
+      attempts <= AI_MAX_RETRIES
+    ) {
+      attempts += 1;
+      completion = await provider.complete(request);
+    }
 
-  if (!completion.ok) {
-    const failed = await prisma.aICallLog.create({
-      data: {
+    if (!completion.ok) {
+      const logId = await settleCall(prisma, reservation, {
         ...ownership,
         provider: provider.provider,
         model: provider.model,
@@ -324,29 +489,26 @@ export async function runAiCompletion(
             objective: meta.objective,
           }),
         ),
-      },
-      select: { id: true },
-    });
-    return {
-      ok: false,
-      code: completion.code,
-      message: `${completion.message}（已尝试 ${attempts} 次；你的作答已保存，可稍后重试）`,
-      logId: failed.id,
-    };
-  }
-
-  const parsed = parseStructured(promptKind, completion.json);
-  const isMock = provider.mode === 'mock';
-  const cost = isMock
-    ? 0
-    : estimateCostUsd(completion.inputTokens, completion.outputTokens, {
-        inputPricePerMtok: config.modelConfig.inputPricePerMtok,
-        outputPricePerMtok: config.modelConfig.outputPricePerMtok,
       });
+      return {
+        ok: false,
+        code: completion.code,
+        message: `${completion.message}（已尝试 ${attempts} 次；你的作答已保存，可稍后重试）`,
+        logId,
+      };
+    }
 
-  if (!parsed.ok) {
-    const invalid = await prisma.aICallLog.create({
-      data: {
+    const parsed = parseStructured(promptKind, completion.json);
+    const isMock = provider.mode === 'mock';
+    const cost = isMock
+      ? 0
+      : estimateCostUsd(completion.inputTokens, completion.outputTokens, {
+          inputPricePerMtok: config.modelConfig.inputPricePerMtok,
+          outputPricePerMtok: config.modelConfig.outputPricePerMtok,
+        });
+
+    if (!parsed.ok) {
+      const logId = await settleCall(prisma, reservation, {
         ...ownership,
         provider: provider.provider,
         model: provider.model,
@@ -361,15 +523,12 @@ export async function runAiCompletion(
         redactedMetadataJson: JSON.stringify(
           redactMetadata({ ...input.logMetadata, kind: promptKind, error: parsed.error }),
         ),
-      },
-      select: { id: true },
-    });
-    return { ok: false, code: 'INVALID_OUTPUT', message: parsed.error, logId: invalid.id };
-  }
+      });
+      return { ok: false, code: 'INVALID_OUTPUT', message: parsed.error, logId };
+    }
 
-  const status: AiCallStatus = isMock ? 'MOCK' : 'OK';
-  const logged = await prisma.aICallLog.create({
-    data: {
+    const status: AiCallStatus = isMock ? 'MOCK' : 'OK';
+    const logId = await settleCall(prisma, reservation, {
       ...ownership,
       provider: provider.provider,
       model: provider.model,
@@ -390,25 +549,46 @@ export async function runAiCompletion(
           attempts,
         }),
       ),
-    },
-    select: { id: true },
-  });
+    });
 
-  return {
-    ok: true,
-    structured: parsed.data,
-    text: renderAiText(promptKind, parsed.data),
-    status,
-    logId: logged.id,
-    provider: provider.provider,
-    model: provider.model,
-    promptVersionId: promptVersion.versionId,
-    requestId,
-    inputTokens: completion.inputTokens,
-    outputTokens: completion.outputTokens,
-    latencyMs: completion.latencyMs,
-    estimatedCostUsd: cost,
-  };
+    return {
+      ok: true,
+      structured: parsed.data,
+      text: renderAiText(promptKind, parsed.data),
+      status,
+      logId,
+      provider: provider.provider,
+      model: provider.model,
+      promptVersionId: promptVersion.versionId,
+      requestId,
+      inputTokens: completion.inputTokens,
+      outputTokens: completion.outputTokens,
+      latencyMs: completion.latencyMs,
+      estimatedCostUsd: cost,
+    };
+  } catch (error) {
+    // Provider/Schema/渲染异常也必须释放预占；错误日志只保留脱敏后的摘要。
+    const message = redactText(String(error)).slice(0, 300);
+    const logId = await settleCall(prisma, reservation, {
+      ...ownership,
+      provider: provider?.provider ?? config.modelConfig.provider,
+      model: provider?.model ?? config.modelConfig.model,
+      promptVersionId: promptVersion.versionId,
+      requestId,
+      latencyMs: 0,
+      status: 'ERROR',
+      errorCode: 'PROVIDER_ERROR',
+      redactedMetadataJson: JSON.stringify(
+        redactMetadata({ ...input.logMetadata, kind: promptKind, message }),
+      ),
+    });
+    return {
+      ok: false,
+      code: 'PROVIDER_ERROR',
+      message: `AI 调用异常：${message}`,
+      logId,
+    };
+  }
 }
 
 export async function runAiTurn(input: RunAiTurnInput): Promise<AiTurnResult> {

@@ -19,7 +19,9 @@ export default async function AiAdminPage() {
         warnPercent: data.setting.warnPercent,
         directTeachingDefault: data.setting.directTeachingDefault,
         explainLanguage: data.setting.explainLanguage,
+        updatedAt: data.setting.updatedAt,
       }}
+      externalAiConsent={data.externalAiConsent}
       models={data.models.map((model) => ({
         id: model.id,
         provider: model.provider,

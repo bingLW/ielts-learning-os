@@ -16,11 +16,18 @@
  */
 
 import type { StageCode } from '@/lib/types';
-import { addDays, listDateRange, diffDays } from '@/lib/date';
+import { addDays, listDateRange, diffDays, toBusinessDate } from '@/lib/date';
 import { STAGE_CODES, WEAKNESS_WINDOW_DAYS } from '@/lib/constants';
 import { DEFAULT_WEIGHTS, rankDecisions, scoreCandidate, toFactorsJson, type TaskPriorityDecisionDraft } from '@/lib/domain/taskPriority';
 import type { PrerequisiteContext, TaskCandidateDraft } from '@/lib/domain/taskCandidate';
+import {
+  calibrateTaskEstimate,
+  ESTIMATE_MIN_SAMPLES,
+  ESTIMATE_MODEL_VERSION,
+  ESTIMATE_WINDOW_DAYS,
+} from '@/lib/domain/taskEstimate';
 import { collectCandidates } from '@/lib/services/candidateSources';
+import { loadDiagnosticProposal } from '@/lib/services/diagnosticProposal';
 import {
   buildCanonicalPlanningInput,
   parseSkillTargets,
@@ -33,6 +40,7 @@ import {
   type SkillGapDraft,
   type SkillGapSignal,
 } from '@/lib/domain/skillGap';
+import type { Prisma } from '@prisma/client';
 import { suggestProfileConfidence } from '@/lib/domain/profile';
 import { prisma } from '@/lib/prisma';
 import { getBudgetRange, getEffectiveBudget, getPlannerSettings } from '@/lib/queries/budget';
@@ -91,6 +99,13 @@ export interface PlanEngineContextV27 {
   unknowns: SkillGapDraft[];
   /** T03：8 源归一后的候选（**不排序**，顺序即采集顺序）。 */
   candidates: TaskCandidateDraft[];
+  /** 诊断草案输入；null = 普通 Planner 候选链路。 */
+  proposal: {
+    id: string;
+    fingerprint: string;
+    window: '7D' | '30D' | '90D';
+    taskCount: number;
+  } | null;
   /** T04：与 `candidates` 一一对应的评分决策。 */
   decisions: TaskPriorityDecisionDraft[];
   execution: { last7NetMinutes: number; last30NetMinutes: number; activeDaysLast7: number };
@@ -109,12 +124,16 @@ export interface PlanningSnapshotResult {
 export interface BuildPlanningSnapshotInput {
   purpose: PlanningSnapshotPurpose;
   asOfDate: string;
+  /** 用户 IANA 时区；用于把证据时刻归入业务日。 */
+  timeZone: string;
   horizonDays: number;
   stageId?: string;
   /** REPLAN 必填 */
   planDate?: string;
   reuseIfSameHash?: boolean;
+  persist?: boolean;
   layer?: PlanningLayer | null;
+  proposalId?: string;
 }
 
 /** 官方四项（缺口与画像的 OFFICIAL 维度）。 */
@@ -142,6 +161,10 @@ export async function buildPlanningSnapshot(
 ): Promise<ActionResult<PlanningSnapshotResult>> {
   const missing: MissingInputItem[] = [];
   const warnings: string[] = [];
+
+  if (input.proposalId && input.horizonDays !== 7) {
+    return fail('PRECONDITION', '诊断计划草案首次只能确认 7 天启动计划；30/90 天方向保留在诊断报告中');
+  }
 
   // ── ③ 阶段（blocking：PlanTask.stageId 必填） ──
   const stage = input.stageId
@@ -317,7 +340,7 @@ export async function buildPlanningSnapshot(
       independentCount: independent.length,
       evidenceCount: rows.length,
       evidenceQuestions: scored.length,
-      freshnessDays: latest ? diffDays(latest.toISOString().slice(0, 10), input.asOfDate) : null,
+      freshnessDays: latest ? diffDays(toBusinessDate(latest, input.timeZone), input.asOfDate) : null,
       coverageRatio: null,
       // `accuracyDelta` 仍缺真值（需要分题型正确率，当前证据行没有这个维度）→ `null` = 不知道；
       // 不能传 0，那等于告诉严重度公式"已确认该维度没有任何问题"
@@ -366,13 +389,35 @@ export async function buildPlanningSnapshot(
     weightsVersion,
     gapMinSeverity: 0.15,
     profileReviewDays: { LOW: 14, MEDIUM: 30, HIGH: 90 },
+    estimateModelVersion: ESTIMATE_MODEL_VERSION,
+    estimateMinSamples: ESTIMATE_MIN_SAMPLES,
+    estimateWindowDays: ESTIMATE_WINDOW_DAYS,
   };
 
   // ── ⑧ 候选池（T03）+ 评分（T04） ──
   // `gaps` 传全部三组：`PROBE` 只认 `kind='UNCERTAINTY'`，而 `gapOf()` 按
   // `dimensionKind:skill:subskill` 找缺口，漏掉任何一组都会让某类候选拿不到证据强度。
   const allGaps = [...split.gaps, ...split.uncertainties, ...split.unknowns];
+  const proposal = input.proposalId
+    ? await loadDiagnosticProposal({
+        proposalId: input.proposalId,
+        asOfDate: input.asOfDate,
+        timeZone: input.timeZone,
+        minTaskMinutes: config.minTaskMinutes,
+      })
+    : null;
+  if (proposal && !proposal.ok) return fail(proposal.code, proposal.error);
+
+  const proposalSource = proposal?.data ?? null;
   const collected = await collectCandidates({ asOfDate: input.asOfDate, gaps: allGaps });
+  const pool = proposalSource
+    ? [
+        ...collected.candidates.filter((candidate) =>
+          candidate.sourceKind === 'REVIEW' || candidate.sourceKind === 'RETEST'),
+        ...proposalSource.candidates,
+      ]
+    : collected.candidates;
+  const calibrated = await calibrateCandidatesFromHistory(pool, input.asOfDate);
   if (collected.degraded.length > 0) {
     missing.push({
       key: 'CANDIDATES',
@@ -389,8 +434,8 @@ export async function buildPlanningSnapshot(
     });
   }
 
-  const prerequisites = await buildPrerequisiteContext(collected.candidates, stage.code as StageCode);
-  const scored = collected.candidates.map((row) =>
+  const prerequisites = await buildPrerequisiteContext(calibrated, stage.code as StageCode);
+  const scored = calibrated.map((row) =>
     scoreCandidate(row, {
       asOfDate: input.asOfDate,
       budgetMinutes: budget.minutes,
@@ -406,7 +451,7 @@ export async function buildPlanningSnapshot(
   // 下游拿到的是同一份顺序 —— 否则"候选列表"和"决策列表"各按各的顺序渲染，
   // 而两处都自称有序。
   const decisions = rankDecisions(scored);
-  const orderedCandidates = canonicalCandidateOrder(collected.candidates, decisions);
+  const orderedCandidates = canonicalCandidateOrder(calibrated, decisions);
 
   // ── 归一化一次：hash 与落库共用同一个对象（约束⑦） ──
   const { canonical, hash } = buildCanonicalPlanningInput({
@@ -435,6 +480,14 @@ export async function buildPlanningSnapshot(
     candidates: orderedCandidates,
     decisions,
     validation: { missing, warnings },
+    proposal: proposalSource
+      ? {
+          id: proposalSource.id,
+          fingerprint: proposalSource.fingerprint,
+          window: proposalSource.window,
+          taskCount: proposalSource.taskCount,
+        }
+      : null,
     replan:
       input.purpose === 'REPLAN'
         ? { planDate, existingTaskKeys: [], actualMinutesToday: null }
@@ -457,7 +510,26 @@ export async function buildPlanningSnapshot(
     decisions,
     execution,
     validation,
+    proposal: proposalSource
+      ? {
+          id: proposalSource.id,
+          fingerprint: proposalSource.fingerprint,
+          window: proposalSource.window,
+          taskCount: proposalSource.taskCount,
+        }
+      : null,
   };
+
+  if (input.persist === false) {
+    return ok({
+      snapshotId: `preview-${hash.slice(0, 24)}`,
+      inputHash: hash,
+      reused: false,
+      ruleVersion: RULE_VERSION,
+      weightsVersion,
+      context,
+    });
+  }
 
   const existing = await prisma.planningSnapshot.findUnique({
     where: {
@@ -471,11 +543,12 @@ export async function buildPlanningSnapshot(
   });
 
   if (existing && (input.reuseIfSameHash ?? true)) {
-    const gapCount = await prisma.skillGap.count({ where: { snapshotId: existing.id } });
-    if (gapCount === 0) await persistGaps(existing.id, split);
-    // 与缺口同理：复用路径也要保证候选/决策已落库（可能是上一版只写了快照行）
-    const candidateCount = await prisma.taskCandidate.count({ where: { snapshotId: existing.id } });
-    if (candidateCount === 0) await persistCandidates(existing.id, collected.candidates, decisions);
+    await prisma.$transaction(async (tx) => {
+      const gapCount = await tx.skillGap.count({ where: { snapshotId: existing.id } });
+      if (gapCount === 0) await persistGaps(tx, existing.id, split);
+      const candidateCount = await tx.taskCandidate.count({ where: { snapshotId: existing.id } });
+      if (candidateCount === 0) await persistCandidates(tx, existing.id, calibrated, decisions);
+    });
     return ok({
       snapshotId: existing.id,
       inputHash: hash,
@@ -508,12 +581,10 @@ export async function buildPlanningSnapshot(
       },
       select: { id: true },
     });
+    await persistGaps(tx, row.id, split);
+    await persistCandidates(tx, row.id, orderedCandidates, decisions);
     return row.id;
   });
-
-  // 顺序固定：缺口先落库，候选靠 `dimensionKind:skill:subskill` 反查 `SkillGap.id`
-  await persistGaps(snapshotId, split);
-  await persistCandidates(snapshotId, orderedCandidates, decisions);
 
   return ok({
     snapshotId,
@@ -522,6 +593,71 @@ export async function buildPlanningSnapshot(
     ruleVersion: RULE_VERSION,
     weightsVersion,
     context,
+  });
+}
+
+/**
+ * 用个人历史实际耗时校准候选点估计与区间。
+ *
+ * 真值只取已完成、非异常 session 的 `StudySessionDaySplit.minutes`；先按候选身份聚合，
+ * 样本不足时按 session.skill 快照聚合。校准结果随候选/决策快照落库，读侧不重算。
+ */
+async function calibrateCandidatesFromHistory(
+  candidates: readonly TaskCandidateDraft[],
+  asOfDate: string,
+): Promise<TaskCandidateDraft[]> {
+  if (candidates.length === 0) return [];
+  if (candidates.every((candidate) => candidate.meta.diagnosticProposal)) return [...candidates];
+  const from = addDays(asOfDate, -(ESTIMATE_WINDOW_DAYS - 1));
+  const sessions = await prisma.studySession.findMany({
+    where: {
+      terminatedReason: 'COMPLETED',
+      anomalyFlag: false,
+      daySplits: { some: { date: { gte: from, lte: asOfDate }, minutes: { gt: 0 } } },
+    },
+    select: {
+      skill: true,
+      task: { select: { candidateId: true } },
+      daySplits: {
+        where: { date: { gte: from, lte: asOfDate }, minutes: { gt: 0 } },
+        select: { minutes: true },
+      },
+    },
+    orderBy: { id: 'asc' },
+  });
+  const candidateIds = [...new Set(sessions.flatMap((session) => session.task?.candidateId ? [session.task.candidateId] : []))];
+  const candidateKeys = candidateIds.length > 0
+    ? await prisma.taskCandidate.findMany({ where: { id: { in: candidateIds } }, select: { id: true, candidateKey: true } })
+    : [];
+  const keyByCandidateId = new Map(candidateKeys.map((row) => [row.id, row.candidateKey] as const));
+  const byCandidate = new Map<string, number[]>();
+  const bySkill = new Map<string, number[]>();
+  for (const session of sessions) {
+    const minutes = session.daySplits.reduce((sum, split) => sum + split.minutes, 0);
+    if (!Number.isFinite(minutes) || minutes <= 0) continue;
+    if (session.task?.candidateId) {
+      const key = keyByCandidateId.get(session.task.candidateId);
+      if (key) byCandidate.set(key, [...(byCandidate.get(key) ?? []), minutes]);
+    }
+    bySkill.set(session.skill, [...(bySkill.get(session.skill) ?? []), minutes]);
+  }
+  return candidates.map((candidate) => {
+    if (candidate.meta.diagnosticProposal) return candidate;
+    const exact = byCandidate.get(candidate.candidateKey) ?? [];
+    const skillSamples = bySkill.get(candidate.targetSkill) ?? [];
+    const samples = exact.length >= ESTIMATE_MIN_SAMPLES ? exact : skillSamples;
+    const key = exact.length >= ESTIMATE_MIN_SAMPLES
+      ? `candidate:${candidate.candidateKey}`
+      : `skill:${candidate.targetSkill}`;
+    const estimate = calibrateTaskEstimate(candidate.estMinutes, samples.map((minutes) => ({ minutes })), key);
+    const atomic = candidate.minMinutes === candidate.estMinutes;
+    return {
+      ...candidate,
+      estMinutes: estimate.pointMinutes,
+      minMinutes: atomic ? estimate.pointMinutes : candidate.minMinutes,
+      maxBlockMinutes: candidate.maxBlockMinutes === candidate.estMinutes ? estimate.pointMinutes : candidate.maxBlockMinutes,
+      meta: { ...candidate.meta, estimate },
+    };
   });
 }
 
@@ -602,7 +738,7 @@ async function buildPrerequisiteContext(
       select: { id: true },
     }),
     prisma.transcript.findMany({
-      where: { audioAssetId: { in: [...referenced.audio] }, status: 'CONFIRMED' },
+      where: { audioAssetId: { in: [...referenced.audio] }, audioAsset: { deletedAt: null }, status: 'CONFIRMED' },
       select: { audioAssetId: true },
     }),
     prisma.egiuLesson.findMany({
@@ -640,12 +776,13 @@ async function buildPrerequisiteContext(
  * @param decisions 与候选一一对应的决策
  */
 async function persistCandidates(
+  tx: Prisma.TransactionClient,
   snapshotId: string,
   candidates: readonly TaskCandidateDraft[],
   decisions: readonly TaskPriorityDecisionDraft[],
 ): Promise<void> {
   if (candidates.length === 0) return;
-  const gapRows = await prisma.skillGap.findMany({
+  const gapRows = await tx.skillGap.findMany({
     where: { snapshotId },
     select: { id: true, dimensionKind: true, skill: true, subskill: true },
   });
@@ -654,49 +791,47 @@ async function persistCandidates(
   );
   const decisionByKey = new Map(decisions.map((row) => [row.candidateKey, row] as const));
 
-  await prisma.$transaction(async (tx) => {
-    for (const candidate of candidates) {
-      const skillGapId = candidate.skillGapKey ? (gapIdByKey.get(candidate.skillGapKey) ?? null) : null;
-      const created = await tx.taskCandidate.create({
-        data: {
-          snapshotId,
-          sourceKind: candidate.sourceKind,
-          sourceRef: candidate.sourceRef,
-          candidateKey: candidate.candidateKey,
-          module: candidate.module,
-          targetSkill: candidate.targetSkill,
-          skillGapId,
-          title: candidate.title,
-          estMinutes: candidate.estMinutes,
-          minMinutes: candidate.minMinutes,
-          maxBlockMinutes: candidate.maxBlockMinutes,
-          prerequisitesJson: JSON.stringify(candidate.prerequisites),
-          validationStatus: candidate.validationStatus,
-          difficultyScore: candidate.difficultyScore,
-          isAiSuggested: candidate.isAiSuggested,
-          aiCallLogId: candidate.aiCallLogId,
-        },
-        select: { id: true },
-      });
-      const decision = decisionByKey.get(candidate.candidateKey);
-      if (!decision) continue;
-      await tx.taskPriorityDecision.create({
-        data: {
-          candidateId: created.id,
-          snapshotId,
-          skillGapId,
-          weightsVersion: decision.weightsVersion,
-          factorsJson: JSON.stringify(toFactorsJson(decision)),
-          score: decision.score,
-          priority: decision.priority,
-          rationale: decision.rationale,
-          consequenceIfSkipped: decision.consequenceIfSkipped,
-          eligibility: decision.eligibility,
-          blockedReason: decision.blockedReason,
-        },
-      });
-    }
-  });
+  for (const candidate of candidates) {
+    const skillGapId = candidate.skillGapKey ? (gapIdByKey.get(candidate.skillGapKey) ?? null) : null;
+    const created = await tx.taskCandidate.create({
+      data: {
+        snapshotId,
+        sourceKind: candidate.sourceKind,
+        sourceRef: candidate.sourceRef,
+        candidateKey: candidate.candidateKey,
+        module: candidate.module,
+        targetSkill: candidate.targetSkill,
+        skillGapId,
+        title: candidate.title,
+        estMinutes: candidate.estMinutes,
+        minMinutes: candidate.minMinutes,
+        maxBlockMinutes: candidate.maxBlockMinutes,
+        prerequisitesJson: JSON.stringify(candidate.prerequisites),
+        validationStatus: candidate.validationStatus,
+        difficultyScore: candidate.difficultyScore,
+        isAiSuggested: candidate.isAiSuggested,
+        aiCallLogId: candidate.aiCallLogId,
+      },
+      select: { id: true },
+    });
+    const decision = decisionByKey.get(candidate.candidateKey);
+    if (!decision) continue;
+    await tx.taskPriorityDecision.create({
+      data: {
+        candidateId: created.id,
+        snapshotId,
+        skillGapId,
+        weightsVersion: decision.weightsVersion,
+        factorsJson: JSON.stringify(toFactorsJson(decision)),
+        score: decision.score,
+        priority: decision.priority,
+        rationale: decision.rationale,
+        consequenceIfSkipped: decision.consequenceIfSkipped,
+        eligibility: decision.eligibility,
+        blockedReason: decision.blockedReason,
+      },
+    });
+  }
 }
 
 /**
@@ -706,12 +841,13 @@ async function persistCandidates(
  * @param split 判定结果
  */
 async function persistGaps(
+  tx: Prisma.TransactionClient,
   snapshotId: string,
   split: { gaps: SkillGapDraft[]; uncertainties: SkillGapDraft[]; unknowns: SkillGapDraft[] },
 ): Promise<void> {
   const all = [...split.gaps, ...split.uncertainties, ...split.unknowns];
   if (all.length === 0) return;
-  await prisma.skillGap.createMany({
+  await tx.skillGap.createMany({
     data: all.map((gap) => ({
       snapshotId,
       dimensionKind: gap.dimensionKind,

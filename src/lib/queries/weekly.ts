@@ -11,6 +11,7 @@ import {
   TASK_STATUSES_EXCLUDED_FROM_RATE,
   WEEKLY_TOP3_COUNT,
 } from '@/lib/constants';
+import { getBusinessTimezone, resolveBusinessDate } from '@/lib/businessTime';
 import {
   addDays,
   diffDays,
@@ -18,8 +19,8 @@ import {
   isoWeek as isoWeekOf,
   listDateRange,
   startOfIsoWeek,
-  toUtcInstant,
   today,
+  toUtcInstant,
 } from '@/lib/date';
 import { completionRate } from '@/lib/domain/completion';
 import { skillMinutes } from '@/lib/domain/duration';
@@ -88,14 +89,16 @@ export async function getWeeklyTrackStats(isoYear: number, weekNo: number) {
 export async function getWeeklyRawInput(
   weekStart: string,
   weekEnd: string,
-  nowDate: string = today(),
+  nowDateParam?: string,
 ): Promise<WeeklyRawInput> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
+  const timeZone = await getBusinessTimezone();
   const prevStart = addDays(weekStart, -7);
   const prevEnd = addDays(weekEnd, -7);
-  const startInstant = toUtcInstant(weekStart);
-  const endInstant = endOfBusinessDay(weekEnd);
-  const prevStartInstant = toUtcInstant(prevStart);
-  const prevEndInstant = endOfBusinessDay(prevEnd);
+  const startInstant = toUtcInstant(weekStart, '00:00', timeZone);
+  const endInstant = endOfBusinessDay(weekEnd, timeZone);
+  const prevStartInstant = toUtcInstant(prevStart, '00:00', timeZone);
+  const prevEndInstant = endOfBusinessDay(prevEnd, timeZone);
 
   const [
     splitRows,
@@ -154,15 +157,15 @@ export async function getWeeklyRawInput(
       select: { judgedColor: true },
     }),
     prisma.egiuLesson.count({
-      where: { masteredAt: { gte: startInstant, lte: endInstant } },
+      where: { masteredAt: { gte: startInstant, lt: endInstant } },
     }),
-    prisma.mistake.count({ where: { createdAt: { gte: startInstant, lte: endInstant } } }),
+    prisma.mistake.count({ where: { createdAt: { gte: startInstant, lt: endInstant } } }),
     prisma.mistake.count({
-      where: { isMastered: true, updatedAt: { gte: startInstant, lte: endInstant } },
+      where: { isMastered: true, updatedAt: { gte: startInstant, lt: endInstant } },
     }),
     prisma.mistake.groupBy({
       by: ['errorCategory'],
-      where: { createdAt: { gte: startInstant, lte: endInstant } },
+      where: { createdAt: { gte: startInstant, lt: endInstant } },
       _count: { _all: true },
     }),
     prisma.reviewTask.count({
@@ -331,8 +334,9 @@ function parseStoredTop3(raw: string | null): WeeklyTop3Dto[] {
 export async function getWeeklyReview(
   isoYear: number,
   weekNo: number,
-  nowDate: string = today(),
+  nowDateParam?: string,
 ): Promise<WeeklyReviewDto> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const weekStart = isoWeekStart(isoYear, weekNo);
   const weekEnd = addDays(weekStart, 6);
 
@@ -361,7 +365,8 @@ export async function getWeeklyReview(
 }
 
 /** 最近 N 周（含本周）的下拉选项。 */
-export async function listWeekOptions(count = 8, nowDate: string = today()): Promise<WeeklyWeekOptionDto[]> {
+export async function listWeekOptions(count = 8, nowDateParam?: string): Promise<WeeklyWeekOptionDto[]> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const current = isoWeekOf(nowDate);
   const existing = await prisma.weeklyReview.findMany({ select: { isoYear: true, isoWeek: true } });
   const savedSet = new Set(existing.map((row) => `${row.isoYear}-${row.isoWeek}`));
@@ -534,8 +539,9 @@ async function uncertaintyCountAsOf(weekEnd: string): Promise<number> {
 export async function getWeeklyDelta(
   isoYear: number,
   weekNo: number,
-  nowDate: string = today(),
+  nowDateParam?: string,
 ): Promise<WeeklyDeltaDto> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const weekStart = isoWeekStart(isoYear, weekNo);
   const weekEnd = addDays(weekStart, 6);
   const previousStart = addDays(weekStart, -7);

@@ -5,21 +5,18 @@
  *
  * 这一层只做四件事 —— ① 前置断言（材料状态、草案状态）；② 调纯函数/服务拿结论
  * （`splitProposalAcrossDays` / `validateProposalAgainstBudget` / `buildMaterialPack`）；
- * ③ 逐条写库；④ 结算与失效缓存。它**不自己判断**"怎么拆"（纯函数是唯一决策点），
- * 也**不自己建 PlanTask**（Q6：必须走唯一写入者 `appendTaskFromCandidate`，
- * 否则计划表会出现第二套创建逻辑，预算闸门与版本审计迟早分叉）。
+ * ③ 经唯一计划写入者批量提交；④ 结算与失效缓存。它**不自己判断**"怎么拆"
+ * （纯函数是唯一决策点），也**不自己建 PlanTask**。
  *
  * 三条硬约束：
- * - **预算整批只校验一次**：v2.6 曾在本文件确认入口与写入者各跑一次同一套逻辑，
- *   双重扣减/双重拒绝；Q6 后两者共用 `planWrite.ts` 的同一纯函数，入口预检整批、
- *   写入者跳过单条重复校验（spy 断言总共只调用 1 次）；
+ * - **确认整批原子**：选中条目、预算、版本、`planTaskId` 回填与草案状态同事务提交；
  * - **只写 `selected` 的条目**：勾选框是承诺，不是装饰；
  * - **丢弃草案不动 PlanTask**：已经确认落地的任务不能因为丢草案被删。
  */
 
 import { revalidatePath } from 'next/cache';
 import { mapCandidateSourceToPlanTask, taskAxesOf } from '@/lib/domain/planWriteMap';
-import { appendTaskFromCandidate, validateBatchBudget } from '@/lib/services/planWrite';
+import { appendTaskBatchInTransaction, BudgetGateError } from '@/lib/services/planWrite';
 import type { BudgetDay, ProposalSeed } from '@/lib/domain/taskProposal';
 import {
   splitProposalAcrossDays,
@@ -440,23 +437,32 @@ export interface ConfirmProposalData {
   proposalId: string;
   /** 落地的 PlanTask 数。 */
   created: number;
-  /** 失败条目数（逐条独立，一条失败不影响其余）。 */
+  /** 失败条目数；原子确认成功后恒为 0。 */
   failed: number;
   status: string;
   totalMinutes: number;
 }
 
+type ProposalConflictCode = 'NOT_FOUND' | 'PRECONDITION' | 'VALIDATION' | 'NO_STAGE';
+
+class ProposalConfirmationConflictError extends Error {
+  constructor(
+    message: string,
+    readonly code: ProposalConflictCode,
+  ) {
+    super(message);
+    this.name = 'ProposalConfirmationConflictError';
+  }
+}
+
 /**
- * 确认草案：**只对 `selected === true` 的条目**写 PlanTask。
+ * 确认草案：只对 `selected === true` 且尚未落地的条目写 PlanTask。
  *
- * Q6（v2.7）：本入口不再**自己**算预算、不再直接建任务、不再回填 `planTaskId` ——
- * 预算预检调 `planWrite.validateBatchBudget()`（与写入者共用同一纯函数，整批只跑一次），
- * 建任务与回填在唯一写入者 `appendTaskFromCandidate()` 的同一个事务里完成。
- * 入口只保留前置断言（草案存在/状态/选中项非空）与结算；签名、返回结构、组件 props 不变。
+ * 全部条目与草案状态在同一个事务内重新读取；新任务按日批量写入，预算校验与版本审计
+ * 只发生在唯一写入者内。任一日预算失败、并发冲突或草案状态变化都会回滚整批。
  *
  * `sourceKind` 经 `mapCandidateSourceToPlanTask('MATERIAL', null) → MANUAL` 映射得到
- * （材料草案是用户勾选落地，语义为"人工决定"）；`priority` 材料草案没有证据裁决，
- * 显式取 P1（阶段核心）—— 与 v2.6 材料路径的实际行为一致，避免静默改变用户可见排序。
+ * （材料草案是用户勾选落地，语义为"人工决定"）；`priority` 显式取 P1，保持既有排序。
  *
  * @param raw `{ proposalId }`
  */
@@ -466,122 +472,134 @@ export async function confirmTaskProposalAction(
   const parsed = taskProposalConfirmSchema.safeParse(raw);
   if (!parsed.success) return failValidation(parsed.error);
 
-  const proposal = await prisma.taskProposal.findUnique({
-    where: { id: parsed.data.proposalId },
-    select: {
-      id: true,
-      materialId: true,
-      status: true,
-      baseDate: true,
-      items: {
-        orderBy: [{ suggestedDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+  let materialId = '';
+  try {
+    const confirmed = await prisma.$transaction(async (tx) => {
+      const proposal = await tx.taskProposal.findUnique({
+        where: { id: parsed.data.proposalId },
         select: {
           id: true,
-          module: true,
-          targetSkill: true,
-          title: true,
-          suggestedMinutes: true,
-          finalMinutes: true,
-          suggestedDate: true,
-          finalDate: true,
-          selected: true,
-          planTaskId: true,
-          reason: true,
+          materialId: true,
+          status: true,
+          baseDate: true,
+          items: {
+            orderBy: [{ suggestedDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+            select: {
+              id: true,
+              module: true,
+              targetSkill: true,
+              title: true,
+              suggestedMinutes: true,
+              finalMinutes: true,
+              suggestedDate: true,
+              finalDate: true,
+              selected: true,
+              planTaskId: true,
+              reason: true,
+            },
+          },
         },
-      },
-    },
-  });
-  if (!proposal) return fail('NOT_FOUND', '这份草案不存在，可能已被丢弃');
-  if (proposal.status !== 'draft') {
-    return fail('PRECONDITION', '这份草案已经确认过了');
-  }
+      });
+      if (!proposal) {
+        throw new ProposalConfirmationConflictError('这份草案不存在，可能已被丢弃', 'NOT_FOUND');
+      }
+      materialId = proposal.materialId;
+      if (proposal.status !== 'draft') {
+        throw new ProposalConfirmationConflictError('这份草案已经确认过了', 'PRECONDITION');
+      }
 
-  const selected = proposal.items.filter((item) => item.selected);
-  if (selected.length === 0) {
-    return fail('VALIDATION', '至少要勾选一条草案才能确认');
-  }
+      const selected = proposal.items.filter((item) => item.selected);
+      if (selected.length === 0) {
+        throw new ProposalConfirmationConflictError('至少要勾选一条草案才能确认', 'VALIDATION');
+      }
 
-  // Q6：整批预算预检（v2.6「有超支一条都不写」语义）。这里调的是 planWrite 模块
-  // 导出的 validateBatchBudget，与写入者内部闸门共用同一个纯函数；预检通过后
-  // 逐条写入传 budgetPrevalidated:true，整批确认中预算闸门总共只跑一次（spy 可验）。
-  const batchCheck = validateBatchBudget(
-    selected.map((item) => ({
-      date: item.finalDate ?? item.suggestedDate,
-      minutes: item.finalMinutes ?? item.suggestedMinutes,
-    })),
-    await loadBudgetDays(proposal.baseDate),
-  );
-  if (!batchCheck.ok) return fail(batchCheck.code, batchCheck.error);
+      const windowEnd = addDays(proposal.baseDate, PROPOSAL_WINDOW_DAYS - 1);
+      const outsideWindow = selected.find((item) => {
+        const date = item.finalDate ?? item.suggestedDate;
+        return date < proposal.baseDate || date > windowEnd;
+      });
+      if (outsideWindow) {
+        const date = outsideWindow.finalDate ?? outsideWindow.suggestedDate;
+        throw new ProposalConfirmationConflictError(
+          `勾选条目日期 ${date} 超出草案窗口 ${proposal.baseDate} 至 ${windowEnd}`,
+          'VALIDATION',
+        );
+      }
 
-  const stage = await prisma.stage.findFirst({
-    where: { status: 'ACTIVE' },
-    orderBy: { sortOrder: 'asc' },
-    select: { id: true },
-  });
-  if (!stage) return fail('PRECONDITION', '还没有激活的学习阶段，无法写入计划');
+      const stage = await tx.stage.findFirst({
+        where: { status: 'ACTIVE' },
+        orderBy: { sortOrder: 'asc' },
+        select: { id: true },
+      });
+      if (!stage) {
+        throw new ProposalConfirmationConflictError(
+          '还没有激活的学习阶段，无法写入计划',
+          'NO_STAGE',
+        );
+      }
 
-  let created = 0;
-  let failed = 0;
-  let totalMinutes = 0;
+      const pending = selected.filter((item) => !item.planTaskId);
+      const totalMinutes = selected.reduce(
+        (sum, item) => sum + (item.finalMinutes ?? item.suggestedMinutes),
+        0,
+      );
 
-  for (const item of selected) {
-    // 已经落地过的条目跳过（重复确认不该产生第二条任务）
-    if (item.planTaskId) {
-      totalMinutes += item.finalMinutes ?? item.suggestedMinutes;
-      continue;
-    }
+      if (pending.length > 0) {
+        await appendTaskBatchInTransaction(
+          tx,
+          pending.map((item) => {
+            const axes = taskAxesOf(item.module as ModuleId, item.targetSkill);
+            return {
+              stageId: stage.id,
+              planDate: item.finalDate ?? item.suggestedDate,
+              module: item.module as ModuleId,
+              skill: axes.skill,
+              plannedMinutes: item.finalMinutes ?? item.suggestedMinutes,
+              priority: 'P1' as const,
+              sourceKind: mapCandidateSourceToPlanTask('MATERIAL', null),
+              track: axes.track,
+              primarySkill: axes.primarySkill,
+              note: `${item.title}（来自材料任务草案${item.reason ? `：${item.reason}` : ''}）`.slice(0, 300),
+              origin: 'MATERIAL_CONFIRM' as const,
+              proposalItemId: item.id,
+            };
+          }),
+        );
+      }
 
-    const planDate = item.finalDate ?? item.suggestedDate;
-    const plannedMinutes = item.finalMinutes ?? item.suggestedMinutes;
-    const axes = taskAxesOf(item.module as ModuleId, item.targetSkill);
+      const claimed = await tx.taskProposal.updateMany({
+        where: { id: proposal.id, status: 'draft' },
+        data: { status: 'confirmed', totalMinutes },
+      });
+      if (claimed.count !== 1) {
+        throw new ProposalConfirmationConflictError('这份草案已经确认过了', 'PRECONDITION');
+      }
 
-    // Q6：唯一写入者。预算闸门、版本、planTaskId 回填全在其一个事务内完成。
-    const result = await appendTaskFromCandidate({
-      stageId: stage.id,
-      planDate,
-      module: item.module as ModuleId,
-      skill: axes.skill,
-      plannedMinutes,
-      priority: 'P1',
-      sourceKind: mapCandidateSourceToPlanTask('MATERIAL', null),
-      track: axes.track,
-      primarySkill: axes.primarySkill,
-      note: `${item.title}（来自材料任务草案${item.reason ? `：${item.reason}` : ''}）`.slice(0, 300),
-      origin: 'MATERIAL_CONFIRM',
-      proposalItemId: item.id, // 幂等键：写入者内部回填 planTaskId
-      budgetPrevalidated: true, // 整批已由 validateBatchBudget 校验，跳过单条重复闸门
+      return {
+        proposalId: proposal.id,
+        created: pending.length,
+        failed: 0,
+        status: 'confirmed',
+        totalMinutes,
+      };
     });
 
-    if (!result.ok) {
-      failed += 1;
-      continue;
+    revalidatePackPaths(materialId);
+    return ok<ConfirmProposalData>(confirmed);
+  } catch (error) {
+    if (error instanceof ProposalConfirmationConflictError) {
+      const code = error.code === 'NO_STAGE' ? 'PRECONDITION' : error.code;
+      return fail(code, error.message);
     }
-
-    // created:false = 写入者命中幂等（本次循环里 planTaskId 刚被回填），仍计为成功
-    created += 1;
-    totalMinutes += plannedMinutes;
+    if (error instanceof BudgetGateError) return fail('PRECONDITION', error.message);
+    if (
+      typeof error === 'object' && error !== null && 'code' in error
+      && ['P2002', 'P2028'].includes((error as { code?: unknown }).code as string)
+    ) {
+      return fail('CONFLICT', '计划写入发生并发冲突，请刷新后重试');
+    }
+    throw error;
   }
-
-  // 全部失败 → 保持 draft（否则用户会看到"已确认但计划里什么都没有"）
-  if (created === 0) {
-    revalidatePackPaths(proposal.materialId);
-    return fail('INTERNAL', '没有一条草案写入成功，请稍后重试');
-  }
-
-  await prisma.taskProposal.update({
-    where: { id: proposal.id },
-    data: { status: 'confirmed', totalMinutes },
-  });
-
-  revalidatePackPaths(proposal.materialId);
-
-  return ok<ConfirmProposalData>({
-    proposalId: proposal.id,
-    created,
-    failed,
-    status: 'confirmed',
-    totalMinutes,
-  });
 }
 
 // `skillOfModule()` 已收编到 `domain/planWriteMap.ts`（v2.7 T06a），

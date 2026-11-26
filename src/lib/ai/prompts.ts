@@ -720,7 +720,7 @@ export function renderPrompt(
   const variables: Record<string, string> = {
     skill: meta.skill,
     mode: meta.mode,
-    objective: meta.objective,
+    objective: meta.objective.slice(0, 1200),
     targetLevel: meta.targetLevel,
     baseline: meta.baseline?.slice(0, 2000) ?? '（无）',
     taskInstructions: meta.taskInstructions?.slice(0, 1200) ?? '（无）',

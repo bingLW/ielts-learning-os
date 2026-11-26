@@ -18,11 +18,12 @@ export interface CycleEvidenceCounts {
 export async function countCycleEvidence(
   startDate: string,
   endDate: string,
+  timeZone: string,
 ): Promise<CycleEvidenceCounts> {
   const rows = await prisma.evidenceRecord.findMany({
     where: {
       archivedAt: null,
-      createdAt: { gte: toUtcInstant(startDate), lt: endOfBusinessDay(endDate) },
+      createdAt: { gte: toUtcInstant(startDate, '00:00', timeZone), lt: endOfBusinessDay(endDate, timeZone) },
     },
     select: { evidenceType: true, level: true, outputText: true },
   });

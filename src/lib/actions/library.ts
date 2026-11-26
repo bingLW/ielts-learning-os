@@ -8,7 +8,7 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import { checkReadingLog, readingLastReadAt } from '@/lib/domain/library';
 import { prisma } from '@/lib/prisma';
 import { fail, failValidation, ok } from '@/lib/result';
@@ -52,7 +52,7 @@ export async function updateReadingLogAction(
   });
   if (!gate.ok) return fail('VALIDATION', gate.error);
 
-  const lastReadAt = readingLastReadAt(input.status, today());
+  const lastReadAt = readingLastReadAt(input.status, await businessToday());
 
   await prisma.resourceReadingLog.upsert({
     where: { resourceId: resource.id },

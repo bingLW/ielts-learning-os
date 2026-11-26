@@ -17,6 +17,7 @@ import {
   SENTENCE_COMPONENT_LABEL_ZH,
   TARGET_TYPE_LABEL_ZH,
 } from '@/lib/constants';
+import { toBusinessDate } from '@/lib/date';
 import { prisma } from '@/lib/prisma';
 import { parseTokens } from '@/lib/queries/sentences';
 import type {
@@ -66,7 +67,7 @@ export function toDomainCsv(report: DomainExport): string {
 }
 
 /** EGIU（语法诊断）报表。 */
-async function buildGrammarReport(): Promise<DomainExport> {
+async function buildGrammarReport(timeZone: string): Promise<DomainExport> {
   const rows = await prisma.egiuLesson.findMany({
     orderBy: [{ learnedDate: 'desc' }, { unitNo: 'asc' }],
     include: { reviews: { orderBy: [{ reviewDate: 'asc' }] } },
@@ -103,7 +104,7 @@ async function buildGrammarReport(): Promise<DomainExport> {
       row.learnedDate,
       row.greenStreak,
       row.masteredAt ? '是' : '否',
-      row.masteredAt ? row.masteredAt.toISOString().slice(0, 10) : null,
+      row.masteredAt ? toBusinessDate(row.masteredAt, timeZone) : null,
       row.inLowFreqPool ? '是' : '否',
       row.nextReviewDate,
       row.retestCount,
@@ -280,10 +281,10 @@ async function buildReviewsReport(): Promise<DomainExport> {
 export const EGIU_EXPORT_COLOR_ORDER: EgiuColor[] = EGIU_COLORS;
 
 /** 构建指定领域的报表。 */
-export async function buildDomainExport(kind: DomainExportKind): Promise<DomainExport> {
+export async function buildDomainExport(kind: DomainExportKind, timeZone: string): Promise<DomainExport> {
   switch (kind) {
     case 'grammar':
-      return buildGrammarReport();
+      return buildGrammarReport(timeZone);
     case 'mistakes':
       return buildMistakesReport();
     case 'vocab':

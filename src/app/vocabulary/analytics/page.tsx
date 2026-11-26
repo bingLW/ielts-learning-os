@@ -10,7 +10,8 @@ import {
   type VocabDimension,
   type VocabPracticeMode,
 } from '@/lib/constants';
-import { addDays, today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
+import { addDays } from '@/lib/date';
 import { getVocabAnalytics, getVocabRetestSummary } from '@/lib/queries/vocabIntegration';
 import { Card } from '@/components/ui/Card';
 import { StatTile } from '@/components/ui/StatTile';
@@ -35,7 +36,7 @@ export default async function VocabularyAnalyticsPage({ searchParams }: PageProp
   const params = await searchParams;
   const toRaw = one(params, 'to');
   const fromRaw = one(params, 'from');
-  const to = isDate(toRaw) ? toRaw : today();
+  const to = isDate(toRaw) ? toRaw : await businessToday();
   const from = isDate(fromRaw) ? fromRaw : addDays(to, -29);
 
   const analytics = await getVocabAnalytics(from, to);

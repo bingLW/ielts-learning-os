@@ -24,40 +24,7 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-/**
- * **这棵读集必须写全**：`collectCandidates()` 会把 8 个来源全查一遍，任何一张没清的
- * 表都会把本机 `dev.db` 的种子数据混进候选池（例如 seed 里的一条 ready 材料会凭空
- * 多出一批 MATERIAL 候选，而 `no-proposal` 的计数断言会因此变红 —— 换台机器就复现不了）。
- * 顺序：先子后父。
- */
-const { prisma } = await createTestDb([
-  'exerciseAttempt',
-  'diagnosticAttempt',
-  'generatedExercise',
-  'diagnosticItem',
-  'diagnosticBlueprint',
-  'materialPackItem',
-  'materialPack',
-  'taskProposalItem',
-  'taskProposal',
-  'vocabularyAssignmentItem',
-  'vocabularyAssignment',
-  'reviewTask',
-  'retestSchedule',
-  'egiuReview',
-  'egiuLesson',
-  'listeningExercise',
-  'speakingPrompt',
-  'transcript',
-  'audioAsset',
-  'contentChunk',
-  'parsedDocument',
-  'materialExerciseSet',
-  'evidenceRecord',
-  'planTask',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma } = await createTestDb();
 
 const {
   collectCandidates,
@@ -97,6 +64,10 @@ const ids = {
   listeningConfirmed: '',
   listeningMissing: '',
   speakingPrompt: '',
+  inactiveSpeakingPrompt: '',
+  attributedMistake: '',
+  unattributedMistake: '',
+  unknownSkillMistake: '',
   eguiUnit1: '',
   eguiUnit2: '',
   eguiNoResource: '',
@@ -138,6 +109,40 @@ beforeAll(async () => {
     },
   });
   ids.review = review.id;
+
+  // ── P1-2 MISTAKE：有记录、无记录、未知技能三种归属 ──
+  const attributedRecord = await prisma.studyRecord.create({
+    data: { stageId: stage.id, recordDate: YESTERDAY, skill: 'READING', content: '错题来源' },
+  });
+  const unknownRecord = await prisma.studyRecord.create({
+    data: { stageId: stage.id, recordDate: YESTERDAY, skill: 'UNMAPPED_SKILL', content: '未知技能来源' },
+  });
+  const mistakeFixtures = [
+    { key: 'attributedMistake' as const, label: '有归属错题', studyRecordId: attributedRecord.id },
+    { key: 'unattributedMistake' as const, label: '手工错题', studyRecordId: null },
+    { key: 'unknownSkillMistake' as const, label: '未知技能错题', studyRecordId: unknownRecord.id },
+  ];
+  for (const fixture of mistakeFixtures) {
+    const mistake = await prisma.mistake.create({
+      data: {
+        stageId: stage.id,
+        sourceType: fixture.studyRecordId ? 'STUDY_RECORD' : 'MANUAL',
+        studyRecordId: fixture.studyRecordId,
+        originalQuestion: fixture.label,
+        correctAnswer: '正确答案',
+        errorReason: '测试错因',
+        knowledgePoint: 'detail_scanning',
+        errorCategory: 'OTHER',
+      },
+    });
+    const reviewTask = await prisma.reviewTask.create({
+      data: {
+        targetType: 'MISTAKE', targetId: mistake.id, targetLabel: fixture.label,
+        intervalCode: 'D1', dueDate: AS_OF, estMinutes: 5,
+      },
+    });
+    ids[fixture.key] = reviewTask.id;
+  }
 
   // ── 2. RETEST ──
   const evidence = await prisma.evidenceRecord.create({
@@ -390,6 +395,12 @@ beforeAll(async () => {
     data: { taskType: 'TOPIC_MONOLOGUE', title: '话题独白：一次难忘的旅行', prompt: 'Talk for 90 seconds.' },
   });
   ids.speakingPrompt = speakingPrompt.id;
+  const inactiveSpeakingPrompt = await prisma.speakingPrompt.create({
+    data: {
+      taskType: 'TOPIC_MONOLOGUE', title: '已停用口语题（不得入池）', prompt: 'Do not use.', active: false,
+    },
+  });
+  ids.inactiveSpeakingPrompt = inactiveSpeakingPrompt.id;
 
   // ── 8. EGIU ──
   const resource = await prisma.resource.create({
@@ -493,7 +504,17 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
     expect(review.primarySkill).toBe('FOUNDATION');
     expect(review.estMinutes).toBe(5);
     expect(review.minMinutes).toBe(5);
-    expect(review.meta).toEqual({ estMinutesSource: 'SOURCE' });
+    expect(review.meta).toMatchObject({
+      estMinutesSource: 'SOURCE',
+      estimate: {
+        pointMinutes: 5,
+        minMinutes: 4,
+        maxMinutes: 7,
+        basis: 'ESTIMATE',
+        sampleCount: 0,
+        calibrationKey: null,
+      },
+    });
 
     const retest = find(pool, `RETEST:retest:${ids.retest}:READING`);
     expect(retest.targetSkill).toBe('READING');
@@ -509,7 +530,17 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
     const vocab = find(pool, `VOCAB:vocab:${ids.vocabToday}:VOCAB_REVIEW`);
     expect(vocab.estMinutes).toBe(12);
     expect(vocab.minMinutes).toBe(5);
-    expect(vocab.meta).toEqual({ estMinutesSource: 'SOURCE' });
+    expect(vocab.meta).toMatchObject({
+      estMinutesSource: 'SOURCE',
+      estimate: {
+        pointMinutes: 12,
+        minMinutes: 10,
+        maxMinutes: 16,
+        basis: 'ESTIMATE',
+        sampleCount: 0,
+        calibrationKey: null,
+      },
+    });
 
     const material = find(pool, `MATERIAL:material:${ids.proposalItemOk}:READING`);
     expect(material.estMinutes).toBe(30);
@@ -529,10 +560,27 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
     const question = find(pool, `QUESTION:diagnostic:${ids.diagMcq}:READING`);
     expect(question.estMinutes).toBe(3);
     expect(question.minMinutes).toBe(3);
-    expect(question.meta).toEqual({
+    expect(question.meta).toMatchObject({
       estMinutesSource: 'DERIVED',
       derivedFrom: 'CANDIDATE_DEFAULT_MINUTES.QUESTION.MCQ',
+      estimate: {
+        pointMinutes: 3,
+        minMinutes: 2,
+        maxMinutes: 4,
+        basis: 'ESTIMATE',
+        modelVersion: 'estimate-range-v2.7.1',
+        ruleVersion: 'v2.7.1',
+      },
+      question: {
+        taskType: 'MCQ',
+        subskill: 'detail_scanning',
+        targetLevelMin: 'A2',
+        targetLevelMax: 'B1',
+        difficultyEstimate: null,
+        stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY',
+      },
     });
+    expect(question.prerequisites).toEqual([]);
 
     const lab = find(pool, `LAB:listening:${ids.listeningConfirmed}:LISTENING`);
     expect(lab.estMinutes).toBe(15);
@@ -547,6 +595,52 @@ describe('① 8 源各造 1 条 → 归一后字段齐全', () => {
     expect(material.dueDate).toBeNull();
     expect(question.dueDate).toBeNull();
     expect(lab.dueDate).toBeNull();
+  });
+});
+
+describe('P1-2 候选来源约束与归属元数据', () => {
+  it('SpeakingPrompt 只收 active=true', () => {
+    expect(pool.some((row) => row.sourceRef === `speaking:${ids.speakingPrompt}`)).toBe(true);
+    expect(pool.some((row) => row.sourceRef === `speaking:${ids.inactiveSpeakingPrompt}`)).toBe(false);
+  });
+
+  it('QUESTION 保留诊断/材料题元数据，不伪造阶段先修', () => {
+    const diagnostic = find(pool, `QUESTION:diagnostic:${ids.diagMcq}:READING`);
+    expect(diagnostic.meta.question).toMatchObject({
+      chain: 'diagnostic', taskType: 'MCQ', subskill: 'detail_scanning',
+      targetLevelMin: 'A2', targetLevelMax: 'B1', difficultyEstimate: null,
+      stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY',
+    });
+    const material = find(pool, `QUESTION:material_exercise:${ids.exerciseApproved}:READING`);
+    expect(material.meta.question).toMatchObject({
+      chain: 'material_exercise', taskType: 'reading_gist', subskill: null,
+      targetLevelMin: null, targetLevelMax: null, difficultyEstimate: null,
+      stagePrerequisitePolicy: 'UNMAPPED_NO_AUTHORITATIVE_POLICY',
+    });
+    expect(diagnostic.prerequisites).toEqual([]);
+    expect(material.prerequisites).toEqual([]);
+  });
+
+  it('MISTAKE 有记录才归属技能；无记录/未知技能落 META 且明确标注', () => {
+    const attributed = find(pool, `REVIEW:review:${ids.attributedMistake}:READING`);
+    expect(attributed.meta.mistake).toEqual({
+      studyRecordId: expect.any(String), skill: 'READING', status: 'ATTRIBUTED',
+    });
+    expect(attributed.title).not.toContain('未归属学习记录');
+
+    for (const [mistakeId, status] of [
+      [ids.unattributedMistake, 'UNATTRIBUTED'],
+      [ids.unknownSkillMistake, 'UNKNOWN_SKILL'],
+    ] as const) {
+      const review = find(pool, `REVIEW:review:${mistakeId}:P0_REVIEW`);
+      expect(review.targetSkill).toBe('META');
+      expect(review.meta.mistake).toEqual({
+        studyRecordId: mistakeId === ids.unattributedMistake ? null : expect.any(String),
+        skill: mistakeId === ids.unattributedMistake ? null : 'UNMAPPED_SKILL',
+        status,
+      });
+      expect(review.title).toContain('未归属学习记录');
+    }
   });
 });
 

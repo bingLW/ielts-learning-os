@@ -8,6 +8,7 @@
 import { useCallback, useRef, useState } from 'react';
 import type { AudioAssetDto, ListeningExerciseDto, TranscriptDto } from '@/lib/queries/listening';
 import { LISTENING_MODE_LABELS_ZH, LISTENING_MODES, type ListeningMode } from '@/lib/constants';
+import { AssetDeleteButton } from './AssetDeleteButton';
 
 interface Props {
   assets: AudioAssetDto[];
@@ -89,20 +90,21 @@ export function ListeningPageBody({ assets, exercises, transcripts }: Props) {
           <div className="flex flex-col gap-2 tablet:col-span-1">
             <h2 className="text-sm font-medium text-ink">音源库</h2>
             {assets.map((asset) => (
-              <button
+              <div
                 key={asset.id}
-                type="button"
-                onClick={() => setSelectedId(asset.id)}
-                className={`rounded-lg border p-3 text-left text-sm transition ${
+                className={`rounded-lg border p-3 text-sm transition ${
                   asset.id === selectedId ? 'border-ink bg-ink/5' : 'border-ink/10 hover:border-ink/30'
                 }`}
               >
-                <p className="font-medium text-ink">{asset.title}</p>
-                <p className="text-xs text-inkMuted">
-                  {asset.durationSec ? `${asset.durationSec}s · ` : ''}
-                  {asset.language ?? '未标注语言'}
-                </p>
-              </button>
+                <button type="button" onClick={() => setSelectedId(asset.id)} className="w-full text-left">
+                  <p className="font-medium text-ink">{asset.title}</p>
+                  <p className="text-xs text-inkMuted">
+                    {asset.durationSec ? `${asset.durationSec}s · ` : ''}
+                    {asset.language ?? '未标注语言'}
+                  </p>
+                </button>
+                <AssetDeleteButton kind="audio" assetId={asset.id} title={asset.title} />
+              </div>
             ))}
           </div>
 

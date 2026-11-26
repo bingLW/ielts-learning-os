@@ -11,7 +11,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { AI_SCOPE_LABEL_ZH } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { businessToday } from '@/lib/businessTime';
 import {
   buildPlanSuggestions,
   buildWeaknessSuggestions,
@@ -101,7 +101,7 @@ export async function requestAiAnalysisAction(
 
 /** 按 scope 生成建议草稿（真实数据 → 领域纯函数）。 */
 async function generateDraftsForScope(scope: AiScope): Promise<SuggestionDraft[]> {
-  const now = today();
+  const now = await businessToday();
 
   switch (scope) {
     case 'WEAKNESS': {

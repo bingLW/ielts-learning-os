@@ -9,6 +9,7 @@
  * **先 carryover 决策，再 replan**，carryover 的产物作为 replan 的输入）。
  */
 
+import { createHash } from 'node:crypto';
 import { MAX_MOVE_COUNT } from '../constants';
 import { diffDays } from '../date';
 import type { ModuleId, TaskPriority, TaskStatus } from '../types';
@@ -22,10 +23,15 @@ export interface OverdueTask {
   actualMinutes: number;
   status: TaskStatus;
   planDate: string;
+  originalScheduledDate?: string | null;
+  planVersion?: number;
   movedCount: number;
   splittable: boolean;
   minChunkMinutes: number;
   deferReason: string | null;
+  timerStatus?: string;
+  timerVersion?: number;
+  movedToDate?: string | null;
 }
 
 /** 四类裁决。`PROMOTE` / `DEMOTE` 会把任务滚入目标日，`BACKLOG` / `ABANDON` 不滚入。 */
@@ -58,6 +64,63 @@ export interface CarryoverResult {
   warnings: string[];
 }
 
+export interface CarryoverDecisionView {
+  taskId: string;
+  module: ModuleId;
+  originalDate: string;
+  previousPlanDate: string;
+  previousPlanVersion: number;
+  previousPriority: TaskPriority;
+  finalPriority: TaskPriority | null;
+  plannedMinutes: number;
+  actualMinutes: number;
+  remainingMinutes: number;
+  movedCount: number;
+  splittable: boolean;
+  minChunkMinutes: number;
+  overdueDays: number;
+  action: CarryoverVerdict['action'];
+  reason: string;
+  destination: string;
+}
+
+export interface CarryoverPreview {
+  asOfDate: string;
+  budgetMinutes: number;
+  fingerprint: string;
+  decisions: CarryoverDecisionView[];
+  promotedCount: number;
+  demotedCount: number;
+  backlogCount: number;
+  abandonedCount: number;
+  overflowCount: number;
+  warnings: string[];
+}
+
+export function carryoverTaskFingerprint(tasks: readonly OverdueTask[]): string {
+  const canonical = tasks
+    .map((task) => ({
+      taskId: task.taskId,
+      module: task.module,
+      planDate: task.planDate,
+      originalScheduledDate: task.originalScheduledDate ?? task.planDate,
+      planVersion: task.planVersion ?? null,
+      priority: task.priority,
+      movedCount: task.movedCount,
+      splittable: task.splittable,
+      plannedMinutes: task.plannedMinutes,
+      actualMinutes: task.actualMinutes,
+      minChunkMinutes: task.minChunkMinutes,
+      deferReason: task.deferReason,
+      status: task.status,
+      timerStatus: task.timerStatus ?? 'IDLE',
+      timerVersion: task.timerVersion ?? 0,
+      movedToDate: task.movedToDate ?? null,
+    }))
+    .sort((a, b) => a.taskId.localeCompare(b.taskId));
+  return createHash('sha256').update(JSON.stringify(canonical), 'utf8').digest('hex');
+}
+
 const PRIORITY_RANK: Record<TaskPriority, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
 /** 裁剪排序用：PROMOTE（优先补做）排在 DEMOTE（雪球控制）之前。 */
@@ -87,8 +150,11 @@ export function carryoverPolicy(input: CarryoverInput): CarryoverResult {
   const drafts: DecisionDraft[] = [];
 
   for (const task of input.overdue) {
+    if (!['TODO', 'IN_PROGRESS', 'MISSED', 'DEFERRED'].includes(task.status)) continue;
+    const done = Math.max(0, Math.round(task.actualMinutes));
+    if (done >= Math.max(0, Math.round(task.plannedMinutes))) continue;
     const overdueDays = Math.max(0, diffDays(task.planDate, input.asOfDate));
-    const plannedMinutes = Math.max(0, Math.round(task.plannedMinutes));
+    const plannedMinutes = Math.max(0, Math.round(task.plannedMinutes) - done);
 
     // C1：顺延次数已达上限 → 放弃
     if (task.movedCount >= ruleMaxMoves) {

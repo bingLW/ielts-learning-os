@@ -76,8 +76,16 @@ export const updateAiEngineSettingsSchema = z.object({
   warnPercent: z.coerce.number().int().min(50).max(100),
   directTeachingDefault: z.boolean(),
   explainLanguage,
+  /** 管理页并发编辑保护；预留字段不参与更新，避免覆盖进行中的预占。 */
+  expectedUpdatedAt: z.coerce.date().optional(),
 });
 export type UpdateAiEngineSettingsInput = z.infer<typeof updateAiEngineSettingsSchema>;
+
+export const updateExternalAiConsentSchema = z.object({
+  externalAiConsent: z.boolean(),
+  acknowledged: z.literal(true),
+});
+export type UpdateExternalAiConsentInput = z.infer<typeof updateExternalAiConsentSchema>;
 
 export const saveProviderCredentialSchema = z
   .object({

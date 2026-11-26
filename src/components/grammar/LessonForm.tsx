@@ -10,7 +10,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { upsertEgiuLessonAction } from '@/lib/actions/egiu';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import type { EgiuLessonRowDto, ResourceOptionDto } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -33,6 +33,7 @@ export function LessonForm({
   onToast,
   onDone,
 }: LessonFormProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -45,7 +46,7 @@ export function LessonForm({
   const [version, setVersion] = useState(editing?.version ?? '');
   const [unitNo, setUnitNo] = useState(editing?.unitNo ?? '');
   const [knowledgePoint, setKnowledgePoint] = useState(editing?.knowledgePoint ?? '');
-  const [learnedDate, setLearnedDate] = useState(editing?.learnedDate ?? today());
+  const [learnedDate, setLearnedDate] = useState(editing?.learnedDate ?? businessDate);
 
   const grammarResources = resources.filter(
     (resource) => resource.subject === 'GRAMMAR' || resource.subject === 'EXAM',

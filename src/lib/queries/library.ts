@@ -5,6 +5,7 @@
  * （每资源最多一行）。统计由 domain 纯函数计算，页面不重复实现口径。
  */
 
+import { getBusinessTimezone } from '@/lib/businessTime';
 import { toBusinessDate } from '@/lib/date';
 import { libraryProgress } from '@/lib/domain/library';
 import { previewOutput } from '@/lib/domain/evidence';
@@ -28,6 +29,7 @@ export interface LibraryBoard {
 }
 
 export async function getLibraryBoard(): Promise<LibraryBoard> {
+  const timeZone = await getBusinessTimezone();
   const [rows, evidenceRows] = await Promise.all([
     prisma.resourceReference.findMany({
       orderBy: [{ priority: 'asc' }, { sortOrder: 'asc' }],
@@ -88,7 +90,7 @@ export async function getLibraryBoard(): Promise<LibraryBoard> {
     skill: row.skill as EvidenceSkill,
     evidenceType: row.evidenceType as LearningEvidenceType,
     preview: previewOutput(row.outputText ?? row.note, 48) ?? '（无正文）',
-    businessDate: toBusinessDate(row.createdAt),
+    businessDate: toBusinessDate(row.createdAt, timeZone),
   }));
 
   return { resources, stats, evidenceOptions };

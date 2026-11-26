@@ -19,22 +19,9 @@ import { createTestDb } from '@/lib/__tests__/helpers/testDb';
 
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 
-const { prisma, path } = await createTestDb([
-  // 先子后父
-  'studySessionDaySplit',
-  'studySession',
-  'taskProposalItem',
-  'taskProposal',
-  'planVersion',
-  'planTask',
-  'dailyBudget',
-  'plannerSettings',
-  'stage',
-  'learningMaterial',
-  'resource',
-]);
+const { prisma, cleanup } = await createTestDb();
 
-const { appendTaskFromCandidate } = await import('@/lib/services/planWrite');
+const { appendTaskFromCandidate, appendTaskBatchInTransaction } = await import('@/lib/services/planWrite');
 
 const PLAN_DATE = '2026-11-25';
 const STAGE_ID = 'test-stage-t06b';
@@ -76,6 +63,9 @@ beforeAll(async () => {
   await prisma.dailyBudget.create({
     data: { date: PLAN_DATE, plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
   });
+  await prisma.dailyBudget.create({
+    data: { date: '2026-11-26', plannedAvailableMinutes: 60, isRestDay: false, source: 'USER' },
+  });
   await prisma.learningMaterial.create({
     data: {
       id: MATERIAL_ID,
@@ -100,10 +90,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.$disconnect();
-  // 让本文件切走的 DATABASE_URL 不污染同进程的其他测试文件（vitest 默认按文件隔离进程，
-  // 这里仍显式移除临时库，避免留下文件）。
-  const { unlinkSync, existsSync } = await import('node:fs');
-  if (existsSync(path)) unlinkSync(path);
+  cleanup();
 });
 
 describe('T06b appendTaskFromCandidate（Q6 唯一写入者）', () => {
@@ -226,5 +213,93 @@ describe('T06b appendTaskFromCandidate（Q6 唯一写入者）', () => {
     expect(materialVersion?.budgetMinutes).toBe(60);
     expect(materialVersion?.actualMinutesAtChange).toBe(0);
     expect(materialVersion?.afterSnapshot).toContain('sourceKind');
+  });
+
+  it('⑫ 同一 idempotencyKey 并发重放 → 真 SQLite 唯一约束下只写入一次', async () => {
+    const idempotencyKey = 'plan-write-concurrent-t06b';
+    const tasksBefore = await prisma.planTask.count({ where: { planDate: PLAN_DATE } });
+    const versionsBefore = await prisma.planVersion.count({ where: { planDate: PLAN_DATE } });
+    const input = baseInput({ idempotencyKey, plannedMinutes: 10 });
+
+    const results = await Promise.all([
+      appendTaskFromCandidate(input),
+      appendTaskFromCandidate(input),
+    ]);
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    const created = results.filter((result) => result.ok && result.data.created);
+    const replayed = results.filter((result) => result.ok && !result.data.created);
+    expect(created).toHaveLength(1);
+    expect(replayed).toHaveLength(1);
+    const createdResult = created[0];
+    const replayedResult = replayed[0];
+    if (!createdResult?.ok || !replayedResult?.ok) throw new Error('并发重放未全部返回成功');
+    expect(replayedResult.data.taskId).toBe(createdResult.data.taskId);
+
+    expect(await prisma.planTask.count({ where: { planDate: PLAN_DATE } })).toBe(tasksBefore + 1);
+    expect(await prisma.planVersion.count({ where: { planDate: PLAN_DATE } })).toBe(versionsBefore + 1);
+    const persisted = await prisma.planVersion.findUnique({ where: { idempotencyKey } });
+    expect(persisted?.version).toBe(createdResult.data.planVersion);
+    expect(replayedResult.data.planVersion).toBe(createdResult.data.planVersion);
+  });
+
+  it('DONE 任务按实际分钟占用预算，不按原计划分钟少算', async () => {
+    const planDate = '2026-11-26';
+    await prisma.planTask.create({
+      data: {
+        id: 'done-actual-budget',
+        stageId: STAGE_ID,
+        planDate,
+        module: 'LISTENING',
+        skill: 'LISTENING',
+        plannedMinutes: 20,
+        actualMinutes: 40,
+        status: 'DONE',
+        priority: 'P1',
+        sourceKind: 'CORE',
+        splittable: true,
+        minChunkMinutes: 5,
+        sortOrder: 0,
+        planVersion: 1,
+        track: 'IELTS_PREPARATION',
+        primarySkill: 'LISTENING',
+      },
+    });
+
+    const result = await appendTaskFromCandidate(baseInput({ planDate, plannedMinutes: 20 }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.plannedMinutesAfter).toBe(60);
+    const version = await prisma.planVersion.findFirst({ where: { version: result.data.planVersion, planDate } });
+    expect(JSON.parse(version?.afterSnapshot ?? '{}')).toMatchObject({ plannedMinutesAfter: 60 });
+  });
+
+  it('P1-1 单任务 plannedMinutes=minChunkMinutes 时不可拆，幂等回放保留原值', async () => {
+    const input = baseInput({
+      planDate: '2026-11-27', plannedMinutes: 5, minChunkMinutes: 5,
+      splittable: false, idempotencyKey: 'atomic-single-splittability',
+    });
+    const first = await appendTaskFromCandidate(input);
+    const replay = await appendTaskFromCandidate({ ...input, splittable: true });
+    expect(first.ok && replay.ok).toBe(true);
+    if (!first.ok || !replay.ok) return;
+    expect(replay.data.created).toBe(false);
+    expect(replay.data.splittable).toBe(false);
+    const task = await prisma.planTask.findUniqueOrThrow({ where: { id: first.data.taskId } });
+    expect(task.splittable).toBe(false);
+    expect(task.minChunkMinutes).toBe(5);
+  });
+
+  it('P1-1 批量写入逐任务保留 splittable，不按计划分钟重算', async () => {
+    const result = await prisma.$transaction((tx) => appendTaskBatchInTransaction(tx, [
+      baseInput({ planDate: '2026-11-27', plannedMinutes: 5, minChunkMinutes: 5, splittable: false }),
+      baseInput({ planDate: '2026-11-27', plannedMinutes: 10, minChunkMinutes: 5, splittable: true }),
+    ], { primaryPlanDate: '2026-11-27', budgetPrevalidated: true }));
+    expect(result.taskIds).toHaveLength(2);
+    const tasks = await prisma.planTask.findMany({ where: { id: { in: result.taskIds } }, orderBy: { sortOrder: 'asc' } });
+    expect(tasks.map((task) => ({ minutes: task.plannedMinutes, splittable: task.splittable }))).toEqual([
+      { minutes: 5, splittable: false },
+      { minutes: 10, splittable: true },
+    ]);
   });
 });

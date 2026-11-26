@@ -48,7 +48,7 @@ export function DashboardBody({ data }: { data: PlannerDashboardDto }) {
         <div>
           <h1 className="text-base font-semibold text-ink">自适应计划</h1>
           <p className="text-xs text-inkMuted">
-            基准日 {data.asOfDate} · 优先级由规则评分决定，AI 只润色措辞 · 时区 Asia/Singapore
+            基准日 {data.asOfDate} · 优先级由规则评分决定，AI 只润色措辞
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs">

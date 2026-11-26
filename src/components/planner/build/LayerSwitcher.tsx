@@ -26,16 +26,20 @@ export function LayerSwitcher({
   activeHorizon,
   diagnosisReady,
   layers,
+  proposalId,
 }: {
   activeHorizon: number;
   diagnosisReady: boolean;
   layers: BuilderLayerStateDto[];
+  proposalId?: string;
 }) {
   return (
     <nav aria-label="计划层级" className="flex flex-wrap gap-1.5">
       {TAB.map((tab) => {
         const state = layers.find((row) => row.layer === tab.layer);
-        const disabled = !diagnosisReady && (tab.layer === 'MONTH' || tab.layer === 'CYCLE');
+        const disabled = proposalId
+          ? tab.horizon !== 7
+          : !diagnosisReady && (tab.layer === 'MONTH' || tab.layer === 'CYCLE');
         const active = tab.horizon === activeHorizon;
         const body = (
           <>
@@ -47,16 +51,16 @@ export function LayerSwitcher({
           <span
             key={tab.horizon}
             aria-disabled="true"
-            title="需要先确认一轮诊断结果（至少 1 条证据或一份能力画像）"
+            title={proposalId ? '诊断草案先确认 7 天启动计划；30/90 天方向保留在诊断报告中' : '需要先确认一轮诊断结果（至少 1 条证据或一份能力画像）'}
             className="cursor-not-allowed rounded-md border border-dashed border-line px-2.5 py-1 text-xs text-inkMuted opacity-60"
           >
             {body}
-            <span className="ml-1 text-[10px]">缺诊断</span>
+            <span className="ml-1 text-[10px]">{proposalId ? '草案仅 7 天' : '缺诊断'}</span>
           </span>
         ) : (
           <Link
             key={tab.horizon}
-            href={`/planner/build?horizon=${tab.horizon}`}
+            href={`/planner/build?horizon=${tab.horizon}${proposalId ? `&proposal=${encodeURIComponent(proposalId)}` : ''}`}
             aria-current={active ? 'page' : undefined}
             className={[
               'rounded-md border px-2.5 py-1 text-xs',

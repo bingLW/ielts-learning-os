@@ -19,7 +19,7 @@ import {
   SENTENCE_ERROR_REASON_MIN,
   SENTENCE_MAX_TOKENS,
 } from '@/lib/constants';
-import { today } from '@/lib/date';
+import { useBusinessToday } from '@/components/layout/BusinessTimeProvider';
 import { annotationProgress, createTokens, validateTokens } from '@/lib/domain/sentence';
 import type {
   PartOfSpeech,
@@ -47,6 +47,7 @@ export function SentenceEditor({
   onToast,
   onDone,
 }: SentenceEditorProps) {
+  const businessDate = useBusinessToday();
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -58,7 +59,7 @@ export function SentenceEditor({
   const [isCorrect, setIsCorrect] = useState(true);
   const [errorReason, setErrorReason] = useState('');
   const [patternTag, setPatternTag] = useState<PatternTag | ''>('');
-  const [sentenceDate, setSentenceDate] = useState(today());
+  const [sentenceDate, setSentenceDate] = useState(businessDate);
 
   const progress = annotationProgress(tokens);
 

@@ -27,10 +27,9 @@ import {
   diffDays,
   lastNDays,
   listDateRange,
-  toBusinessDate,
-  today,
   weekRange,
 } from '@/lib/date';
+import { resolveBusinessDate } from '@/lib/businessTime';
 import { mergeSampleTotals } from '@/lib/domain/accuracy';
 import { effectiveOutputCount, completionRate } from '@/lib/domain/completion';
 import { accumulatePrimaryMinutes, defaultAllocationFor } from '@/lib/domain/allocation';
@@ -40,6 +39,7 @@ import { evaluateStageGate } from '@/lib/domain/stageGate';
 import { getBudgetRange } from '@/lib/queries/budget';
 import { rankWeaknesses, type WeaknessCandidate } from '@/lib/domain/weakness';
 import { parseObject } from '@/lib/json';
+import { estimateOfTaskDecision, expectedOutputOfTaskDecision, parseTaskDecisionJson } from '@/lib/domain/taskDecision';
 import { prisma } from '@/lib/prisma';
 import type {
   ColorDistributionDto,
@@ -106,7 +106,8 @@ function extSignals(extRaw: string | null): { recordingUrl: string | null; summa
 }
 
 /** Dashboard 全量装配。 */
-export async function getDashboard(nowDate: string = today()): Promise<DashboardDto> {
+export async function getDashboard(nowDateParam?: string): Promise<DashboardDto> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   await sweepStaleTasks(nowDate);
 
   const profile = await getProfile();
@@ -135,6 +136,7 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
     acceptanceItems,
     reviewTasksForGate,
     plannedDatesRaw,
+    weekPlannedRows,
   ] = await Promise.all([
     prisma.planTask.findMany({
       where: { planDate: nowDate },
@@ -147,6 +149,7 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
         status: true,
         movedFromDate: true,
         movedToDate: true,
+        decisionJson: true,
       },
     }),
     prisma.planTask.findMany({
@@ -256,6 +259,10 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
       select: { planDate: true },
       distinct: ['planDate'],
     }),
+    prisma.planTask.findMany({
+      where: { planDate: { gte: week.weekStart, lte: week.weekEnd } },
+      select: { planDate: true, plannedMinutes: true, status: true },
+    }),
   ]);
 
   // ───────── 净时长 ─────────
@@ -307,6 +314,7 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
     .filter((task) => task.status !== 'DONE')
     .reduce((sum, task) => sum + Math.max(0, task.plannedMinutes - task.actualMinutes), 0);
   const nextTask = todayTasks.find((task) => task.status === 'TODO' || task.status === 'IN_PROGRESS');
+  const nextDecision = nextTask ? parseTaskDecisionJson(nextTask.decisionJson) : {};
 
   // ───────── 有效产出 ─────────
   const toOutputSignals = (
@@ -548,14 +556,22 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
       }
     : null;
 
+  const plannedByDate = new Map<string, number>();
+  for (const task of weekPlannedRows) {
+    if (task.status === 'CANCELLED' || task.status === 'DEFERRED') continue;
+    plannedByDate.set(task.planDate, (plannedByDate.get(task.planDate) ?? 0) + task.plannedMinutes);
+  }
   const todayZone: DashboardZoneDto = {
-    plannedMinutes: todayTasks.reduce((sum, task) => sum + task.plannedMinutes, 0),
+    plannedMinutes: plannedByDate.get(nowDate) ?? 0,
     netMinutes: todayNet,
     effectiveOutputs: todayOutputs,
     greenRatio,
   };
   const weekZone: DashboardZoneDto = {
-    plannedMinutes: weekTasks.reduce((sum, task) => sum + task.plannedMinutes, 0),
+    plannedMinutes: listDateRange(week.weekStart, week.weekEnd).reduce(
+      (sum, date) => sum + (plannedByDate.get(date) ?? 0),
+      0,
+    ),
     netMinutes: weekNet,
     effectiveOutputs: weekOutputs,
     greenRatio,
@@ -576,6 +592,8 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
             id: nextTask.id,
             label: MODULE_META[nextTask.module as ModuleId]?.labelZh ?? nextTask.module,
             plannedMinutes: nextTask.plannedMinutes,
+            expectedOutput: expectedOutputOfTaskDecision(nextDecision),
+            estimate: estimateOfTaskDecision(nextDecision),
           }
         : null,
     },
@@ -617,12 +635,8 @@ export async function getDashboard(nowDate: string = today()): Promise<Dashboard
 }
 
 /** 今天是否是周复盘日（设置里的 weeklyReviewDow）。 */
-export async function isWeeklyReviewDay(nowDate: string = today()): Promise<boolean> {
+export async function isWeeklyReviewDay(nowDateParam?: string): Promise<boolean> {
+  const nowDate = await resolveBusinessDate(nowDateParam);
   const profile = await getProfile();
   return dayOfWeek(nowDate) === profile.weeklyReviewDow;
-}
-
-/** 展示用的业务「现在」（仅在需要时间戳的 UI 上使用）。 */
-export function businessNow(): string {
-  return toBusinessDate(new Date());
 }
